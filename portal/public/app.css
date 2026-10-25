@@ -911,3 +911,16 @@ img.qp-ic{display:block;object-fit:contain}
 .rc b{width:22px;text-align:right;font-weight:600;color:var(--c)}
 @media (max-width:900px){.res-fams{grid-template-columns:1fr}.res-t .tr{grid-template-columns:minmax(0,1fr) repeat(3,64px)}.res-t .tr>:nth-child(2),.res-t .tr>:nth-child(6),.res-t .tr>:nth-child(7){display:none}}
 .qt.off{opacity:.55}.qt.off .qt-p{color:var(--faint);font-size:10.5px}
+/* 站长兜底公益池 */
+.bk{margin-top:14px;border:1px solid var(--hair);border-radius:12px;padding:12px;background:var(--fill)}
+.bk-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.bk-h .faint{font-size:11.5px;margin-left:auto}
+.bk-g{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+.bk-c{display:flex;flex-direction:column;gap:2px;min-width:0}
+.bk-l{font-size:11px;color:var(--faint)}
+.bk-c b{font-size:20px;font-weight:650;letter-spacing:-.02em;line-height:1.15}
+.bk-c b small{font-size:11px;font-weight:500;margin-left:2px;color:var(--dim)}
+.bk-s{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bk-share{display:flex;justify-content:space-between;align-items:baseline;margin:10px 0 5px;font-size:12px;color:var(--dim)}
+.bk-share b{color:var(--ink);font-weight:600}
+@media (max-width:600px){.bk-g{grid-template-columns:1fr 1fr}.bk-h .faint{margin-left:0;width:100%}}

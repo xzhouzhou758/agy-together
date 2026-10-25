@@ -1,6 +1,6 @@
 // 大锅饭 resources: what the shared accounts have left, summed per quota family, from the stored
 // quota snapshots (no upstream calls). Admins get one row per account; everyone else the totals.
-import { all, now } from './db.ts';
+import { all, one, now } from './db.ts';
 import * as cpa from './cpa.ts';
 import { accountProblem } from './bot.ts';
 import { storedQuota, reserveOf } from './quota.ts';
@@ -93,5 +93,18 @@ export async function poolResources(full: boolean) {
   }
   for (const f of FAMS) fam[f].full = Math.round(fam[f].full * 10) / 10;
   const ups = enabledUpstreams().length;
-  return { at: now(), oldest, counts, fam, upstreams: ups, ...(full ? { accounts: list } : {}) };
+  return { at: now(), oldest, counts, fam, upstreams: ups, backup: backupUse(tok), ...(full ? { accounts: list } : {}) };
+}
+
+/** 站长兜底公益池: what the admin's external upstreams (auth_id up:N) served for the 大锅饭. */
+function backupUse(tok: string) {
+  const q = (since: number) => {
+    const r = one(`SELECT COUNT(*) AS n, SUM(result = 'ok') AS ok, SUM(${tok}) AS t FROM usage WHERE auth_id LIKE 'up:%' AND ts >= ?`, since);
+    return { n: Number(r?.n || 0), ok: Number(r?.ok || 0), t: Number(r?.t || 0) };
+  };
+  const day = dayStart();
+  const pool = Number(one(`SELECT COUNT(*) AS n FROM usage WHERE pool = 'shared' AND auth_id IS NOT NULL AND ts >= ?`, day)?.n || 0);
+  const today = q(day);
+  return { today, week: q(now() - 7 * 86400e3), total: q(0), share: pool ? Math.round((today.n / pool) * 1000) / 10 : 0,
+    since: Number(one(`SELECT MIN(ts) AS t FROM usage WHERE auth_id LIKE 'up:%'`)?.t || 0) || null };
 }

@@ -339,6 +339,14 @@ function resSummary(R){
     <div class="res-fams">${fams||'<small class="faint">还没有额度数据</small>'}</div>
     <p class="res-note faint">已扣除号主的自用保留 · 「满额号」= 把剩余额度加起来折算${R.upstreams?` · 另有 ${R.upstreams} 个外部上游兜底`:''}${R.oldest?` · 数据最早更新于 ${ago(R.oldest)}`:''}</p>`;
 }
+/* 站长兜底公益池：管理员接进来的外部上游替大锅饭接了多少请求 */
+function backupBlock(R){
+  const B=R?.backup;if(!B||!R.upstreams&&!B.total.n)return '';
+  const cell=(lab,x,sub)=>`<div class="bk-c"><span class="bk-l">${lab}</span><b class="mono">${x.n.toLocaleString()}<small>次</small></b><span class="bk-s">${fmtK(x.t)} Token${x.n?` · 成功 ${Math.round(x.ok/x.n*100)}%`:''}${sub?' · '+sub:''}</span></div>`;
+  return `<div class="bk"><div class="bk-h"><b>🛟 站长兜底公益池</b>${R.upstreams?dotChip('good','在线'):dotChip('','未启用')}<span class="faint">大锅饭的号忙不过来或没额度时，由它接住</span></div>
+    <div class="bk-g">${cell('今日',B.today)}${cell('近 7 天',B.week)}${cell('累计',B.total,B.since?'自 '+mdhm(B.since).slice(0,5):'')}</div>
+    <div class="bk-share"><span>今日大锅饭请求里由兜底池接住</span><b class="mono">${B.share}%</b></div><div class="meter"><span style="width:${Math.min(100,Math.max(B.share,B.today.n?1:0))}%"></span></div></div>`;
+}
 function resCell(w,reserve){
   if(!w)return `<span class="rc faint">—</span>`;
   const xs=[w.h5,w.weekly].filter(Boolean),m=xs.reduce((a,b)=>b.frac<a.frac?b:a),p=Math.round(m.frac*100),r=reserve||0;
@@ -374,7 +382,7 @@ function pagePool(){
       <div class="mt"><button class="btn primary" data-act="newkey:shared">${ic('plus')}创建大锅饭密钥</button></div>
     </section>
   </div>
-  <section class="card glass res"><div class="card-head"><div><h2>大锅饭剩余资源</h2><p>大家共享进大锅饭的号，现在还剩多少</p></div></div>${resSummary(D.res)}</section>
+  <section class="card glass res"><div class="card-head"><div><h2>大锅饭剩余资源</h2><p>大家共享进大锅饭的号，现在还剩多少</p></div></div>${resSummary(D.res)}${backupBlock(D.res)}</section>
   <section class="card glass"><div class="card-head"><h2>大锅饭规则</h2></div>${rulesRead(D.rules)}</section>`;
 }
 
@@ -586,7 +594,7 @@ function pageAdmin(){
   </div>
   ${alarms}
   ${annAdmin()}
-  ${fold('poolres','大锅饭资源',A.res?`<span class="fold-sum">${A.res.counts.ok+A.res.counts.cooldown}/${A.res.counts.total} 可用${A.res.counts.problem?` · ${A.res.counts.problem} 出问题`:''}</span>`:'',`<div class="res">${resSummary(A.res)}</div>${resTable(A.res)}`)}
+  ${fold('poolres','大锅饭资源',A.res?`<span class="fold-sum">${A.res.counts.ok+A.res.counts.cooldown}/${A.res.counts.total} 可用${A.res.counts.problem?` · ${A.res.counts.problem} 出问题`:''}</span>`:'',`<div class="res">${resSummary(A.res)}${backupBlock(A.res)}</div>${resTable(A.res)}`)}
   ${fold('fleet','全部账号',cnt(A.accounts.length),`<div class="fold-tools"><div class="search-sm">${ic('search')}<input class="input sm" data-search="fleet" value="${esc(ui.q_fleet||'')}" placeholder="搜索邮箱 / 主人" aria-label="搜索账号"></div></div><div id="pg-fleet">${pagedList('fleet')}</div>`)}
   ${fold('rules','大锅饭规则',`<span class="fold-sum">${r.dailyBase} + ${r.dailyPer}/号 · ${r.keyConc} 并发 · ${r.keyRpm}/min · 单号 ${r.accConc} · 保留 ${reserveText(r.reserve)}</span>`,`
     <div class="rule"><h3>大锅饭 Key 总并发 / 限速</h3><div class="hstack"><input class="input" type="number" min="1" max="200" data-rule="keyConc" value="${r.keyConc}" aria-label="大锅饭 Key 总并发"><small>并发</small><input class="input" type="number" min="1" max="10000" data-rule="keyRpm" value="${r.keyRpm}" aria-label="大锅饭 Key 总限速"><small>次/分</small></div></div>

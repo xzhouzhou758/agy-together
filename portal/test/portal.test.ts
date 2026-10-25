@@ -837,6 +837,10 @@ test('external upstream (Tools): takes turns with shared accounts, catches CPA 4
     await alice.req('DELETE', '/api/admin/upstreams/' + up.data.id);
     tools.close();
   }
+  // 站长兜底公益池 stats on the 大锅饭 page: everyone sees the totals
+  const bk = (await bob.req('GET', '/api/pool/resources')).data.backup;
+  assert.ok(bk.today.n >= 1 && bk.total.n >= bk.today.n && bk.today.t > 0 && bk.since, JSON.stringify(bk));
+  assert.ok(bk.share > 0 && bk.share <= 100);
 });
 
 test('model allowlists (大锅饭 / upstream) and per-account reserve', async () => {
