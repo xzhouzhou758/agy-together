@@ -143,6 +143,20 @@ export function parseTrace(v: string | string[] | undefined): { index: string; r
   return { index: parts[1], requestId: parts.slice(2).join('-') };
 }
 
+// ---------- client errors from upstream: say what went wrong, in Chinese, and keep it in the log ----------
+const PREFILL = /ending with a model turn/i;
+const PREFILL_MSG = '请求的最后一条是 AI 消息（预填充 / prefill），Gemini 不支持。请在客户端关掉「助手预填充」，或让最后一条是用户消息';
+/** Upstream error body -> its message (OpenAI / Anthropic / Gemini error JSON, possibly wrapped in an array). */
+export function errMessage(text: string): string {
+  try {
+    const j = JSON.parse(text);
+    const e = (Array.isArray(j) ? j[0] : j)?.error;
+    const m = typeof e === 'string' ? e : e?.message;
+    if (m) return String(m).replace(/\s+/g, ' ').slice(0, 200);
+  } catch {}
+  return text.replace(/\s+/g, ' ').slice(0, 200);
+}
+
 // ---------- model list: only what the key's accounts support ----------
 const modelCache = new Map<string, { at: number; ids: Set<string> }>();
 async function supportedModels(ids: string[]): Promise<Set<string>> {
@@ -305,6 +319,7 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
 
   // ---- external upstream (Tools): plain reverse proxy with that upstream's key ----
   let cur: http.ClientRequest | null = null;
+  let cpaOK = allowed.length > 0; // may the Google accounts (via CPA) take this request
   const goUp = (u: Upstream) => {
     const sn = usageSniffer();
     const x = (): Extra => ({ authId: upAuthId(u.id), ownerId: u.ownerId, tok: sn.done() });
@@ -312,20 +327,38 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     cur = r;
     r.on('error', () => {
       if (finished) return;
-      if (!res.headersSent && !triedCPA && allowed.length) { markDown(u.id); return goCPA(); }
+      if (!res.headersSent && !triedCPA && cpaOK) { markDown(u.id); return goCPA(); }
       if (!res.headersSent) fail(502, 'upstream_error', `上游 ${u.name} 不可达`);
       else res.destroy();
       finish(502, 'upstream', `${u.name} 不可达`, x());
     });
     r.on('response', (ur) => {
       const status = ur.statusCode || 502;
-      if ((status === 429 || status >= 500) && !triedCPA && allowed.length) {
+      if ((status === 429 || status >= 500) && !triedCPA && cpaOK) {
         // Tools is full or broken: let the Google accounts take this one
         ur.resume();
         if (status >= 500) markDown(u.id);
         return goCPA();
       }
       const tHead = now() - ctx.start;
+      if (status >= 400 && status < 500 && status !== 429) {
+        // small error body: explain the common ones, keep the message in the traffic log
+        const ch: Buffer[] = [];
+        let size = 0;
+        ur.on('data', (c: Buffer) => { if (size < 65536) { ch.push(c); size += c.length; } });
+        ur.on('error', () => finish(502, 'upstream', `${u.name} 连接中断`, x()));
+        ur.on('end', () => {
+          ctx.ttfb ??= tHead;
+          const b = Buffer.concat(ch), text = b.toString('utf8');
+          if (PREFILL.test(text)) { fail(400, 'invalid_request', PREFILL_MSG); return finish(400, 'client', '预填充（最后一条是 AI 消息）不支持', x()); }
+          const out: Record<string, string | string[]> = {};
+          for (const [k, v] of Object.entries(ur.headers)) if (v !== undefined && !RESP_DROP.has(k.toLowerCase()) && k.toLowerCase() !== 'content-length') out[k] = v;
+          out['content-length'] = String(b.length);
+          if (!res.headersSent) { res.writeHead(status, out); res.end(b); }
+          finish(status, 'client', `${u.name} 返回 ${status}：${errMessage(text)}`, x());
+        });
+        return;
+      }
       const out: Record<string, string | string[]> = {};
       for (const [k, v] of Object.entries(ur.headers)) if (v !== undefined && !RESP_DROP.has(k.toLowerCase())) out[k] = v;
       res.writeHead(status, out);
@@ -343,11 +376,15 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   };
   let rrPick: Upstream | null = null;
   if (ups.length) {
+    // a model only the upstreams serve (e.g. Tools' *-tiered names) never goes to CPA, which would just refuse it
+    const sup = allowed.length && model ? await supportedModels(allowed) : null;
+    if (sup && sup.size && !sup.has(model)) cpaOK = false;
     // take turns: the upstreams count as accounts next to the allowed Google ones
     const live = ups.filter((u) => !isDown(u.id));
-    const n = allowed.length + live.length, i = n ? rr++ % n : 0;
-    if (i >= allowed.length && live.length) rrPick = live[i - allowed.length];
-    else if (!allowed.length) rrPick = ups[0]; // nothing else to try
+    const g = cpaOK ? allowed.length : 0;
+    const n = g + live.length, i = n ? rr++ % n : 0;
+    if (i >= g && live.length) rrPick = live[i - g];
+    else if (!g) rrPick = ups[0]; // nothing else to try
   }
   res.on('close', () => {
     if (!res.writableFinished) {
@@ -443,12 +480,13 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
           finish(w.status, w.result, w.message);
           return;
         }
+        if (isGen && PREFILL.test(text)) { fail(400, 'invalid_request', PREFILL_MSG); return finish(400, 'client', '预填充（最后一条是 AI 消息）不支持'); }
         const out: Record<string, string | string[]> = {};
         for (const [k, v] of Object.entries(ur.headers)) if (v !== undefined && !RESP_DROP.has(k.toLowerCase()) && k.toLowerCase() !== 'content-length') out[k] = v;
         const b = Buffer.concat(chunks);
         out['content-length'] = String(b.length);
         if (!res.headersSent) { res.writeHead(status, out); res.end(b); }
-        finish(status, status < 500 ? 'client' : 'upstream', null);
+        finish(status, status < 500 ? 'client' : 'upstream', isGen ? errMessage(text) : null);
       });
       return;
     }

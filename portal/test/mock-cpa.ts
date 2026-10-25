@@ -201,6 +201,8 @@ export function startMockCPA(opts: { apiKey: string; mgmtKey: string }) {
     const h: Record<string, string> = st.dropTrace ? {} : { 'X-CPA-TRACE-ID': trace };
     // like CPA: an unknown model never reaches the scheduler
     if (model && !MODELS.includes(model)) return json(res, 502, { error: { message: 'unknown provider for model ' + model, type: 'invalid_request_error', code: 'model_not_found' } });
+    // like Gemini: a conversation ending with the assistant (prefill) is refused
+    if (Array.isArray(j.messages) && j.messages.at(-1)?.role === 'assistant') return json(res, 400, [{ error: { code: 400, message: 'Requests ending with a model turn are not supported.', status: 'INVALID_ARGUMENT' } }], h);
     const base = { request_id: rid, auth_index: pick.index, alias: model, model, endpoint: p, ttft_ms: 0, latency_ms: 0, reasoning_effort: '' };
     if (st.claude429 && model.includes('claude')) {
       st.queue.push({ ...base, failed: true, fail: { status_code: 429, body: 'UPSTREAM-SECRET-BODY quota exhausted' }, tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });

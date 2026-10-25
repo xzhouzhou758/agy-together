@@ -820,6 +820,10 @@ test('external upstream (Tools): takes turns with shared accounts, catches CPA 4
     for (let i = 0; i < 6; i++) await gen(K.carol);
     assert.equal(seen.filter((x, i) => i >= nA && x.path !== '/v1/models').length, 0);
     assert.deepEqual((await alice.req('GET', '/api/admin/upstreams')).data[0].allow, ['tools-only-model']);
+    // a model only Tools serves goes straight to Tools, never through CPA
+    const cpaSeen = mock.st.seenAllow.length;
+    for (let i = 0; i < 4; i++) assert.equal((await gen(K.carol, { model: 'tools-only-model' })).served, 'tools');
+    assert.equal(mock.st.seenAllow.length, cpaSeen);
     // shared keys list Tools-only models; private keys do not
     const ids = (await (await fetch(base + '/v1/models', { headers: { Authorization: 'Bearer ' + K.carol } })).json()).data.map((m: any) => m.id);
     assert.ok(ids.includes('tools-only-model'), ids.join());
@@ -837,6 +841,13 @@ test('external upstream (Tools): takes turns with shared accounts, catches CPA 4
     await alice.req('DELETE', '/api/admin/upstreams/' + up.data.id);
     tools.close();
   }
+  // prefill (last message from the assistant): a clear Chinese message, and the reason is logged
+  const pf = await gen(K.bob, { body: { model: 'gemini-3-flash', messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: '好的，' }] } });
+  assert.equal(pf.status, 400);
+  assert.match(pf.text, /预填充/);
+  await sleep(50);
+  const pr = (await bob.req('GET', '/api/traffic?size=5')).data.rows[0];
+  assert.match(JSON.stringify(pr), /预填充/);
   // 站长兜底公益池 stats on the 大锅饭 page: everyone sees the totals
   const bk = (await bob.req('GET', '/api/pool/resources')).data.backup;
   assert.ok(bk.today.n >= 1 && bk.total.n >= bk.today.n && bk.today.t > 0 && bk.since, JSON.stringify(bk));
