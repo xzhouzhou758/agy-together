@@ -841,6 +841,8 @@ test('external upstream (Tools): takes turns with shared accounts, catches CPA 4
   const bk = (await bob.req('GET', '/api/pool/resources')).data.backup;
   assert.ok(bk.today.n >= 1 && bk.total.n >= bk.today.n && bk.today.t > 0 && bk.since, JSON.stringify(bk));
   assert.ok(bk.share > 0 && bk.share <= 100);
+  const sh = (await bob.req('GET', '/api/pool/resources')).data.shared; // shared Google accounts, upstreams excluded
+  assert.ok(sh.total.n >= 1 && sh.total.t > 0 && sh.since, JSON.stringify(sh));
 });
 
 test('model allowlists (大锅饭 / upstream) and per-account reserve', async () => {

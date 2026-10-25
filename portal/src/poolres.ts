@@ -93,15 +93,22 @@ export async function poolResources(full: boolean) {
   }
   for (const f of FAMS) fam[f].full = Math.round(fam[f].full * 10) / 10;
   const ups = enabledUpstreams().length;
-  return { at: now(), oldest, counts, fam, upstreams: ups, backup: backupUse(tok), ...(full ? { accounts: list } : {}) };
+  return { at: now(), oldest, counts, fam, upstreams: ups, backup: backupUse(tok), shared: sharedUse(tok), ...(full ? { accounts: list } : {}) };
 }
 
+function used(tok: string, where: string, since: number) {
+  const r = one(`SELECT COUNT(*) AS n, SUM(result = 'ok') AS ok, SUM(${tok}) AS t FROM usage WHERE ${where} AND ts >= ?`, since);
+  return { n: Number(r?.n || 0), ok: Number(r?.ok || 0), t: Number(r?.t || 0) };
+}
+/** 大锅饭号池: what the shared Google accounts served for 大锅饭 keys (the backup upstreams excluded). */
+function sharedUse(tok: string) {
+  const w = "pool = 'shared' AND auth_id IS NOT NULL AND auth_id NOT LIKE 'up:%'";
+  return { today: used(tok, w, dayStart()), week: used(tok, w, now() - 7 * 86400e3), total: used(tok, w, 0),
+    since: Number(one(`SELECT MIN(ts) AS t FROM usage WHERE ${w}`)?.t || 0) || null };
+}
 /** 站长兜底公益池: what the admin's external upstreams (auth_id up:N) served for the 大锅饭. */
 function backupUse(tok: string) {
-  const q = (since: number) => {
-    const r = one(`SELECT COUNT(*) AS n, SUM(result = 'ok') AS ok, SUM(${tok}) AS t FROM usage WHERE auth_id LIKE 'up:%' AND ts >= ?`, since);
-    return { n: Number(r?.n || 0), ok: Number(r?.ok || 0), t: Number(r?.t || 0) };
-  };
+  const q = (since: number) => used(tok, "auth_id LIKE 'up:%'", since);
   const day = dayStart();
   const pool = Number(one(`SELECT COUNT(*) AS n FROM usage WHERE pool = 'shared' AND auth_id IS NOT NULL AND ts >= ?`, day)?.n || 0);
   const today = q(day);
