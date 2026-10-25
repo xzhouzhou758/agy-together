@@ -258,6 +258,10 @@ function pill(fam,label,win,frac,reset,used){
     <div class="qt-c"><span>${esc(win)}</span><span>${esc(short(reset))}</span></div></div>`;
 }
 function qPills(a){
+  const old=a.quotaAt&&Date.now()-a.quotaAt>30*6e4?`<small class="q-stale" title="额度数据不是实时的，点刷新额度拿最新的">${ago(a.quotaAt)}的数据</small>`:'';
+  return qTiles(a)+old;
+}
+function qTiles(a){
   const W=a.quota?.windows,F=a.tokens?.fam||{};
   // Gemini 4 Argon has its own upstream quota (per-model quotaInfo); the summary windows don't include it
   const ar=a.quota?.argon==='off'?null:(a.quota?.groups||[]).find(g=>g[0]==='ar'),arT=a.quota?.argon==='off'?`<div class="qt wide off" title="上游把这个号的 Argon 标成了 disabled，用不了"><div class="qt-a">${GEM}<b>Gemini 4 Argon</b><span class="qt-p">未开通</span></div></div>`:ar?pill('argon','Gemini 4 Argon',ar[2]&&Date.parse(ar[2])-Date.now()<6*3600e3?'5H':'Weekly',ar[1],ar[2],F.argon?.week??null).replace('class="qt ','class="qt wide '):'';

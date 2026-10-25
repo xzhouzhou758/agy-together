@@ -145,7 +145,9 @@ export function belowReserve(row: any, model: string): boolean {
 export function startQuotaRefresher() {
   if (config.quotaRefreshMinutes <= 0) return;
   const tick = async () => {
-    const rows = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE a.shared = 1 AND u.active = 1 AND (a.quota_at IS NULL OR a.quota_at < ?)`,
+    // every owned account (shared or private), the ones used since their last read first
+    const rows = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.active = 1 AND (a.quota_at IS NULL OR a.quota_at < ?)
+      ORDER BY EXISTS(SELECT 1 FROM usage x WHERE x.auth_id = a.auth_id AND x.ts > COALESCE(a.quota_at, 0)) DESC, a.quota_at`,
       now() - config.quotaRefreshMinutes * 60000 + 5000);
     const c = await cpa.creds(30000).catch(() => null);
     for (const r of rows) {

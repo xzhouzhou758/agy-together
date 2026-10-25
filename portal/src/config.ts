@@ -41,7 +41,7 @@ export const config = {
   // Quota (upstream calls go through CPA /requests/api-call)
   quotaBaseURL: str('QUOTA_BASE_URL', 'https://daily-cloudcode-pa.googleapis.com').replace(/\/+$/, ''),
   quotaUserAgent: str('QUOTA_USER_AGENT', 'antigravity/hub/2.26.0 (aidev_client; os_type=darwin; arch=arm64)'),
-  quotaRefreshMinutes: int('QUOTA_REFRESH_MINUTES', 15), // background refresh of shared accounts; 0 = off
+  quotaRefreshMinutes: int('QUOTA_REFRESH_MINUTES', 15), // background refresh of every owned account; 0 = off
 
   // Discord
   discordClientID: str('DISCORD_CLIENT_ID'),
