@@ -837,30 +837,38 @@ function render(){
   else{try{main=views[page]();}catch(e){console.error(e);main=pageError();}}
   root.innerHTML=`<div class="app">
     <aside class="side glass" aria-label="侧边栏">
-      <div class="brand"><span class="logo">A</span><span>AGY Together</span></div>
+      <div class="brand big">${logoImg()}<span class="bt"><b>AGY</b><small>Together</small></span></div>
       <nav class="nav" aria-label="主导航">${navPages().map(([id,icon,long,short])=>`<button type="button" data-act="goto:${id}" aria-current="${page===id?'page':'false'}" aria-label="${long}">${ic(icon)}<span class="long">${long}</span><span class="short" aria-hidden="true">${short}</span></button>`).join('')}</nav>
       <button class="side-user" data-act="goto:profile" aria-label="个人中心"><span class="avatar">${esc((me.name||'?')[0])}</span><span class="uname"><b>${esc(me.name)}</b><small>@${esc(me.handle)}</small></span></button>
     </aside>
     <div class="content"><div class="wrap">
       <header class="top glass">
-        <div class="top-left"><div class="brand"><span class="logo" style="width:28px;height:28px;font-size:14px;border-radius:9px">A</span></div>${me.role==='admin'?'<span class="chip warn">管理员</span>':''}</div>
+        <div class="top-left"><div class="brand">${logoImg('width:36px;height:36px;border-radius:11px;font-size:17px')}</div>${me.role==='admin'?'<span class="chip warn">管理员</span>':''}</div>
         <div class="top-right"><button class="btn sm ghost icon bell ${ANN.unread?'on':''}" data-act="anns" aria-label="公告${ANN.unread?`（${ANN.unread} 条未读）`:''}" title="公告">${ic('bell')}</button><button class="btn sm ghost icon" data-act="reload" aria-label="刷新">${ic('refresh')}</button></div>
       </header>
       <main id="main" tabindex="-1">${main}</main>
+      <footer class="credit">Made with 🦴 by 聪明绝顶二狗子</footer>
     </div></div>
   </div>`;
 }
 
+const logoImg=(st='')=>cfg.logo?`<img class="logo" src="logo.jpg" alt=""${st?` style="${st}"`:''}>`:`<span class="logo"${st?` style="${st}"`:''}>A</span>`;
 function loginView(){
+  const sso=cfg.setup&&!cfg.devLogin?`<a class="btn primary lg-btn" href="setup">${ic('shield')}初始化</a>`:cfg.discord?`<button class="btn discord lg-btn" data-act="signin">${DISCORD}使用 Discord 登录</button>`:'';
   return `<div class="login">
     <section class="login-card glass">
-      <span class="logo">A</span>
-      <h1>AGY Together</h1>
-      <p class="lead">自己的账号，一起用好。</p>
-      ${cfg.setup&&!cfg.devLogin?`<a class="btn primary" href="setup">${ic('shield')}初始化</a>`:cfg.discord?`<button class="btn discord" data-act="signin">${DISCORD}使用 Discord 登录</button>`:''}
-      <form class="pw" id="pwform" autocomplete="on"><input class="input" id="f-user" name="username" placeholder="用户名" autocomplete="username" autocapitalize="none" spellcheck="false"><input class="input" id="f-pass" name="password" type="password" placeholder="密码" autocomplete="current-password"><button class="btn" type="submit">登录</button></form>
+      <div class="lg-logo">${cfg.logo?'<img src="logo.jpg" alt="">':'<span class="logo">A</span>'}</div>
+      <h1 class="lg-title"><b>AGY</b><span>Together</span></h1>
+      ${sso}
+      ${sso?'<div class="lg-or"><span>或使用账号密码</span></div>':''}
+      <form class="lg-form" id="pwform" autocomplete="on">
+        <label class="lg-f"><span>用户名</span><input class="input" id="f-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+        <label class="lg-f"><span>密码</span><input class="input" id="f-pass" name="password" type="password" autocomplete="current-password"></label>
+        <button class="btn ${sso?'':'primary'} lg-btn" type="submit">登录</button>
+      </form>
       ${cfg.devLogin?`<div class="dev"><input class="input mono" id="f-devid" placeholder="Discord ID" inputmode="numeric"><input class="input" id="f-devname" placeholder="名称"><button class="btn" data-act="devlogin">Dev</button></div>`:''}
     </section>
+    <footer class="credit">Made with 🦴 by 聪明绝顶二狗子</footer>
   </div>`;
 }
 

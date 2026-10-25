@@ -1,4 +1,5 @@
 // JSON API for the web UI. Every handler does its own server-side authorization.
+import { existsSync } from 'node:fs';
 import { poolResources } from './poolres.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from './config.ts';
@@ -109,10 +110,13 @@ function anonLabel(authId: string): string {
 }
 
 // ---------- public ----------
+// a site logo is optional: drop public/logo.jpg (plus favicon.png / apple-touch-icon.png) in to replace the letter mark
+const HAS_LOGO = existsSync(new URL('../public/logo.jpg', import.meta.url));
 route('GET', '/api/config', (req) => ({
   devLogin: config.devLogin,
   discord: site.discordReady(),
   setup: !site.setupDone(),
+  logo: HAS_LOGO,
   signedIn: !!currentUser(req),
 }));
 

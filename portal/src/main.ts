@@ -30,11 +30,11 @@ const SEC = {
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
 };
-const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg' };
 
 // static files are small: load once
 const files = new Map<string, Buffer>();
-for (const f of ['index.html', 'app.js', 'app.css', 'setup.html', 'setup.js', 'theme.js', 'icons/gemini.svg', 'icons/claude.svg', 'icons/openai.svg', 'icons/openai-dark.svg']) {
+for (const f of ['index.html', 'app.js', 'app.css', 'setup.html', 'setup.js', 'theme.js', 'icons/gemini.svg', 'icons/claude.svg', 'icons/openai.svg', 'icons/openai-dark.svg', 'favicon.png', 'apple-touch-icon.png', 'logo.jpg']) {
   const p = join(PUBLIC, f);
   if (existsSync(p)) files.set(f, readFileSync(p));
 }
@@ -78,7 +78,7 @@ const server = http.createServer(async (req, res) => {
       if (setupDone()) throw new HttpError(404, 'not_found');
       return sendStatic(res, 'setup.html');
     }
-    if (p === '/app.js' || p === '/app.css' || p === '/setup.js' || p === '/theme.js' || (p.startsWith('/icons/') && files.has(p.slice(1)))) return sendStatic(res, p.slice(1));
+    if (p === '/app.js' || p === '/app.css' || p === '/setup.js' || p === '/theme.js' || (p.startsWith('/icons/') && files.has(p.slice(1))) || p === '/favicon.png' || p === '/apple-touch-icon.png' || p === '/logo.jpg') return sendStatic(res, p.slice(1));
     if (p === '/' || p === '/index.html') return sendStatic(res, 'index.html');
     throw new HttpError(404, 'not_found');
   } catch (e) {
