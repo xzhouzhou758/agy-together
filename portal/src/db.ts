@@ -148,6 +148,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS bot_alerts (
   since INTEGER NOT NULL,
   notified_at INTEGER
 )`);
+addCol('bot_alerts', 'cleared_at', 'INTEGER'); // problem not seen since then (a flap inside CLEAR_GRACE continues the episode)
+addCol('bot_alerts', 'closed', 'INTEGER');     // episode over; the row stays so a relapse within REPING doesn't ping again
 // Announcements (admin-written, shown to every user; users.ann_seen = newest id the user has seen).
 db.exec(`CREATE TABLE IF NOT EXISTS announcements (
   id INTEGER PRIMARY KEY,

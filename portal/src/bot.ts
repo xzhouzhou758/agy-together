@@ -1,6 +1,8 @@
 // Discord bot, without a gateway connection:
 //  - account health watch: a credential that needs verification / lost its login / looks banned gets
-//    an @owner message in the bot channel (once per problem, and once when it recovers);
+//    an @owner message in the bot channel (once per problem, at most once a day per account, and once when it
+//    recovers). CPA only reports a 403 while the credential cools down, so a "Verify your account" seen here is
+//    handed to autodisable: the account stays off (and reported) until a probe shows it works again;
 //  - slash commands (/我的号 answered privately, /今日榜) arrive as signed HTTP POSTs at <base>/discord/interactions;
 //  - a daily leaderboard is posted to the bot channel at the configured hour.
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -11,9 +13,12 @@ import * as cpa from './cpa.ts';
 import * as site from './site.ts';
 import { storedQuota } from './quota.ts';
 import { dailyWith } from './limits.ts';
+import { forbiddenReason, disableForbidden } from './autodisable.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const GRACE = 10 * 60e3;           // a problem must persist this long before anyone is pinged
+const REPING = 24 * 3600e3;        // the same account pings its owner at most once a day, even if it flaps
+const CLEAR_GRACE = 30 * 60e3;     // a problem must be gone this long before it counts as recovered
 
 // ---------- account problems ----------
 export type Problem = { kind: 'verify' | 'auth' | 'banned' | 'error'; label: string; hint: string };
@@ -220,26 +225,38 @@ export async function checkAccounts(): Promise<void> {
     if (!cred) continue;
     seen.add(r.auth_id);
     const p = r.owner_active ? accountProblem(r, cred) : null;
+    // a 403 (verify / banned) only shows while CPA cools the credential down: keep it off until a probe says it works
+    if (p && (p.kind === 'verify' || p.kind === 'banned') && r.auto_disabled_at == null && !cred.disabled) {
+      const why = forbiddenReason(r, cred);
+      if (why) await disableForbidden(cred, why).catch(() => {});
+    }
     const st = one('SELECT * FROM bot_alerts WHERE auth_id = ?', r.auth_id);
     const a = { owner_id: r.owner_id, owner: { discord_id: r.discord_id, name: r.owner_name }, auth_id: r.auth_id, email: maskEmail(cred.email || r.email) };
     if (!p) {
-      if (st) {
-        run('DELETE FROM bot_alerts WHERE auth_id = ?', r.auth_id);
-        if (st.notified_at) alerts.push({ ...a, recovered: true });
-      }
+      if (!st || st.closed) continue;
+      if (st.cleared_at == null) { run('UPDATE bot_alerts SET cleared_at = ? WHERE auth_id = ?', t, r.auth_id); continue; }
+      if (t - st.cleared_at < CLEAR_GRACE) continue;
+      run('UPDATE bot_alerts SET closed = 1 WHERE auth_id = ?', r.auth_id);
+      if (st.notified_at && st.notified_at >= st.since) alerts.push({ ...a, recovered: true });
       continue;
     }
-    if (!st || st.kind !== p.kind) {
-      run('INSERT INTO bot_alerts(auth_id, kind, since, notified_at) VALUES(?,?,?,NULL) ON CONFLICT(auth_id) DO UPDATE SET kind = excluded.kind, since = excluded.since, notified_at = NULL', r.auth_id, p.kind, t);
+    if (st && !st.closed && st.kind === p.kind) {
+      if (st.cleared_at != null) run('UPDATE bot_alerts SET cleared_at = NULL WHERE auth_id = ?', r.auth_id); // a flap: same episode
+    } else {
+      // new episode; notified_at is kept so a relapse soon after a ping stays quiet
+      run('INSERT INTO bot_alerts(auth_id, kind, since, notified_at, cleared_at, closed) VALUES(?,?,?,NULL,NULL,0) ON CONFLICT(auth_id) DO UPDATE SET kind = excluded.kind, since = excluded.since, cleared_at = NULL, closed = 0', r.auth_id, p.kind, t);
       continue;
     }
-    if (st.notified_at || t - st.since < GRACE) continue; // one ping per problem
+    if (t - st.since < GRACE) continue;
+    if (st.notified_at && (st.notified_at >= st.since || t - st.notified_at < REPING)) continue;
     alerts.push({ ...a, label: p.label, hint: p.hint });
   }
   for (const m of alertPosts(alerts)) {
     if (await post(m.content, m.mention)) for (const id of m.authIds) run('UPDATE bot_alerts SET notified_at = ? WHERE auth_id = ?', t, id);
   }
-  for (const s of all('SELECT auth_id FROM bot_alerts')) if (!seen.has(s.auth_id)) run('DELETE FROM bot_alerts WHERE auth_id = ?', s.auth_id);
+  for (const s of all('SELECT auth_id, cleared_at, closed FROM bot_alerts')) {
+    if (!seen.has(s.auth_id) || (s.closed && t - s.cleared_at > 7 * 86400e3)) run('DELETE FROM bot_alerts WHERE auth_id = ?', s.auth_id);
+  }
 }
 
 // ---------- leaderboard ----------

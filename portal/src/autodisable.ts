@@ -55,6 +55,15 @@ async function probe(cred: cpa.Cred): Promise<{ ok: boolean | null; reason?: str
   return { ok: null };
 }
 
+/** Turn a 403 account off now (the bot saw it between sweeps); the regular probe turns it back on once it works. */
+export async function disableForbidden(cred: cpa.Cred, reason: string): Promise<void> {
+  const row = one('SELECT auto_disabled_at FROM accounts WHERE auth_id = ?', cred.id);
+  if (!row || row.auto_disabled_at != null || cred.disabled) return;
+  await cpa.setDisabled(cred.id, true);
+  run('UPDATE accounts SET auto_disabled_at = ?, auto_disabled_reason = ? WHERE auth_id = ?', now(), reason, cred.id);
+  console.log('[autodisable] disabled', cred.id, reason);
+}
+
 const lastProbe = new Map<string, number>();
 let running = false;
 

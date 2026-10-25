@@ -77,3 +77,50 @@ test('alerts: grouped per owner across one run', () => {
   assert.deepEqual(b.authIds, ['b1']);
   assert.match(b.content, /\*\*bob\*\*/);
 });
+
+test('account watch: a flapping "Verify your account" pings once, turns the account off, no recovery spam', async () => {
+  const { run, setSetting } = await import('../src/db.ts');
+  const { checkAccounts } = await import('../src/bot.ts');
+  const cpa = await import('../src/cpa.ts');
+  setSetting('bot_channel_id', 'chan');
+  setSetting('discord_bot_token', 'bot-token');
+  run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('111', 'owner', 'owner', 'user', 0)");
+  run("INSERT INTO accounts(auth_id, email, owner_id, shared, created_at) VALUES('acc.json', 'flappy@gmail.com', (SELECT id FROM users WHERE discord_id = '111'), 1, 0)");
+  const st = { status: 'error', message: '403 {"error":{"code":403,"message":"Verify your account to continue.","status":"PERMISSION_DENIED"}}', disabled: false };
+  const posts: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    const u = String(url);
+    const j = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (u.includes('discord.com')) { posts.push(JSON.parse(init.body).content); return j({ id: '1' }); }
+    if (u.includes('/credentials/status')) { st.disabled = JSON.parse(init.body).disabled; return j({ ok: true }); }
+    if (u.includes('/credentials')) return j({ files: [{ id: 'acc.json', name: 'acc.json', auth_index: 'a1', type: 'antigravity', email: 'flappy@gmail.com', disabled: st.disabled,
+      status: st.disabled ? 'disabled' : st.status, status_message: st.disabled ? '' : st.status === 'error' ? st.message : '', unavailable: false }] });
+    return real(url, init);
+  }) as typeof fetch;
+  const age = (ms: number) => run('UPDATE bot_alerts SET since = since - ?, notified_at = notified_at - ?, cleared_at = cleared_at - ?', ms, ms, ms);
+  const tick = async () => { await cpa.refreshCreds(); await checkAccounts(); };
+  try {
+    await tick();                       // seen: auto-disabled right away, grace starts
+    assert.equal(st.disabled, true);
+    assert.equal(posts.length, 0);
+    age(11 * 60e3); await tick();       // after the grace: one ping
+    assert.equal(posts.length, 1);
+    assert.match(posts[0], /需要验证/);
+    for (let i = 0; i < 3; i++) { age(60 * 60e3); await tick(); }
+    assert.equal(posts.length, 1);      // stays off and reported, no repeats
+    // someone re-enables it by hand while it still needs verification: CPA cools it down again -> no new ping today
+    run('UPDATE accounts SET auto_disabled_at = NULL'); st.disabled = false; st.status = 'active'; await tick();
+    st.status = 'error'; await tick(); age(11 * 60e3); await tick();
+    assert.equal(posts.length, 1, posts.join('\n---\n'));
+    // really fixed: gone for 30 minutes -> one ✅ (no mention)
+    run('UPDATE accounts SET auto_disabled_at = NULL'); st.disabled = false; st.status = 'active';
+    await tick(); age(10 * 60e3); await tick();
+    assert.equal(posts.length, 1);
+    age(31 * 60e3); await tick();
+    assert.equal(posts.length, 2);
+    assert.doesNotMatch(posts[1], /<@/);
+    age(60 * 60e3); await tick();
+    assert.equal(posts.length, 2);
+  } finally { globalThis.fetch = real; }
+});
