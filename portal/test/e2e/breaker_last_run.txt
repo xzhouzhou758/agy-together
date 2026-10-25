@@ -1,0 +1,2 @@
+PASS plugin bypassed -> foreign account detected, response blocked, gateway locked :: responses=[(200, 'a'), (200, 'b'), (502, None)] upstream_hits=['a', 'b', 'c'] breaker={'tripped': True, 'at': 1792832976273, 'reason': 'allow_violation'} alarm=allow_violation next_request=503
+PASS breaker reset by admin -> traffic resumes :: 200 b

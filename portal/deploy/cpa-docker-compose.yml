@@ -1,0 +1,16 @@
+services:
+  cli-proxy-api:
+    image: eceasy/cli-proxy-api:v8.0.40
+    container_name: cli-proxy-api
+    # Host networking + server.host 127.0.0.1: CPA is reachable from this machine only.
+    network_mode: host
+    volumes:
+      - ./config.yaml:/CLIProxyAPI/config.yaml
+      - ./auths:/root/.cli-proxy-api
+      - ./logs:/CLIProxyAPI/logs
+      - ./plugins:/CLIProxyAPI/plugins
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

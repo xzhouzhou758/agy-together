@@ -1,0 +1,18 @@
+services:
+  agy-pot:
+    build: ./app
+    image: agy-pot:local
+    container_name: agy-pot
+    # Host networking so the portal can bind 127.0.0.1 only and reach CPA on 127.0.0.1:8317.
+    network_mode: host
+    env_file: ./portal.env
+    environment:
+      HOST: 127.0.0.1
+      PORT: "8320"
+    volumes:
+      - ./data:/app/data
+    mem_limit: 160m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

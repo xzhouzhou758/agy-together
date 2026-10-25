@@ -1,0 +1,67 @@
+PASS plain allow=[a,b] x6 :: status=[200] served=['a', 'b', 'a', 'b', 'a', 'b'] upstream_hits=['a', 'b'] trace_matches=True
+PASS stream allow=[c] x3 :: status=[200] served=['c', 'c', 'c'] upstream_hits=['c'] trace_matches=True
+PASS stream allow=[a,b,d] x6 :: status=[200] served=['d', 'a', 'b', 'd', 'a', 'b'] upstream_hits=['a', 'b', 'd'] trace_matches=True
+PASS size-1 allow=[d] x4 :: status=[200] served=['d', 'd', 'd', 'd'] upstream_hits=['d'] trace_matches=True
+PASS retry non-stream a=500,b=429 allow=[a,b,c] :: status=[200] served=['c'] upstream_hits=['a', 'b', 'c'] trace_matches=True
+      upstream sequence: ['a:500', 'b:429', 'c:200']
+PASS retry stream a=500,b=429 allow=[a,b,c] :: status=[200] served=['c'] upstream_hits=['a', 'b', 'c'] trace_matches=True
+      upstream sequence: ['a:500', 'b:429', 'c:200']
+PASS retry exhausts list non-stream allow=[a,b] (both fail) :: status=[503] served=['b'] upstream_hits=['a', 'b'] trace_matches=True err={"error":{"code":503,"message":"mock forced 503 for tok-b","status":"INTERNAL"}}
+      upstream sequence: ['a:503', 'b:503', 'a:503', 'b:503', 'a:503', 'b:503', 'a:503', 'b:503']
+PASS retry exhausts list stream allow=[a,b] (both fail) :: status=[503] served=['b'] upstream_hits=['a', 'b'] trace_matches=True err={"error":{"code":503,"message":"mock forced 503 for tok-b","status":"INTERNAL"}}
+      upstream sequence: ['a:503', 'b:503', 'a:503', 'b:503', 'a:503', 'b:503', 'a:503', 'b:503']
+PASS retry size-1 allow=[a] fails :: status=[500] served=['a'] upstream_hits=['a'] trace_matches=True err={"error":{"code":500,"message":"mock forced 500 for tok-a","status":"INTERNAL"}}
+      upstream sequence: ['a:500', 'a:500', 'a:500', 'a:500']
+PASS model claude allow=[e,a] :: status=[200] served=['a', 'a', 'a'] upstream_hits=['a'] trace_matches=True
+PASS model claude allow=[e] -> reject :: status=[503] served=[None] upstream_hits=[] trace_matches=True err={"error":{"message":"auth_unavailable: no allowed account is available for this request (providers=antigravity, model=cl
+PASS model gemini allow=[e] :: status=[200] served=['e', 'e'] upstream_hits=['e'] trace_matches=True
+PASS model alternating allow=[b,c] :: status=[200] served=['c', 'b', 'c'] upstream_hits=['b', 'c'] trace_matches=True
+PASS empty list :: status=[500] served=[None] upstream_hits=[] trace_matches=True err={"error":{"message":"agy_allow_empty: allowed-account list is empty","type":"server_error","code":"internal_server_error
+PASS only commas/spaces :: status=[500] served=[None] upstream_hits=[] trace_matches=True err={"error":{"message":"agy_allow_empty: allowed-account list is empty","type":"server_error","code":"internal_server_error
+PASS nonexistent ids only :: status=[503] served=[None] upstream_hits=[] trace_matches=True err={"error":{"message":"auth_unavailable: no allowed account is available for this request (providers=antigravity, model=ge
+PASS nonexistent + d :: status=[200] served=['d', 'd'] upstream_hits=['d'] trace_matches=True
+PASS header missing -> reject :: status=[500] served=[None] upstream_hits=[] trace_matches=True err={"error":{"message":"agy_allow_missing: request carries no allowed-account list","type":"server_error","code":"internal_
+PASS header duplicated -> reject :: status=[500] served=[None] upstream_hits=[] trace_matches=True err={"error":{"message":"agy_allow_invalid: allowed-account header appears more than once","type":"server_error","code":"int
+PASS header case-insensitive (x-agy-allow) :: status=[200] served=['b'] upstream_hits=['b'] trace_matches=True
+PASS claude /v1/messages allow=[c] :: status=[200] served=['c'] upstream_hits=['c'] trace_matches=True
+PASS claude /v1/messages stream allow=[c] :: status=[200] served=['c'] upstream_hits=['c'] trace_matches=True
+PASS gemini native allow=[d] :: status=[200] served=['d'] upstream_hits=['d'] trace_matches=True
+PASS gemini native stream allow=[d] :: status=[200] served=['d'] upstream_hits=['d'] trace_matches=True
+PASS openai /v1/responses allow=[b] :: status=[200] served=['b'] upstream_hits=['b'] trace_matches=True
+PASS claude messages no header -> reject :: status=[500] served=[None] upstream_hits=[] trace_matches=True err={"type":"error","error":{"type":"api_error","message":"agy_allow_missing: request carries no allowed-account list"}}
+PASS gemini native no header -> reject :: status=[500] served=[None] upstream_hits=[] trace_matches=True err={"error":{"message":"agy_allow_missing: request carries no allowed-account list","type":"server_error","code":"internal_
+PASS count_tokens no header :: status=500 upstream_hits=[] body={"type":"error","error":{"type":"api_error","message":"agy_allow_missing: request carries no allowed-account list"}}
+PASS cooldown: allow=[a] after a got 429 :: first=429 second=503 ({"error":{"message":"auth_unavailable: no allowed account is available for this request (p) third_used=b upstream_hits_after=['tok-b']
+PASS concurrency 24 parallel (ab vs de, mixed stream) :: violations=[] trace_mismatch=0 upstream_hits=['a', 'b', 'd', 'e'] distribution={'a': 6, 'e': 6, 'b': 6, 'd': 6}
+
+SUMMARY
+PASS | plain allow=[a,b] x6
+PASS | stream allow=[c] x3
+PASS | stream allow=[a,b,d] x6
+PASS | size-1 allow=[d] x4
+PASS | retry non-stream a=500,b=429 allow=[a,b,c]
+PASS | retry stream a=500,b=429 allow=[a,b,c]
+PASS | retry exhausts list non-stream allow=[a,b] (both fail)
+PASS | retry exhausts list stream allow=[a,b] (both fail)
+PASS | retry size-1 allow=[a] fails
+PASS | model claude allow=[e,a]
+PASS | model claude allow=[e] -> reject
+PASS | model gemini allow=[e]
+PASS | model alternating allow=[b,c]
+PASS | empty list
+PASS | only commas/spaces
+PASS | nonexistent ids only
+PASS | nonexistent + d
+PASS | header missing -> reject
+PASS | header duplicated -> reject
+PASS | header case-insensitive (x-agy-allow)
+PASS | claude /v1/messages allow=[c]
+PASS | claude /v1/messages stream allow=[c]
+PASS | gemini native allow=[d]
+PASS | gemini native stream allow=[d]
+PASS | openai /v1/responses allow=[b]
+PASS | claude messages no header -> reject
+PASS | gemini native no header -> reject
+PASS | count_tokens no header
+PASS | cooldown: allow=[a] after a got 429
+PASS | concurrency 24 parallel (ab vs de, mixed stream)

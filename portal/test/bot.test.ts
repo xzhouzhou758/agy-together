@@ -1,0 +1,79 @@
+// Unit tests for the bot's account-problem classifier and helpers.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'agy-bot-'));
+const { accountProblem, maskEmail, tk, ownerMessage, alertPosts } = await import('../src/bot.ts');
+
+const cred = (o: Record<string, unknown> = {}) => ({ id: 'x', authIndex: '1', type: 'antigravity', email: 'e@x', disabled: false, status: 'active', statusMessage: '', unavailable: false, nextRetryAfter: null, projectId: '', note: '', updatedAt: '', createdAt: '', ...o }) as any;
+
+test('problems: verify, login expired, banned; quota and cooldown are not problems', () => {
+  assert.equal(accountProblem({}, cred()), null);
+  assert.equal(accountProblem({ quota_err: 'fetchAvailableModels 403: {"error":{"message":"Verify your account to continue."}}' }, cred())?.kind, 'verify');
+  assert.equal(accountProblem({}, cred({ status: 'error', statusMessage: 'invalid_grant: Token has been expired or revoked.' }))?.kind, 'auth');
+  assert.equal(accountProblem({}, cred({ status: 'error', statusMessage: 'This account has been disabled for violating our Terms of Service' }))?.kind, 'banned');
+  assert.equal(accountProblem({}, cred({ status: 'error', statusMessage: '429 RESOURCE_EXHAUSTED quota', nextRetryAfter: new Date(Date.now() + 6e5).toISOString() })), null);
+  assert.equal(accountProblem({}, cred({ status: 'error', statusMessage: 'quota exhausted' })), null);
+  // disabled by the owner: none of our business; suspended with the owner: same
+  assert.equal(accountProblem({ quota_err: 'fetchAvailableModels 403' }, cred({ disabled: true })), null);
+  assert.equal(accountProblem({ suspended: 1, quota_err: 'Verify your account' }, cred()), null);
+  // disabled by the 403 auto-disable: still reported, and says so
+  const p = accountProblem({ auto_disabled_at: 1, auto_disabled_reason: '403 Verify your account to continue' }, cred({ disabled: true }));
+  assert.equal(p?.kind, 'verify');
+  assert.match(p!.label, /自动停用/);
+});
+
+test('helpers', () => {
+  assert.equal(maskEmail('someone673@gmail.com'), 'som***@gmail.com');
+  assert.equal(maskEmail('ab@x.io'), 'a**@x.io');
+  assert.equal(tk(9999), '9999');
+  assert.equal(tk(12345), '1.2 万');
+  assert.equal(tk(3.2e8), '3.20 亿');
+});
+
+test('alerts: one message per owner, one mention, truncated under 2000 chars', () => {
+  const alice = { discord_id: '123456789012345678', name: 'alice' };
+  const items = [{ email: 'abc***@gmail.com', label: '需要验证', hint: '去验证' }, { email: 'def***@gmail.com', label: '登录失效', hint: '重新添加' }];
+  const m = ownerMessage(alice, items);
+  assert.equal(m.match(/<@123456789012345678>/g)?.length, 1);
+  assert.match(m, /2 个号/);
+  assert.equal(m.split('\n').length, 3);
+  assert.match(m, /abc\*\*\*@gmail\.com.*需要验证.*去验证/);
+  assert.match(m, /def\*\*\*@gmail\.com.*登录失效/);
+  // no real Discord id: bold name, no mention
+  const bob = ownerMessage({ discord_id: 'local:bob', name: 'bob' }, items);
+  assert.match(bob, /\*\*bob\*\*/);
+  assert.doesNotMatch(bob, /<@/);
+  assert.notEqual(bob, m);
+  // recoveries combine too
+  assert.match(ownerMessage(alice, items, true), /^✅ <@123456789012345678> 你的 2 个号恢复正常了\n· `abc/);
+  assert.equal(ownerMessage(alice, items.slice(0, 1)), '⚠️ <@123456789012345678> 你的号 `abc***@gmail.com` **需要验证**\n去验证');
+  // truncation
+  const many = Array.from({ length: 40 }, (_, i) => ({ email: `u${i}***@gmail.com`, label: '可能被封', hint: 'Google 停用了这个账号，暂时没法用了'.repeat(2) }));
+  const t = ownerMessage(alice, many);
+  assert.ok(t.length <= 2000, String(t.length));
+  const shown = t.split('\n').filter((l) => l.startsWith('· ')).length;
+  assert.ok(shown > 5 && shown < 40);
+  assert.ok(t.endsWith(`…还有 ${40 - shown} 个号`));
+  assert.match(t, /你的 40 个号/);
+});
+
+test('alerts: grouped per owner across one run', () => {
+  const alice = { discord_id: '123456789012345678', name: 'alice' }, bob = { discord_id: 'local:bob', name: 'bob' };
+  const a = (owner_id: number, owner: object, auth_id: string, recovered = false) => ({ owner_id, owner, auth_id, email: auth_id + '***@x.io', label: '登录失效', hint: '重新添加', recovered });
+  const posts = alertPosts([a(1, alice, 'a1'), a(2, bob, 'b1'), a(1, alice, 'a2'), a(1, alice, 'a3', true)]);
+  assert.equal(posts.length, 3); // alice ✅, alice ⚠️, bob ⚠️
+  const [ok, due, b] = posts;
+  assert.match(ok.content, /^✅/);
+  assert.deepEqual(ok.mention, []);
+  assert.deepEqual(ok.authIds, []);
+  assert.deepEqual(due.mention, ['123456789012345678']);
+  assert.deepEqual(due.authIds, ['a1', 'a2']);
+  assert.equal(due.content.match(/<@/g)?.length, 1);
+  assert.deepEqual(b.mention, []);
+  assert.deepEqual(b.authIds, ['b1']);
+  assert.match(b.content, /\*\*bob\*\*/);
+});

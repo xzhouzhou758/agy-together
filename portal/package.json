@@ -1,0 +1,17 @@
+{
+  "name": "agy-pot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AGY Together portal: Discord login, credential ownership, portal API keys, and a scoped gateway in front of CLIProxyAPI",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "check": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

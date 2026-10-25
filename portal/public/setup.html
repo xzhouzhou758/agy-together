@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'">
+<meta name="referrer" content="no-referrer">
+<title>AGY Together · 初始化</title>
+<script src="theme.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="login">
+  <section class="login-card glass" style="width:560px;text-align:left">
+    <div style="text-align:center"><span class="logo">A</span><h1>初始化</h1></div>
+    <form id="setup" autocomplete="off">
+      <label class="field"><span>Setup Token</span><input class="input mono" name="token" required spellcheck="false"></label>
+      <label class="field"><span>站点地址</span><input class="input mono" name="publicURL" placeholder="https://pot.example.com" required spellcheck="false"></label>
+      <div class="field"><span>Redirect URI</span><div class="code"><span id="redir">—</span><button type="button" class="btn sm ghost" id="copy">复制</button></div></div>
+      <label class="field"><span>Client ID</span><input class="input mono" name="clientId" required inputmode="numeric"></label>
+      <label class="field"><span>Client Secret</span><input class="input mono" name="clientSecret" type="password" required></label>
+      <label class="field"><span>Guild ID</span><input class="input mono" name="guildId" required inputmode="numeric"></label>
+      <label class="field"><span>Role IDs</span><input class="input mono" name="roleIds" placeholder="123,456"></label>
+      <label class="field"><span>Bot Token</span><input class="input mono" name="botToken" type="password"></label>
+      <label class="field"><span>我的 Discord ID</span><input class="input mono" name="adminDiscordId" required inputmode="numeric"></label>
+      <div id="msg"></div>
+      <div class="dialog-foot"><button class="btn primary" type="submit">完成</button></div>
+    </form>
+  </section>
+</div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<script src="setup.js"></script>
+</body>
+</html>

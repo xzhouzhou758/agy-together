@@ -1,0 +1,32 @@
+PASS bob cannot modify alice's account :: status=404
+PASS non-admin cannot read admin API :: status=403
+PASS alice 小锅饭 x8 (stream/non-stream) :: status=[200] served=['a', 'b', 'a', 'b', 'a', 'b', 'a', 'b'] upstream_hits=['a', 'b'] 
+PASS bob 小锅饭 x6 :: status=[200] served=['c', 'd', 'c', 'd', 'c', 'd'] upstream_hits=['c', 'd'] 
+PASS carol 大锅饭 x8 -> only shared b,d :: status=[200] served=['b', 'd', 'b', 'd', 'b', 'd', 'b', 'd'] upstream_hits=['b', 'd'] 
+PASS carol 小锅饭 with no accounts -> refused :: status=[503] served=[None] upstream_hits=[] 
+PASS bob /v1/messages (claude) :: status=[200] served=['c', 'd'] upstream_hits=['c', 'd'] 
+PASS bob /v1beta native stream :: status=[200] served=['c', 'd'] upstream_hits=['c', 'd'] 
+PASS bob /v1/responses :: status=[200] served=['c', 'd'] upstream_hits=['c', 'd'] 
+PASS 24 concurrent requests across 3 keys :: bad=[] upstream_hits=['a', 'b', 'c', 'd']
+PASS client X-Agy-Allow: c (fetch-style) :: status=[200] served=['b', 'a', 'b'] upstream_hits=['a', 'b'] 
+PASS client sends 3 raw copies (any case) :: status=[200] served=['a', 'b', 'a'] upstream_hits=['a', 'b'] 
+PASS quota fetched via CPA api-call :: groups=[['gf', 0.2, '2026-10-24T10:08:28Z'], ['cl', 0.8, '2026-10-24T10:08:28Z']]
+PASS reserve: carol flash -> only d :: status=[200] served=['d', 'd', 'd', 'd'] upstream_hits=['d'] 
+PASS reserve: carol claude -> b,d still eligible :: status=[200] served=['b', 'd', 'b', 'd'] upstream_hits=['b', 'd'] 
+PASS reserve: owner's 小锅饭 still uses b :: status=[200] served=['a', 'b', 'a', 'b'] upstream_hits=['a', 'b'] 
+PASS owner still served by b :: ['a', 'b', 'a', 'b']
+PASS accConc=1: two streams on different accounts, third refused :: r1=d r2=b r3=503
+PASS keyConc=1: second concurrent shared request -> 429 :: 200,429
+PASS keyRpm=3: 4th request in a minute -> 429 :: [200, 200, 200, 429]
+PASS plugin disabled -> portal refuses, upstream untouched :: effective_enabled=False status=503 hits=0
+PASS plugin re-enabled -> works again :: status=[200] served=['a', 'b'] upstream_hits=['a', 'b'] 
+PASS bob disabled: carol 大锅饭 only b :: status=[200] served=['b', 'b', 'b'] upstream_hits=['b'] 
+PASS bob disabled: key 401, c/d disabled in CPA :: key=401 c=False d=False
+PASS bob's sessions were dropped on disable :: status=401
+PASS bob re-enabled :: status=[200] served=['c', 'd'] upstream_hits=['c', 'd'] 
+PASS usage rows recorded with tokens :: ok_rows=56 with_tokens=56 sample={'ts': 1792832931710, 'model': 'gemini-3-flash', 'pool': 'private', 'account': '', 'own': True, 'result': 'ok', 'status': 200, 'latency': 4, 'tokens': 7}
+PASS shared caller sees no emails / account ids :: rows=72 sample=#02
+PASS contributor book (bob's d served carol) :: [{"id": "agy-fake-d.json", "count": 36, "tokens": 252}]
+PASS admin site usage :: total=176 private=104 shared=72 no_account=7 tokens=1141 breaker=False
+
+30/30 passed
