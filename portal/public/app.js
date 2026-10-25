@@ -343,7 +343,7 @@ function resSummary(R){
 function backupBlock(R){
   const B=R?.backup;if(!B||!R.upstreams&&!B.total.n)return '';
   const cell=(lab,x,sub)=>`<div class="bk-c"><span class="bk-l">${lab}</span><b class="mono">${x.n.toLocaleString()}<small>次</small></b><span class="bk-s">${fmtK(x.t)} Token${x.n?` · 成功 ${Math.round(x.ok/x.n*100)}%`:''}${sub?' · '+sub:''}</span></div>`;
-  return `<div class="bk"><div class="bk-h"><b>🛟 站长兜底公益池</b>${R.upstreams?dotChip('good','在线'):dotChip('','未启用')}<span class="faint">大锅饭的号忙不过来或没额度时，由它接住</span></div>
+  return `<div class="bk"><div class="bk-h"><b>🛟 站长兜底公益池</b>${R.upstreams?dotChip('good','在线'):dotChip('','未启用')}<span class="faint">大锅饭优先使用站长兜底公益池</span></div>
     <div class="bk-g">${cell('今日',B.today)}${cell('近 7 天',B.week)}${cell('累计',B.total,B.since?'自 '+mdhm(B.since).slice(0,5):'')}</div>
     <div class="bk-share"><span>今日大锅饭请求里由兜底池接住</span><b class="mono">${B.share}%</b></div><div class="meter"><span style="width:${Math.min(100,Math.max(B.share,B.today.n?1:0))}%"></span></div></div>`;
 }
