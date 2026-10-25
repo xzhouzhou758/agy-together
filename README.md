@@ -25,16 +25,30 @@
 要求：Linux amd64、root、能访问 Docker Hub。没有 Docker 会自动安装。
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/xzhouzhou758/agy-together/main/install.sh | sudo bash
+```
+
+运行后会先问你选哪种方式：
+
+- **1) IP 直接访问**：不需要域名。门户监听 `http://服务器IP:8320`，安装时设置管理员用户名和密码（回车自动生成），装完直接用账号密码登录。记得在防火墙 / 安全组放行端口。
+- **2) 域名**：门户只监听本机，你自己用 HTTPS 反向代理到 `127.0.0.1:8320`，然后在 `/setup` 配 Discord 登录。
+
+也可以直接带参数，不问：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xzhouzhou758/agy-together/main/install.sh | sudo bash -s -- --ip --admin-user admin
 curl -fsSL https://raw.githubusercontent.com/xzhouzhou758/agy-together/main/install.sh | sudo bash -s -- --domain pot.example.com
 ```
 
-脚本会自动把本仓库最新代码下载到 `/opt/agy-together/src` 再安装。也可以先 clone 再在仓库里运行 `sudo ./install.sh --domain pot.example.com`。
+脚本会自动把本仓库最新代码下载到 `/opt/agy-together/src` 再安装；也可以 clone 后在仓库里运行 `sudo ./install.sh`。
 
 常用参数：
 
 | 参数 | 说明 |
 | --- | --- |
-| `--domain pot.example.com` | 站点域名，用来生成站点地址和 Discord 回调地址 |
+| `--ip [1.2.3.4]` | IP 模式（不写地址就自动检测公网 IP） |
+| `--admin-user admin` / `--admin-pass ...` | 账号密码管理员（IP 模式必有，不给密码就自动生成；域名模式可选） |
+| `--domain pot.example.com` | 域名模式：站点域名，用来生成站点地址和 Discord 回调地址 |
 | `--base-path /xgf` | 挂在子路径下（默认站点根路径） |
 | `--port 8320` | 门户在 127.0.0.1 上的端口 |
 | `--nginx` | 顺便写一份 nginx 站点配置（需已安装 nginx；HTTPS 自己用 certbot 加） |
@@ -46,11 +60,11 @@ curl -fsSL https://raw.githubusercontent.com/xzhouzhou758/agy-together/main/inst
 2. 用 `golang:1.26-bookworm` 编译 `agy-scheduler.so` 并装进 CPA（首次会拉约 1 GB 镜像）。
 3. 安装门户到 `/opt/agy-pot`，写好 `portal.env`，构建并启动。
 4. 每天 04:17 备份数据库、凭证和配置到 `/root/agy-backups`（保留 7 份）。
-5. 最后打印 **Setup Token**：打开 `<站点>/setup`，填 Discord 应用信息和你自己的 Discord ID（成为管理员）。
+5. IP 模式：创建管理员账号，打印访问地址和 API 地址。域名模式：打印 **Setup Token**，打开 `<站点>/setup` 填 Discord 应用信息和你自己的 Discord ID（成为管理员）。
 
 重复运行是安全的：已有的密钥、配置、凭证和数据都会保留，只更新代码。
 
-所有服务只监听本机，需要你自己在前面放一个 HTTPS 反向代理指向 `127.0.0.1:8320`（`proxy_buffering off`，超时 600 秒以上）。
+域名模式下所有服务只监听本机，需要你自己在前面放一个 HTTPS 反向代理指向 `127.0.0.1:8320`（`proxy_buffering off`，超时 600 秒以上）。IP 模式只有门户对外，CLIProxyAPI 仍只监听本机。
 
 ## 开发
 

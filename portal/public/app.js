@@ -788,7 +788,7 @@ function loginView(){
       <span class="logo">A</span>
       <h1>AGY Together</h1>
       <p class="lead">自己的账号，一起用好。</p>
-      ${cfg.setup&&!cfg.devLogin?`<a class="btn primary" href="setup">${ic('shield')}初始化</a>`:`<button class="btn discord" data-act="signin">${DISCORD}使用 Discord 登录</button>`}
+      ${cfg.setup&&!cfg.devLogin?`<a class="btn primary" href="setup">${ic('shield')}初始化</a>`:cfg.discord?`<button class="btn discord" data-act="signin">${DISCORD}使用 Discord 登录</button>`:''}
       <form class="pw" id="pwform" autocomplete="on"><input class="input" id="f-user" name="username" placeholder="用户名" autocomplete="username" autocapitalize="none" spellcheck="false"><input class="input" id="f-pass" name="password" type="password" placeholder="密码" autocomplete="current-password"><button class="btn" type="submit">登录</button></form>
       ${cfg.devLogin?`<div class="dev"><input class="input mono" id="f-devid" placeholder="Discord ID" inputmode="numeric"><input class="input" id="f-devname" placeholder="名称"><button class="btn" data-act="devlogin">Dev</button></div>`:''}
     </section>

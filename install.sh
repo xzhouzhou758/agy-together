@@ -5,8 +5,12 @@
 #
 # Piped like this it downloads the repository to /opt/agy-together/src first; run from a clone it uses the clone.
 #
+# Without options it asks: run on the server IP (password login, no domain needed) or on a domain.
 # Options (or the same names as environment variables):
-#   --domain example.com     public site, e.g. https://example.com (sets PUBLIC_URL and the Discord callback)
+#   --ip [1.2.3.4]           IP mode: the portal listens on 0.0.0.0:PORT over plain http, login with a password admin
+#   --admin-user NAME        password admin to create / reset (IP mode asks; domain mode optional)
+#   --admin-pass PASS        its password (empty = generate one)
+#   --domain example.com     domain mode: public site, e.g. https://example.com (sets PUBLIC_URL and the Discord callback)
 #   --base-path /xgf         serve the portal under a sub-path (default: site root)
 #   --port 8320              portal port on 127.0.0.1
 #   --nginx                  also write an nginx site for the domain (nginx must already be installed)
@@ -27,15 +31,22 @@ BASE_PATH=${BASE_PATH:-}
 PORT=${PORT:-8320}
 NGINX=${NGINX:-0}
 PLUGIN_SO=${PLUGIN_SO:-}
+MODE=${MODE:-}
+IP=${IP:-}
+ADMIN_USER=${ADMIN_USER:-}
+ADMIN_PASS=${ADMIN_PASS:-}
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --domain) DOMAIN=$2; shift 2 ;;
+    --domain) MODE=domain; DOMAIN=$2; shift 2 ;;
+    --ip) MODE=ip; if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then IP=$2; shift; fi; shift ;;
+    --admin-user) ADMIN_USER=$2; shift 2 ;;
+    --admin-pass) ADMIN_PASS=$2; shift 2 ;;
     --base-path) BASE_PATH=$2; shift 2 ;;
-    --port) PORT=$2; shift 2 ;;
+    --port) PORT=$2; PORT_SET=1; shift 2 ;;
     --nginx) NGINX=1; shift ;;
     --plugin-so) PLUGIN_SO=$2; shift 2 ;;
-    -h|--help) echo "usage: install.sh [--domain D] [--base-path /p] [--port N] [--nginx] [--plugin-so PATH]"; exit 0 ;;
+    -h|--help) echo "usage: install.sh [--ip [ADDR] | --domain D] [--admin-user U --admin-pass P] [--base-path /p] [--port N] [--nginx] [--plugin-so PATH]"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -58,6 +69,36 @@ if [ -z "$SRC" ] || [ ! -f "$SRC/portal/src/main.ts" ] || [ ! -f "$SRC/scheduler
   mv "$TMP"/*/ "$SRC"; rm -rf "$TMP"
 fi
 [ "$(uname -m)" = x86_64 ] || die "only amd64 is supported (the CLIProxyAPI image and plugin are amd64)"
+# ---------- IP or domain ----------
+ask() { # prompt default -> REPLY (reads the terminal even when the script is piped)
+  local a=""
+  if [ -r /dev/tty ]; then printf '%s' "$1" > /dev/tty; IFS= read -r a < /dev/tty || true; fi
+  REPLY=${a:-$2}
+}
+detect_ip() { curl -fs -m 5 https://api.ipify.org 2>/dev/null || curl -fs -m 5 https://ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}'; }
+[ -n "$MODE" ] || [ -n "$DOMAIN" ] && MODE=${MODE:-domain}
+if [ -z "$MODE" ]; then
+  [ -r /dev/tty ] || die "no terminal to ask on: pass --ip or --domain"
+  printf '\n选择运行方式：\n  1) IP 直接访问（http://服务器IP:端口，用账号密码登录，不需要域名）\n  2) 域名（https，可用 Discord 登录）\n' > /dev/tty
+  ask "请输入 1 或 2 [1]: " 1
+  [ "$REPLY" = 2 ] && MODE=domain || MODE=ip
+fi
+if [ "$MODE" = ip ]; then
+  [ -n "$IP" ] || { d=$(detect_ip); ask "服务器 IP [$d]: " "$d"; IP=$REPLY; }
+  [ -n "$IP" ] || die "could not detect the server IP: pass --ip 1.2.3.4"
+  [ -r /dev/tty ] && [ -z "${PORT_SET:-}" ] && { ask "门户端口 [$PORT]: " "$PORT"; PORT=$REPLY; }
+  [ -n "$ADMIN_USER" ] || { ask "管理员用户名 [admin]: " admin; ADMIN_USER=$REPLY; }
+  if [ -z "$ADMIN_PASS" ] && [ -r /dev/tty ]; then
+    printf '管理员密码（至少 8 位，直接回车自动生成）: ' > /dev/tty; IFS= read -rs ADMIN_PASS < /dev/tty || true; echo > /dev/tty
+  fi
+  DOMAIN=""; BASE_PATH=""; NGINX=0
+else
+  [ -n "$DOMAIN" ] || { ask "域名（如 pot.example.com）: " ""; DOMAIN=$REPLY; }
+  [ -n "$DOMAIN" ] || die "domain mode needs a domain"
+fi
+if [ -n "$ADMIN_USER" ] && [ -z "$ADMIN_PASS" ]; then ADMIN_PASS=$(rand 16); GENPASS=1; fi
+[ -z "$ADMIN_PASS" ] || [ ${#ADMIN_PASS} -ge 8 ] || die "admin password must be at least 8 characters"
+[[ "$PORT" =~ ^[0-9]+$ ]] || die "bad port: $PORT"
 DOMAIN=${DOMAIN#https://}; DOMAIN=${DOMAIN#http://}; DOMAIN=${DOMAIN%%/*}
 if [ -n "$BASE_PATH" ]; then BASE_PATH="/${BASE_PATH#/}"; BASE_PATH=${BASE_PATH%/}; fi
 
@@ -159,9 +200,11 @@ rm -rf "$POT_DIR/app/src" "$POT_DIR/app/public"
 cp -r "$SRC/portal/src" "$SRC/portal/public" "$SRC/portal/package.json" "$SRC/portal/Dockerfile" "$SRC/portal/.dockerignore" "$POT_DIR/app/"
 cp "$SRC/portal/deploy/docker-compose.yml" "$POT_DIR/docker-compose.yml"
 sed -i "s/PORT: \"8320\"/PORT: \"$PORT\"/" "$POT_DIR/docker-compose.yml"
+[ "$MODE" = ip ] && sed -i 's/HOST: 127.0.0.1/HOST: 0.0.0.0/' "$POT_DIR/docker-compose.yml"
 chown 1000:1000 "$POT_DIR/data"; chmod 700 "$POT_DIR/data"
 PUBLIC_URL=""
 [ -n "$DOMAIN" ] && PUBLIC_URL="https://$DOMAIN$BASE_PATH"
+[ "$MODE" = ip ] && PUBLIC_URL="http://$IP:$PORT"
 touch "$POT_DIR/portal.env"; chmod 600 "$POT_DIR/portal.env"
 setenv() { # key value: replace or append in portal.env
   if grep -q "^$1=" "$POT_DIR/portal.env"; then sed -i "s|^$1=.*|$1=$2|" "$POT_DIR/portal.env"; else echo "$1=$2" >> "$POT_DIR/portal.env"; fi
@@ -169,9 +212,9 @@ setenv() { # key value: replace or append in portal.env
 setenv CPA_URL http://127.0.0.1:8317
 setenv CPA_API_KEY "$API_KEY"
 setenv CPA_MANAGEMENT_KEY "$MANAGEMENT_KEY"
-setenv COOKIE_SECURE 1
-[ -n "$BASE_PATH" ] && setenv BASE_PATH "$BASE_PATH"
-[ -n "$PUBLIC_URL" ] && setenv PUBLIC_URL "$PUBLIC_URL"
+setenv COOKIE_SECURE "$([ "$MODE" = ip ] && echo 0 || echo 1)"
+setenv BASE_PATH "$BASE_PATH"
+setenv PUBLIC_URL "$PUBLIC_URL"
 
 say "building and starting the portal"
 (cd "$POT_DIR" && docker compose build -q && docker compose up -d)
@@ -180,6 +223,12 @@ for i in $(seq 1 30); do
   sleep 2
   [ "$i" = 30 ] && die "portal did not come up: docker logs agy-pot"
 done
+
+# ---------- password admin ----------
+if [ -n "$ADMIN_USER" ]; then
+  printf '%s\n%s\n' "$ADMIN_USER" "$ADMIN_PASS" | (cd "$POT_DIR" && docker compose exec -T agy-pot node --disable-warning=ExperimentalWarning src/admin-cli.ts) \
+    || die "could not create the admin (username: 3-32 chars of a-z 0-9 _ . -)"
+fi
 
 # ---------- daily backup ----------
 install -d -m 755 /opt/agy-backup
@@ -224,15 +273,23 @@ fi
 # ---------- done ----------
 TOKEN=$(cat "$POT_DIR/data/setup-token" 2>/dev/null || true)
 echo
-say "done"
-echo "  CLIProxyAPI : 127.0.0.1:8317   (keys in $CPA_DIR/secrets.env)"
-echo "  Portal      : 127.0.0.1:$PORT$BASE_PATH"
-if [ -n "$PUBLIC_URL" ]; then
-  echo "  Site        : $PUBLIC_URL   (point your HTTPS reverse proxy at 127.0.0.1:$PORT)"
-  echo "  Discord redirect URI: $PUBLIC_URL/auth/discord/callback"
-fi
-if [ -n "$TOKEN" ]; then
-  echo
-  echo "  First-time setup: open ${PUBLIC_URL:-http://127.0.0.1:$PORT$BASE_PATH}/setup"
-  echo "  Setup token     : $TOKEN"
+say "安装完成"
+echo "  CLIProxyAPI : 127.0.0.1:8317（密钥在 $CPA_DIR/secrets.env）"
+if [ "$MODE" = ip ]; then
+  echo "  门户        : http://$IP:$PORT"
+  echo "  API 地址    : http://$IP:$PORT/v1   （登录后在「API 密钥」里创建密钥）"
+  echo "  管理员      : $ADMIN_USER"
+  [ "${GENPASS:-}" = 1 ] && echo "  密码        : $ADMIN_PASS   （自动生成，请保存好）"
+  echo "  记得在防火墙 / 云安全组放行 TCP $PORT。IP 模式是明文 http，有条件还是建议换成域名 + https。"
+else
+  echo "  门户        : 127.0.0.1:$PORT$BASE_PATH（用 HTTPS 反向代理指向这里）"
+  echo "  站点        : $PUBLIC_URL"
+  echo "  API 地址    : $PUBLIC_URL/v1"
+  echo "  Discord 回调: $PUBLIC_URL/auth/discord/callback"
+  [ -n "$ADMIN_USER" ] && echo "  管理员      : $ADMIN_USER${GENPASS:+   密码：$ADMIN_PASS（自动生成）}"
+  if [ -n "$TOKEN" ]; then
+    echo
+    echo "  首次设置：打开 $PUBLIC_URL/setup 填 Discord 应用信息"
+    echo "  Setup Token: $TOKEN"
+  fi
 fi
