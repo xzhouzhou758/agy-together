@@ -910,3 +910,4 @@ img.qp-ic{display:block;object-fit:contain}
 .rc-bar i{position:absolute;top:-3px;width:1.5px;height:10px;background:var(--ink);opacity:.45;border-radius:1px}
 .rc b{width:22px;text-align:right;font-weight:600;color:var(--c)}
 @media (max-width:900px){.res-fams{grid-template-columns:1fr}.res-t .tr{grid-template-columns:minmax(0,1fr) repeat(3,64px)}.res-t .tr>:nth-child(2),.res-t .tr>:nth-child(6),.res-t .tr>:nth-child(7){display:none}}
+.qt.off{opacity:.55}.qt.off .qt-p{color:var(--faint);font-size:10.5px}

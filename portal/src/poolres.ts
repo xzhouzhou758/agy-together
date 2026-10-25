@@ -46,7 +46,7 @@ export async function poolResources(full: boolean) {
   const today = new Map(all(`SELECT auth_id, COUNT(*) AS n, SUM(${tok}) AS t FROM usage WHERE pool = 'shared' AND ts >= ? AND auth_id IS NOT NULL GROUP BY auth_id`, dayStart())
     .map((r) => [r.auth_id, { n: Number(r.n), t: Number(r.t || 0) }]));
 
-  const fam = Object.fromEntries(FAMS.map((f) => [f, { open: famOpen(f), accounts: 0, full: 0, h5: { sum: 0, ok: 0, n: 0, next: null as string | null }, weekly: { sum: 0, ok: 0, n: 0, next: null as string | null } }]));
+  const fam = Object.fromEntries(FAMS.map((f) => [f, { open: famOpen(f), accounts: 0, off: 0, full: 0, h5: { sum: 0, ok: 0, n: 0, next: null as string | null }, weekly: { sum: 0, ok: 0, n: 0, next: null as string | null } }]));
   const counts = { total: rows.length, ok: 0, cooldown: 0, problem: 0, off: 0, noData: 0, pro: 0, ultra: 0, free: 0 };
   let oldest: number | null = null;
   const list: any[] = [];
@@ -63,6 +63,7 @@ export async function poolResources(full: boolean) {
     if (!q) counts.noData++;
     if (r.quota_at && (oldest == null || r.quota_at < oldest)) oldest = r.quota_at;
     const reserve = reserveOf(r), W = windowsOf(q);
+    if (q?.argon === 'off') { delete W.argon; if (state !== 'off') fam.argon.off++; } // Argon not enabled on this account
     if (state !== 'off' && state !== 'problem') {
       for (const f of FAMS) {
         const w = W[f];
@@ -84,7 +85,7 @@ export async function poolResources(full: boolean) {
     if (full) {
       list.push({
         id: r.auth_id, email: cred.email || r.email || '', owner: r.owner || '', tier: q?.tier || null, state,
-        problem: prob?.label || null, reserve, quotaAt: r.quota_at || null,
+        problem: prob?.label || null, reserve, quotaAt: r.quota_at || null, argon: q?.argon ?? null,
         wins: Object.fromEntries(FAMS.filter((f) => W[f]).map((f) => [f, { h5: W[f]!.h5 || null, weekly: W[f]!.weekly || null }])),
         today: today.get(r.auth_id) || { n: 0, t: 0 },
       });

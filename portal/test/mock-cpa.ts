@@ -16,6 +16,7 @@ export function startMockCPA(opts: { apiKey: string; mgmtKey: string }) {
     oauth: new Map<string, { status: string; email?: string }>(),
     nextIndex: 1,
     quota: { gp: 0.9, gf: 0.5, ar: 0.3, cl: 0.1 } as Record<string, number>,
+    argonOff: false, // list only gemini-4-argon-disabled (account without Argon)
     holdMs: 0,
     seenAgy: [] as { mode: string[]; session: string[]; ttl: string[] }[], // raw X-Agy-Mode / X-Agy-Session per generation request
     claude429: false,                  // answer claude models with 429
@@ -146,7 +147,8 @@ export function startMockCPA(opts: { apiKey: string; mgmtKey: string }) {
         if (String(b.url).includes('fetchAvailableModels')) {
           return json(res, 200, { status_code: 200, body: JSON.stringify({ models: {
             'gemini-3-pro-high': { quotaInfo: { remainingFraction: st.quota.gp, resetTime: new Date(Date.now() + 3600e3).toISOString() } },
-            'gemini-4-argon-high': { quotaInfo: { remainingFraction: st.quota.ar, resetTime: new Date(Date.now() + 5 * 86400e3).toISOString() } },
+            ...(st.argonOff ? { 'gemini-4-argon-disabled': { displayName: 'Gemini 4 Argon' } }
+              : { 'gemini-4-argon-high': { quotaInfo: { remainingFraction: st.quota.ar, resetTime: new Date(Date.now() + 5 * 86400e3).toISOString() } } }),
             'gemini-3-flash': { quotaInfo: { remainingFraction: st.quota.gf, resetTime: new Date(Date.now() + 7200e3).toISOString() } },
             'claude-sonnet-4-6': { quotaInfo: { remainingFraction: st.quota.cl, resetTime: new Date(Date.now() + 86400e3).toISOString() } },
           } }) });

@@ -294,6 +294,26 @@ test('大锅饭 resources: totals for everyone, per-account rows only for admins
   const r2 = (await alice.req('GET', '/api/pool/resources')).data;
   assert.ok(Math.abs(r2.fam.claude.weekly.sum - (r.fam.claude.weekly.sum - 0.5)) < 1e-9, JSON.stringify([r.fam.claude, r2.fam.claude]));
   await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(a2), { reserve: null });
+  // an account that only lists gemini-4-argon-disabled has no Argon: counted as not enabled, no Argon quota
+  const qp = '/api/accounts/' + encodeURIComponent(a2) + '/quota';
+  const { DatabaseSync } = await import('node:sqlite');
+  const refresh = async () => { // manual refresh is throttled to one per 20s; age the last read instead of waiting
+    const d = new DatabaseSync(join(dataDir, 'portal.db'));
+    d.prepare('UPDATE accounts SET quota_at = 0 WHERE auth_id = ?').run(a2); d.close();
+    return (await alice.req('POST', qp)).data.quota;
+  };
+  assert.equal((await refresh()).argon, 'on');
+  mock.st.argonOff = true;
+  try {
+    const q = await refresh();
+    assert.equal(q.argon, 'off');
+    assert.ok(!q.groups.some((g: any) => g[0] === 'ar'));
+    const r3 = (await alice.req('GET', '/api/pool/resources')).data;
+    assert.ok(r3.fam.argon.off >= 1);
+    const row3 = r3.accounts.find((x: any) => x.id === a2);
+    assert.equal(row3.argon, 'off');
+    assert.equal(row3.wins.argon, undefined);
+  } finally { mock.st.argonOff = false; await refresh(); }
   // closed families are flagged
   await alice.req('PUT', '/api/admin/shared-models', { allow: ['gemini-3-flash'] });
   try { const c = (await bob.req('GET', '/api/pool/resources')).data.fam; assert.deepEqual([c.gemini.open, c.claude.open, c.argon.open], [true, false, false]); }

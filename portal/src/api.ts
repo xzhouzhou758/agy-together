@@ -94,7 +94,7 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
     reserve: row.reserve ?? null, // NULL = the admin's default (/api/rules reserve)
     proxy: proxy ? maskProxy(proxy) : null,
     ...accState(cred),
-    quota: q ? { credits: q.credits, groups: q.groups, windows: q.windows || null } : null,
+    quota: q ? { credits: q.credits, groups: q.groups, windows: q.windows || null, argon: q.argon ?? null } : null,
     quotaAt: row.quota_at || null,
     quotaErr: row.quota_err || null,
     problem: accountProblem(row, cred),

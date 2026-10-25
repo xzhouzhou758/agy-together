@@ -10,7 +10,9 @@ import * as cpa from './cpa.ts';
 
 export type Bucket = { window: string; frac: number; reset: string | null };
 export type Win = { key: 'gemini' | 'claude' | string; label: string; buckets: Bucket[] };
-export type Quota = { tier: string | null; credits: number | null; groups: [Group, number, string | null][]; windows?: Win[] | null };
+/** Gemini 4 Argon on this account: 'on' = listed with a quota, 'off' = only gemini-4-argon-disabled (not enabled for the account), null = not listed. */
+export type Argon = 'on' | 'off' | null;
+export type Quota = { tier: string | null; credits: number | null; groups: [Group, number, string | null][]; windows?: Win[] | null; argon?: Argon };
 
 const WIN_ORDER: Record<string, number> = { '5h': 0, 'five-hour': 0, five_hour: 0, weekly: 1, week: 1 };
 export function parseSummary(body: any): Win[] {
@@ -52,6 +54,17 @@ export function parseModels(body: any): [Group, number, string | null][] {
   return order.filter((g) => best.has(g)).map((g) => [g, best.get(g)![0], best.get(g)![1]]);
 }
 
+export function parseArgon(body: any): Argon {
+  const models = body?.models && typeof body.models === 'object' ? body.models : {};
+  let seen = false;
+  for (const [name, info] of Object.entries<any>(models)) {
+    if (!/argon/i.test(name)) continue;
+    seen = true;
+    if (!/disabled/i.test(name) && info?.quotaInfo) return 'on';
+  }
+  return seen ? 'off' : null;
+}
+
 export function parseTier(body: any): { tier: string | null; credits: number | null } {
   const pt = body?.paidTier || body?.currentTier || null;
   const tier = pt?.id ? String(pt.id) : null;
@@ -72,8 +85,8 @@ async function fetchQuota(authId: string): Promise<Quota> {
   const headers = { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json', 'User-Agent': config.quotaUserAgent };
   const m = await cpa.apiCall(cred.authIndex, 'POST', config.quotaBaseURL + '/v1internal:fetchAvailableModels', headers, JSON.stringify({ project: cred.projectId }));
   if (m.status < 200 || m.status >= 300) throw new Error('fetchAvailableModels ' + m.status + ': ' + m.body.slice(0, 300));
-  let groups: Quota['groups'] = [];
-  try { groups = parseModels(JSON.parse(m.body)); } catch { throw new Error('fetchAvailableModels: bad body'); }
+  let groups: Quota['groups'] = [], argon: Argon = null;
+  try { const j = JSON.parse(m.body); groups = parseModels(j); argon = parseArgon(j); } catch { throw new Error('fetchAvailableModels: bad body'); }
   let tier: Quota['tier'] = null, credits: Quota['credits'] = null;
   try {
     const l = await cpa.apiCall(cred.authIndex, 'POST', config.quotaBaseURL + '/v1internal:loadCodeAssist', headers, JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }));
@@ -84,7 +97,7 @@ async function fetchQuota(authId: string): Promise<Quota> {
     const q = await cpa.apiCall(cred.authIndex, 'POST', config.quotaBaseURL + '/v1internal:retrieveUserQuotaSummary', headers, JSON.stringify({ project: cred.projectId }));
     if (q.status >= 200 && q.status < 300) windows = parseSummary(JSON.parse(q.body));
   } catch {}
-  return { tier, credits, groups, windows };
+  return { tier, credits, groups, windows, argon };
 }
 
 /** Refresh one account's quota and store it. Concurrent calls share one fetch. */

@@ -260,7 +260,7 @@ function pill(fam,label,win,frac,reset,used){
 function qPills(a){
   const W=a.quota?.windows,F=a.tokens?.fam||{};
   // Gemini 4 Argon has its own upstream quota (per-model quotaInfo); the summary windows don't include it
-  const ar=(a.quota?.groups||[]).find(g=>g[0]==='ar'),arT=ar?pill('argon','Gemini 4 Argon','Weekly',ar[1],ar[2],F.argon?.week??null).replace('class="qt ','class="qt wide '):'';
+  const ar=a.quota?.argon==='off'?null:(a.quota?.groups||[]).find(g=>g[0]==='ar'),arT=a.quota?.argon==='off'?`<div class="qt wide off" title="上游把这个号的 Argon 标成了 disabled，用不了"><div class="qt-a">${GEM}<b>Gemini 4 Argon</b><span class="qt-p">未开通</span></div></div>`:ar?pill('argon','Gemini 4 Argon','Weekly',ar[1],ar[2],F.argon?.week??null).replace('class="qt ','class="qt wide '):'';
   if(W?.length)return W.map(w=>{const fam=w.key==='claude'?'claude':'gemini',lab=w.key==='gemini'?'Gemini':w.key==='claude'?'Claude':w.label;
     return w.buckets.map(b=>pill(fam,lab,BUCKET[b.window]||b.window,b.frac,b.reset,b.window==='5h'?F[fam]?.h5:b.window==='weekly'?F[fam]?.week:null)).join('');}).join('')+arT;
   const G=a.quota?.groups||[];
@@ -331,9 +331,9 @@ function resSummary(R){
   const c=R.counts,usable=c.ok+c.cooldown;
   const chips=[`<span class="chip good"><span class="dot"></span>正常 ${c.ok}</span>`,c.cooldown?`<span class="chip warn"><span class="dot"></span>冷却 ${c.cooldown}</span>`:'',c.problem?`<span class="chip bad"><span class="dot"></span>出问题 ${c.problem}</span>`:'',c.off?`<span class="chip">停用 ${c.off}</span>`:'',
     c.ultra?`<span class="tier ultra">Ultra ×${c.ultra}</span>`:'',c.pro?`<span class="tier pro">Pro ×${c.pro}</span>`:'',c.free?`<span class="tier">Free ×${c.free}</span>`:''].join('');
-  const fams=RES_F.map(([k,lab,icon])=>{const F=R.fam[k];if(!F||!F.accounts)return '';
+  const fams=RES_F.map(([k,lab,icon])=>{const F=R.fam[k];if(!F||!F.accounts&&!F.off)return '';
     return `<div class="res-f ${F.open?'':'shut'}"><div class="res-h">${icon()}<b>${lab}</b>${F.open?'':'<span class="chip">大锅饭未开放</span>'}</div>
-      <div class="res-n"><b class="mono">${F.full.toFixed(1)}</b><span>个满额号 · ${F.accounts} 个号有这项额度</span></div>
+      <div class="res-n"><b class="mono">${F.full.toFixed(1)}</b><span>个满额号 · ${k==='argon'?`${F.accounts} 个号已开通${F.off?` · ${F.off} 个未开通`:''}`:`${F.accounts} 个号有这项额度`}</span></div>
       <div class="res-w">${resWin('5H',F.h5)}${resWin('Weekly',F.weekly)}</div></div>`;}).join('');
   return `<div class="res-top"><div class="res-big"><b class="mono">${usable}</b><span>/ ${c.total} 个号可用</span></div><div class="res-chips">${chips}</div></div>
     <div class="res-fams">${fams||'<small class="faint">还没有额度数据</small>'}</div>
@@ -354,7 +354,7 @@ function resTable(R){
     ${L.map(a=>{const t=tierName(a.tier),[k,lab]=ST[a.state];return `<div class="tr ${a.state==='off'?'off':''}">
       <span class="u-cell"><span class="avatar sm" title="${esc(a.owner)}">${esc((a.owner||'?')[0])}</span><span class="u-n"><span class="u-t"><strong class="mono" title="${esc(a.email)}">${esc(a.email)}</strong>${t?`<span class="tier ${t.toLowerCase()}">${t}</span>`:''}</span><span class="sub">${esc(a.owner)}${a.quotaAt?' · '+ago(a.quotaAt):''}</span></span></span>
       <span class="u-st ${k==='bad'?'bad':''}" title="${esc(a.problem||'')}"><span class="sdot ${k}"></span>${esc(a.problem||lab)}</span>
-      ${resCell(a.wins.gemini,a.reserve)}${resCell(a.wins.claude,a.reserve)}${resCell(a.wins.argon,a.reserve)}
+      ${resCell(a.wins.gemini,a.reserve)}${resCell(a.wins.claude,a.reserve)}${a.argon==='off'?'<span class="rc faint" title="这个号没有开通 Gemini 4 Argon">未开通</span>':resCell(a.wins.argon,a.reserve)}
       <span class="num-r mono faint">${a.reserve?a.reserve+'%':'—'}</span>
       <span class="num-r mono ${a.today.t?'':'zero'}" title="${a.today.n} 次请求">${fmtK(a.today.t)}</span></div>`;}).join('')}</div>
     <p class="res-note faint">每格是该号这项额度里最紧的窗口，竖线是号主的自用保留线；鼠标放上去看 5H / Weekly 明细。</p>`;
