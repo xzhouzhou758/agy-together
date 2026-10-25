@@ -25,10 +25,10 @@
 要求：Linux amd64、root、能访问 Docker Hub。没有 Docker 会自动安装。
 
 ```bash
-git clone https://github.com/<you>/agy-together.git
-cd agy-together
-sudo ./install.sh --domain pot.example.com
+curl -fsSL https://raw.githubusercontent.com/xzhouzhou758/agy-together/main/install.sh | sudo bash -s -- --domain pot.example.com
 ```
+
+脚本会自动把本仓库最新代码下载到 `/opt/agy-together/src` 再安装。也可以先 clone 再在仓库里运行 `sudo ./install.sh --domain pot.example.com`。
 
 常用参数：
 

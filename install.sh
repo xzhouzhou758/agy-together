@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # AGY Together one-click installer: CLIProxyAPI v8.0.40 + agy-scheduler plugin + the portal.
 #
-#   git clone https://github.com/<you>/agy-together.git && cd agy-together && sudo ./install.sh
+#   curl -fsSL https://raw.githubusercontent.com/xzhouzhou758/agy-together/main/install.sh | sudo bash -s -- --domain pot.example.com
+#
+# Piped like this it downloads the repository to /opt/agy-together/src first; run from a clone it uses the clone.
 #
 # Options (or the same names as environment variables):
 #   --domain example.com     public site, e.g. https://example.com (sets PUBLIC_URL and the Discord callback)
@@ -13,6 +15,8 @@
 # Everything binds to 127.0.0.1; put your own HTTPS reverse proxy in front of the portal.
 # Re-running is safe: existing keys, config, credentials and data are kept; code is updated.
 set -euo pipefail
+REPO=${REPO:-xzhouzhou758/agy-together}
+BRANCH=${BRANCH:-main}
 
 CPA_IMAGE=eceasy/cli-proxy-api:v8.0.40
 GO_IMAGE=golang:1.26-bookworm
@@ -31,7 +35,7 @@ while [ $# -gt 0 ]; do
     --port) PORT=$2; shift 2 ;;
     --nginx) NGINX=1; shift ;;
     --plugin-so) PLUGIN_SO=$2; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) echo "usage: install.sh [--domain D] [--base-path /p] [--port N] [--nginx] [--plugin-so PATH]"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -40,9 +44,19 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 rand() { head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c "$1"; }
 
-[ "$(id -u)" = 0 ] || die "run as root (sudo ./install.sh)"
-SRC=$(cd "$(dirname "$0")" && pwd)
-[ -f "$SRC/portal/src/main.ts" ] && [ -f "$SRC/scheduler/main.go" ] || die "run from the repository root"
+[ "$(id -u)" = 0 ] || die "run as root (sudo)"
+SRC=""
+[ -f "${BASH_SOURCE[0]:-}" ] && SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [ -z "$SRC" ] || [ ! -f "$SRC/portal/src/main.ts" ] || [ ! -f "$SRC/scheduler/main.go" ]; then
+  # piped from curl: fetch the repository (latest $BRANCH) and use that
+  SRC=/opt/agy-together/src
+  say "downloading github.com/$REPO ($BRANCH) → $SRC"
+  command -v curl >/dev/null 2>&1 || die "curl is required"
+  TMP=$(mktemp -d)
+  curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" | tar xz -C "$TMP" || die "download failed"
+  rm -rf "$SRC"; mkdir -p "$(dirname "$SRC")"
+  mv "$TMP"/*/ "$SRC"; rm -rf "$TMP"
+fi
 [ "$(uname -m)" = x86_64 ] || die "only amd64 is supported (the CLIProxyAPI image and plugin are amd64)"
 DOMAIN=${DOMAIN#https://}; DOMAIN=${DOMAIN#http://}; DOMAIN=${DOMAIN%%/*}
 if [ -n "$BASE_PATH" ]; then BASE_PATH="/${BASE_PATH#/}"; BASE_PATH=${BASE_PATH%/}; fi
