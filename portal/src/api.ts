@@ -1,4 +1,5 @@
 // JSON API for the web UI. Every handler does its own server-side authorization.
+import { poolResources } from './poolres.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from './config.ts';
 import { one, all, run, now, getRules, setRules, getSetting, setSetting, type Row } from './db.ts';
@@ -271,6 +272,8 @@ async function poolSummary(u: User) {
   return { contributors: new Set(rows.map((r) => r.owner_id)).size, accounts: rows.length, privateAccounts: privateUsable };
 }
 route('GET', '/api/pool/summary', async (req) => poolSummary(requireUser(req)));
+// 大锅饭 remaining resources: totals for everyone, per-account rows for admins
+route('GET', '/api/pool/resources', async (req) => poolResources(requireUser(req).role === 'admin'));
 route('GET', '/api/rules', (req) => { requireUser(req); return getRules(); });
 
 // ---------- accounts ----------

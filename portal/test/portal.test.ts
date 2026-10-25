@@ -276,6 +276,30 @@ test('self-use reserve removes a shared account below the threshold', async () =
   await alice.req('PUT', '/api/admin/rules', { reserve: 0 });
 });
 
+test('大锅饭 resources: totals for everyone, per-account rows only for admins', async () => {
+  const a2 = (await alice.req('GET', '/api/accounts')).data.find((a: any) => a.id.includes('a2')).id;
+  const u = await bob.req('GET', '/api/pool/resources');
+  assert.equal(u.status, 200);
+  assert.equal(u.data.accounts, undefined); // no emails / owners for regular users
+  assert.ok(u.data.counts.total >= 1);
+  assert.equal(u.data.fam.claude.open, true);
+  const r = (await alice.req('GET', '/api/pool/resources')).data;
+  const row = r.accounts.find((x: any) => x.id === a2);
+  assert.ok(row, JSON.stringify(r.accounts));
+  assert.equal(row.wins.claude.h5.frac, 0.1);
+  assert.equal(row.wins.claude.weekly.frac, 0.8);
+  assert.ok(r.fam.claude.h5.n >= 1 && r.fam.claude.weekly.sum >= 0.8 - 1e-9);
+  // the owner's reserve is taken off what the pool can use
+  await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(a2), { reserve: 50 });
+  const r2 = (await alice.req('GET', '/api/pool/resources')).data;
+  assert.ok(Math.abs(r2.fam.claude.weekly.sum - (r.fam.claude.weekly.sum - 0.5)) < 1e-9, JSON.stringify([r.fam.claude, r2.fam.claude]));
+  await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(a2), { reserve: null });
+  // closed families are flagged
+  await alice.req('PUT', '/api/admin/shared-models', { allow: ['gemini-3-flash'] });
+  try { const c = (await bob.req('GET', '/api/pool/resources')).data.fam; assert.deepEqual([c.gemini.open, c.claude.open, c.argon.open], [true, false, false]); }
+  finally { await alice.req('PUT', '/api/admin/shared-models', { allow: null }); }
+});
+
 test('per-account concurrency cap and shared-key concurrency / rate', async () => {
   const a2 = (await alice.req('GET', '/api/accounts')).data.find((a: any) => a.id.includes('a2')).id;
   const b1 = (await bob.req('GET', '/api/accounts')).data[0].id;

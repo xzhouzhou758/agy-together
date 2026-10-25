@@ -151,7 +151,7 @@ const navPages=()=>PAGES.filter(p=>(p[0]!=='admin'&&p[0]!=='users')||me?.role===
 const LOADERS={
   home:async()=>{D.ov=await api('GET','api/overview');},
   accounts:async()=>{[D.accounts,D.rules]=await Promise.all([api('GET','api/accounts'),api('GET','api/rules')]);},
-  pool:async()=>{[D.pool,D.rules]=await Promise.all([api('GET','api/pool/summary'),api('GET','api/rules')]);},
+  pool:async()=>{[D.pool,D.rules,D.res]=await Promise.all([api('GET','api/pool/summary'),api('GET','api/rules'),api('GET','api/pool/resources').catch(()=>null)]);},
   keys:async()=>{D.keys=await api('GET','api/keys');},
   logs:async()=>{
     if(ui.logView==='mine')D.traffic=await api('GET','api/traffic?'+trafficQS());
@@ -163,7 +163,7 @@ const LOADERS={
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null)};
   },
 };
 
@@ -316,6 +316,49 @@ function rulesRead(r){
     <div class="rule"><h3>单号并发上限</h3><div class="val">${r.accConc}</div></div>
     <div class="rule"><h3>自用保留</h3><div class="val">${reserveText(r.reserve)}</div></div>`;
 }
+/* 大锅饭资源：共享号剩余额度按 Gemini / Claude / Argon 汇总（扣掉各号的自用保留） */
+const RES_F=[['gemini','Gemini',()=>GEM],['claude','Claude',()=>CLA],['argon','Gemini 4 Argon',()=>GEM]];
+const lvOf=p=>p>=40?'good':p>=15?'mid':'low';
+function resWin(lab,w){
+  if(!w||!w.n)return '';
+  const p=Math.round(w.sum/w.n*100);
+  return `<div class="qt ${lvOf(p)}"><div class="qt-a"><b>${lab}</b><span class="qt-p">${p}<small>%</small></span></div>
+    <div class="qt-bar"><span style="width:${Math.max(p,2)}%"></span></div>
+    <div class="qt-c"><span>${w.ok}/${w.n} 个有余量</span><span>${w.next?short(w.next)+' 后刷新':''}</span></div></div>`;
+}
+function resSummary(R){
+  if(!R)return `<small class="faint">资源数据暂时读不到</small>`;
+  const c=R.counts,usable=c.ok+c.cooldown;
+  const chips=[`<span class="chip good"><span class="dot"></span>正常 ${c.ok}</span>`,c.cooldown?`<span class="chip warn"><span class="dot"></span>冷却 ${c.cooldown}</span>`:'',c.problem?`<span class="chip bad"><span class="dot"></span>出问题 ${c.problem}</span>`:'',c.off?`<span class="chip">停用 ${c.off}</span>`:'',
+    c.ultra?`<span class="tier ultra">Ultra ×${c.ultra}</span>`:'',c.pro?`<span class="tier pro">Pro ×${c.pro}</span>`:'',c.free?`<span class="tier">Free ×${c.free}</span>`:''].join('');
+  const fams=RES_F.map(([k,lab,icon])=>{const F=R.fam[k];if(!F||!F.accounts)return '';
+    return `<div class="res-f ${F.open?'':'shut'}"><div class="res-h">${icon()}<b>${lab}</b>${F.open?'':'<span class="chip">大锅饭未开放</span>'}</div>
+      <div class="res-n"><b class="mono">${F.full.toFixed(1)}</b><span>个满额号 · ${F.accounts} 个号有这项额度</span></div>
+      <div class="res-w">${resWin('5H',F.h5)}${resWin('Weekly',F.weekly)}</div></div>`;}).join('');
+  return `<div class="res-top"><div class="res-big"><b class="mono">${usable}</b><span>/ ${c.total} 个号可用</span></div><div class="res-chips">${chips}</div></div>
+    <div class="res-fams">${fams||'<small class="faint">还没有额度数据</small>'}</div>
+    <p class="res-note faint">已扣除号主的自用保留 · 「满额号」= 把剩余额度加起来折算${R.upstreams?` · 另有 ${R.upstreams} 个外部上游兜底`:''}${R.oldest?` · 数据最早更新于 ${ago(R.oldest)}`:''}</p>`;
+}
+function resCell(w,reserve){
+  if(!w)return `<span class="rc faint">—</span>`;
+  const xs=[w.h5,w.weekly].filter(Boolean),m=xs.reduce((a,b)=>b.frac<a.frac?b:a),p=Math.round(m.frac*100),r=reserve||0;
+  const tip=[['5H',w.h5],['Weekly',w.weekly]].filter(x=>x[1]).map(([l,x])=>`${l} ${Math.round(x.frac*100)}%${x.reset?' · '+short(x.reset)+' 后刷新':''}`).join('\n');
+  return `<span class="rc ${p<=r?'under':lvOf(p)}" title="${esc(tip)}"><span class="rc-bar"><span style="width:${Math.max(p,2)}%"></span>${r?`<i style="left:${r}%"></i>`:''}</span><b class="mono">${p}</b></span>`;
+}
+function resTable(R){
+  const L=(R?.accounts||[]).map(a=>{const ws=Object.values(a.wins).flatMap(w=>[w.h5,w.weekly]).filter(Boolean);return {...a,min:ws.length?Math.min(...ws.map(x=>x.frac)):2};})
+    .sort((a,b)=>(a.state==='problem')-(b.state==='problem')||a.min-b.min);
+  if(!L.length)return '';
+  const ST={ok:['good','正常'],cooldown:['warn','冷却'],problem:['bad','出问题'],off:['idle','停用']};
+  return `<div class="tbl res-t"><div class="tr th"><span>账号</span><span>状态</span><span>Gemini</span><span>Claude</span><span>Argon</span><span class="num-r">保留</span><span class="num-r">今日</span></div>
+    ${L.map(a=>{const t=tierName(a.tier),[k,lab]=ST[a.state];return `<div class="tr ${a.state==='off'?'off':''}">
+      <span class="u-cell"><span class="avatar sm" title="${esc(a.owner)}">${esc((a.owner||'?')[0])}</span><span class="u-n"><span class="u-t"><strong class="mono" title="${esc(a.email)}">${esc(a.email)}</strong>${t?`<span class="tier ${t.toLowerCase()}">${t}</span>`:''}</span><span class="sub">${esc(a.owner)}${a.quotaAt?' · '+ago(a.quotaAt):''}</span></span></span>
+      <span class="u-st ${k==='bad'?'bad':''}" title="${esc(a.problem||'')}"><span class="sdot ${k}"></span>${esc(a.problem||lab)}</span>
+      ${resCell(a.wins.gemini,a.reserve)}${resCell(a.wins.claude,a.reserve)}${resCell(a.wins.argon,a.reserve)}
+      <span class="num-r mono faint">${a.reserve?a.reserve+'%':'—'}</span>
+      <span class="num-r mono ${a.today.t?'':'zero'}" title="${a.today.n} 次请求">${fmtK(a.today.t)}</span></div>`;}).join('')}</div>
+    <p class="res-note faint">每格是该号这项额度里最紧的窗口，竖线是号主的自用保留线；鼠标放上去看 5H / Weekly 明细。</p>`;
+}
 function pagePool(){
   const p=D.pool;
   return head('大锅饭 / 小锅饭')+
@@ -331,6 +374,7 @@ function pagePool(){
       <div class="mt"><button class="btn primary" data-act="newkey:shared">${ic('plus')}创建大锅饭密钥</button></div>
     </section>
   </div>
+  <section class="card glass res"><div class="card-head"><div><h2>大锅饭剩余资源</h2><p>大家共享进大锅饭的号，现在还剩多少</p></div></div>${resSummary(D.res)}</section>
   <section class="card glass"><div class="card-head"><h2>大锅饭规则</h2></div>${rulesRead(D.rules)}</section>`;
 }
 
@@ -532,6 +576,7 @@ function pageAdmin(){
   </div>
   ${alarms}
   ${annAdmin()}
+  ${fold('poolres','大锅饭资源',A.res?`<span class="fold-sum">${A.res.counts.ok+A.res.counts.cooldown}/${A.res.counts.total} 可用${A.res.counts.problem?` · ${A.res.counts.problem} 出问题`:''}</span>`:'',`<div class="res">${resSummary(A.res)}</div>${resTable(A.res)}`)}
   ${fold('fleet','全部账号',cnt(A.accounts.length),`<div class="fold-tools"><div class="search-sm">${ic('search')}<input class="input sm" data-search="fleet" value="${esc(ui.q_fleet||'')}" placeholder="搜索邮箱 / 主人" aria-label="搜索账号"></div></div><div id="pg-fleet">${pagedList('fleet')}</div>`)}
   ${fold('rules','大锅饭规则',`<span class="fold-sum">${r.dailyBase} + ${r.dailyPer}/号 · ${r.keyConc} 并发 · ${r.keyRpm}/min · 单号 ${r.accConc} · 保留 ${reserveText(r.reserve)}</span>`,`
     <div class="rule"><h3>大锅饭 Key 总并发 / 限速</h3><div class="hstack"><input class="input" type="number" min="1" max="200" data-rule="keyConc" value="${r.keyConc}" aria-label="大锅饭 Key 总并发"><small>并发</small><input class="input" type="number" min="1" max="10000" data-rule="keyRpm" value="${r.keyRpm}" aria-label="大锅饭 Key 总限速"><small>次/分</small></div></div>

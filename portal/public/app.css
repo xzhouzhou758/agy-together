@@ -878,3 +878,35 @@ img.qp-ic{display:block;object-fit:contain}
 .mp-row .mono{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mp-src{flex:none;font-size:10px;padding:0 6px;border-radius:5px;line-height:16px;background:var(--fill-2);color:var(--dim)}
 .dialog-foot small{align-self:center}
+
+/* ---- 大锅饭资源 ---- */
+.res-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.res-big{display:flex;align-items:baseline;gap:6px}
+.res-big b{font-size:30px;font-weight:650;letter-spacing:-.03em;line-height:1}
+.res-big span{font-size:13px;color:var(--dim)}
+.res-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.res-fams{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.res-f{border:1px solid var(--hair);border-radius:12px;padding:11px 12px;display:flex;flex-direction:column;gap:8px;background:var(--fill)}
+.res-f.shut{opacity:.55}
+.res-h{display:flex;align-items:center;gap:6px;font-size:13px}
+.res-h b{font-weight:600}
+.res-h .chip{margin-left:auto;font-size:10.5px;padding:1px 8px}
+.res-n{display:flex;align-items:baseline;gap:6px;min-width:0}
+.res-n b{font-size:22px;font-weight:650;letter-spacing:-.02em;line-height:1}
+.res-n span{font-size:11px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.res-w{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.res-w .qt-bar{height:4px}
+.res-note{margin:10px 0 0;font-size:11.5px}
+.res-t{margin-top:14px}
+.res-t .tr{grid-template-columns:minmax(170px,1.6fr) 92px repeat(3,minmax(70px,.6fr)) 48px 56px;gap:10px;padding:8px 6px;font-size:12px}
+.res-t .tr.th{font-size:11px}
+.res-t .tr.off{opacity:.55}
+.res-t .zero{color:var(--faint);opacity:.6}
+.res-t .u-st{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rc{--c:var(--good);display:flex;align-items:center;gap:6px;font-size:11.5px}
+.rc.mid{--c:var(--warn)}.rc.low,.rc.under{--c:var(--bad)}
+.rc-bar{position:relative;flex:1;height:4px;border-radius:999px;background:var(--fill-2)}
+.rc-bar>span{display:block;height:100%;border-radius:inherit;background:var(--c)}
+.rc-bar i{position:absolute;top:-3px;width:1.5px;height:10px;background:var(--ink);opacity:.45;border-radius:1px}
+.rc b{width:22px;text-align:right;font-weight:600;color:var(--c)}
+@media (max-width:900px){.res-fams{grid-template-columns:1fr}.res-t .tr{grid-template-columns:minmax(0,1fr) repeat(3,64px)}.res-t .tr>:nth-child(2),.res-t .tr>:nth-child(6),.res-t .tr>:nth-child(7){display:none}}
