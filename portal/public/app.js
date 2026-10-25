@@ -54,7 +54,7 @@ function ago(ts){if(!ts)return '—';const s=Math.max(0,(Date.now()-ts)/1000);if
 function until(iso){if(!iso)return '—';const s=(Date.parse(iso)-Date.now())/1000;if(!(s>0))return '0m';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;}
 function tierName(t){if(!t)return '';const x=t.toLowerCase();return x.includes('ultra')?'Ultra':x.includes('pro')?'Pro':x.includes('free')||x.includes('standard')?'Free':t;}
 function fmtTok(n){return tk(n);}
-const RESULT={ok:['good','成功'],quota:['warn','额度不足'],no_account:['warn','无可用账号'],no_model:['warn','模型不支持'],upstream:['bad','上游错误'],blocked:['bad','已拦截'],rate_limited:['warn','限流'],daily_limit:['warn','次数用完'],client:['warn','请求错误']};
+const RESULT={ok:['good','成功'],quota:['warn','额度不足'],no_account:['warn','无可用账号'],no_model:['warn','模型不支持'],upstream:['bad','上游错误'],blocked:['bad','已拦截'],rate_limited:['warn','限流'],daily_limit:['warn','次数用完'],input_limit:['warn','输入过限'],client:['warn','请求错误']};
 const ROT=[['cache','缓存优先','同一会话尽量留在同一个号上，号短暂不可用时临时借用别的号，恢复后回来'],['balance','平衡轮换','同一会话固定一个号，号不可用就换一个并固定下来'],['performance','性能优先','每次请求都换最久没用的号，不固定']];
 const ERR={
   state:'登录已过期，请重试',denied:'已取消授权',not_in_guild:'不在指定的 Discord 服务器',missing_role:'缺少所需的身份组',disabled:'账号已停用',
@@ -489,6 +489,15 @@ function pageLogs(){
 }
 
 function themePref(){try{return localStorage.getItem('agy-theme')||'auto'}catch(e){return 'auto'}}
+/* 输入上限：所有密钥共用，按估算的输入 Token 拦截 */
+const INLIM=[[0,'不限'],[100000,'10 万'],[200000,'20 万'],[500000,'50 万']];
+function inputLimitCard(){
+  const v=me.inputLimit||0,preset=INLIM.some(x=>x[0]===v);
+  return `<section class="card glass"><div class="card-head"><div><h2>输入上限</h2><p>一次请求的输入超过这个数就直接拦下，返回「输入过限」，不消耗额度。防止上下文不知不觉爆到几十万 Token。所有密钥共用。</p></div></div>
+    <div class="row"><div class="seg" role="radiogroup" aria-label="输入上限">${INLIM.map(([n,l])=>`<label><input type="radio" name="inlim" value="${n}" ${preset&&v===n?'checked':''}><span>${l}</span></label>`).join('')}</div>
+    <div class="hstack"><small class="faint">自定义</small><input class="input" type="number" min="0.1" max="1000" step="0.1" data-inlim value="${v&&!preset?+(v/1e4).toFixed(1):''}" placeholder="—" aria-label="自定义输入上限（万 Token）" style="width:90px"><small>万 Token</small></div></div>
+    <small class="faint">按请求内容估算（中文约 1 字 1 Token，英文约 4 字母 1 Token，图片不算），和实际会有一两成误差。</small></section>`;
+}
 function pageProfile(){
   const t=themePref();
   return head('个人中心')+
@@ -498,6 +507,7 @@ function pageProfile(){
     <div class="rule"><h3>管理自己的凭证</h3><div class="val"><span class="chip good">已开启</span></div></div>
     <div class="rule"><h3>使用大锅饭</h3><div class="val"><span class="chip good">已开启</span></div></div>
   </section>
+  ${inputLimitCard()}
   <section class="card glass"><div class="row"><h2>外观</h2><div class="seg" role="radiogroup" aria-label="外观">${[['auto','跟随系统'],['light','浅色'],['dark','深色']].map(([v,l])=>`<label><input type="radio" name="theme" value="${v}" ${t===v?'checked':''}><span>${l}</span></label>`).join('')}</div></div></section>
   <section class="card glass"><div class="row"><h2>退出</h2><button class="btn" data-act="logout">${ic('logout')}退出登录</button></div></section>`;
 }
@@ -1263,6 +1273,10 @@ document.addEventListener('change',act(async e=>{
   else if(t.name==='logView'){ui.logView=t.value;await reload();}
   else if(t.name==='stView'){ui.st.view=t.value;render();}
   else if(t.name==='stRange'||t.name==='stScope'){ui.st[t.name==='stRange'?'range':'scope']=t.value;await reload();}
+  else if(t.name==='inlim'||t.dataset.inlim!==undefined){
+    const n=t.name==='inlim'?+t.value:Math.round((+t.value||0)*1e4);
+    if(n&&(n<1000||n>1e7)){toast('输入上限要在 0.1 万到 1000 万之间');render();return;}
+    await api('PATCH','api/me',{inputLimit:n||null});me.inputLimit=n||null;render();toast(n?`输入上限：${+(n/1e4).toFixed(1)} 万 Token`:'输入上限已关闭');}
   else if(t.name==='rotation'){await api('PATCH','api/me',{rotation:t.value});me.rotation=t.value;render();toast('账号轮换：'+(ROT.find(x=>x[0]===t.value)||[,''])[1]);}
   else if(t.dataset.retry){const v=Math.max(0,Math.min(300,Math.round(+t.value||0)));t.value=v;D.admin.retry=await api('PUT','api/admin/retry',{maxWait:v});toast('最大等待时长已更新');}
   else if(t.name==='accrsv'){const v=await api('PATCH','api/accounts/'+encodeURIComponent(t.dataset.acc),{reserve:t.value==='def'?null:+t.value});keepAcc(v);toast('自用保留已更新');}

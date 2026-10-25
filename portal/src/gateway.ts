@@ -1,5 +1,6 @@
 // The gateway: portal key -> allowed CPA auth IDs -> X-Agy-Allow -> CPA, streaming-safe,
 // with a post-pick check of X-CPA-TRACE-ID and a circuit breaker.
+import { estimateInput, wan } from './inputsize.ts';
 import http, { type IncomingMessage, type ServerResponse, type IncomingHttpHeaders } from 'node:http';
 import { config } from './config.ts';
 import { one, all, run, now, getRules, getSetting, setSetting } from './db.ts';
@@ -222,6 +223,16 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   if (!(await cpa.pluginHealthy())) {
     if (isGen) record(ctx, { status: 503, result: 'blocked', reason: '选号插件不可用' });
     return fail(503, 'scheduler_unavailable', '选号插件不可用，暂停服务');
+  }
+
+  // 输入上限 (the user's own setting, every key): stop a runaway context before it reaches an account
+  if (isGen && json) {
+    const cap = Number(one('SELECT input_limit FROM users WHERE id = ?', key.user_id)?.input_limit || 0);
+    const est = cap > 0 ? estimateInput(json) : 0;
+    if (cap > 0 && est > cap) {
+      return refuse({ status: 400, result: 'input_limit',
+        message: `输入过限：这次输入约 ${wan(est)} Token，超过了你设置的上限 ${wan(cap)}。请检查上下文是不是爆了；确实需要的话到「个人中心」调高或关闭上限` }, 'input_limit_exceeded');
+    }
   }
 
   // shared-pool key limits

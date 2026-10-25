@@ -10,7 +10,7 @@ const SID = 'agy_sid';
 const OSTATE = 'agy_oauth_state';
 const DAPI = 'https://discord.com/api/v10';
 
-export type User = { id: number; discord_id: string; name: string; handle: string; role: 'admin' | 'user'; active: number; default_pool: string; rotation_mode?: string | null; session_salt?: string | null };
+export type User = { id: number; discord_id: string; name: string; handle: string; role: 'admin' | 'user'; active: number; default_pool: string; rotation_mode?: string | null; session_salt?: string | null; input_limit?: number | null };
 
 export function currentUser(req: IncomingMessage): User | null {
   const sid = parseCookies(req.headers.cookie)[SID];

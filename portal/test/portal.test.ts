@@ -864,6 +864,29 @@ test('model allowlists (大锅饭 / upstream) and per-account reserve', async ()
   assert.equal((await bob.req('PATCH', path, { reserve: null })).data.reserve, null);
 });
 
+test('输入上限: oversized input is refused with 输入过限 before reaching an account; images do not count', async () => {
+  assert.equal((await bob.req('PATCH', '/api/me', { inputLimit: 5 })).status, 400);
+  assert.equal((await bob.req('PATCH', '/api/me', { inputLimit: 2000 })).status, 200);
+  assert.equal((await bob.req('GET', '/api/me')).data.inputLimit, 2000);
+  try {
+    const big = (s: string) => ({ model: 'gemini-3-flash', messages: [{ role: 'user', content: s }] });
+    const r = await gen(K.bob, { body: big('a'.repeat(12000)) }); // ~3000 tokens
+    assert.equal(r.status, 400);
+    assert.match(r.text, /输入过限/);
+    assert.match(r.text, /input_limit_exceeded/);
+    assert.equal((await gen(K.bob, { body: big('中'.repeat(2500)) })).status, 400); // CJK ~1 token per character
+    assert.equal((await gen(K.bob, { body: big('a'.repeat(4000)) })).status, 200);
+    // a large inline image is not prompt text
+    const img = { model: 'gemini-3-flash', messages: [{ role: 'user', content: [{ type: 'text', text: 'what is this' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,' + 'A'.repeat(200000) } }] }] };
+    assert.equal((await gen(K.bob, { body: img })).status, 200);
+    const t = (await bob.req('GET', '/api/traffic?limit=10')).data;
+    assert.ok(JSON.stringify(t).includes('input_limit'), JSON.stringify(t).slice(0, 400));
+  } finally {
+    assert.equal((await bob.req('PATCH', '/api/me', { inputLimit: null })).status, 200);
+  }
+  assert.equal((await gen(K.bob, { body: { model: 'gemini-3-flash', messages: [{ role: 'user', content: 'a'.repeat(12000) }] } })).status, 200);
+});
+
 test('plugin not effective -> portal refuses (fail closed)', async () => {
   mock.st.plugin.effective_enabled = false;
   await sleep(150);

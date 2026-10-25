@@ -6,7 +6,7 @@ import { modelGroup } from './util.ts';
 import * as cpa from './cpa.ts';
 import { storedQuota, belowReserve } from './quota.ts';
 
-export type Why = { status: number; result: 'no_account' | 'quota' | 'rate_limited' | 'no_model' | 'daily_limit'; message: string; retryAfter?: number };
+export type Why = { status: number; result: 'no_account' | 'quota' | 'rate_limited' | 'no_model' | 'daily_limit' | 'input_limit'; message: string; retryAfter?: number };
 
 /** 「约 2 小时 15 分」 */
 export function humanWait(sec: number): string {

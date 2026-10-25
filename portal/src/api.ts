@@ -153,6 +153,7 @@ route('GET', '/api/me', (req) => {
   return {
     id: u.id, name: u.name, handle: u.handle, discordId: u.discord_id, role: u.role, defaultPool: u.default_pool,
     rotation: userRotation(u.id).mode,
+    inputLimit: u.input_limit ?? null,
     baseURL: (site.publicURL() || '') + '/v1',
   };
 });
@@ -160,7 +161,11 @@ route('GET', '/api/me', (req) => {
 route('PATCH', '/api/me', async (req) => {
   const u = requireUser(req);
   const b = await readJSON(req);
-  if (b.defaultPool === undefined && b.rotation === undefined) throw new HttpError(400, 'invalid_body');
+  if (b.defaultPool === undefined && b.rotation === undefined && b.inputLimit === undefined) throw new HttpError(400, 'invalid_body');
+  if (b.inputLimit !== undefined) {
+    if (b.inputLimit !== null && !(Number.isInteger(b.inputLimit) && b.inputLimit >= 1000 && b.inputLimit <= 10_000_000)) throw new HttpError(400, 'invalid_input_limit');
+    run('UPDATE users SET input_limit = ? WHERE id = ?', b.inputLimit, u.id);
+  }
   if (b.defaultPool !== undefined) {
     if (b.defaultPool !== 'private' && b.defaultPool !== 'shared') throw new HttpError(400, 'invalid_pool');
     run('UPDATE users SET default_pool = ? WHERE id = ?', b.defaultPool, u.id);
@@ -818,7 +823,7 @@ route('GET', '/api/admin/users', async (req) => {
     const c = cr.byId.get(r.auth_id);
     if (c && !c.disabled && !accountProblem(r, c) && isPaid(r)) valid.set(r.owner_id, (valid.get(r.owner_id) || 0) + 1);
   }
-  const sharedToday = new Map(all(`SELECT user_id, COUNT(*) AS n FROM usage WHERE pool = 'shared' AND ts >= ? AND result != 'daily_limit' GROUP BY user_id`, since).map((r) => [r.user_id, Number(r.n)]));
+  const sharedToday = new Map(all(`SELECT user_id, COUNT(*) AS n FROM usage WHERE pool = 'shared' AND ts >= ? AND result NOT IN ('daily_limit', 'input_limit') GROUP BY user_id`, since).map((r) => [r.user_id, Number(r.n)]));
   const acc = new Map(all('SELECT owner_id, COUNT(*) AS n, SUM(shared) AS s FROM accounts GROUP BY owner_id').map((r) => [r.owner_id, r]));
   const keys = new Map(all('SELECT user_id, COUNT(*) AS n FROM api_keys WHERE revoked_at IS NULL GROUP BY user_id').map((r) => [r.user_id, r.n]));
   const reqs = new Map(all(`SELECT user_id, COUNT(*) AS n, SUM(ts >= ?) AS today, SUM(COALESCE(total_tok,0)) AS tok, MAX(ts) AS last FROM usage WHERE user_id IS NOT NULL GROUP BY user_id`, since).map((r) => [r.user_id, r]));

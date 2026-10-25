@@ -162,6 +162,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS announcements (
 addCol('users', 'ann_seen', 'INTEGER');
 // 大锅饭 daily request limit: NULL = rule default, -1 = unlimited, >= 0 = fixed per day.
 addCol('users', 'daily_limit', 'INTEGER');
+addCol('users', 'input_limit', 'INTEGER'); // 输入上限 in estimated tokens, NULL = off
 // Per-account self-use reserve chosen by the owner when sharing (NULL = the admin's default rule).
 addCol('accounts', 'reserve', 'INTEGER');
 // External upstreams (Tools / Antigravity Manager) that take turns with the shared Google accounts.

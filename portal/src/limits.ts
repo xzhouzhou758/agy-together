@@ -1,5 +1,5 @@
 // 大锅饭 daily request limit: every shared-pool request counts (success or not), except the ones
-// this limit itself refused. limit = dailyBase + dailyPer × valid credentials, where a valid
+// refused by this limit itself or by the user's 输入上限. limit = dailyBase + dailyPer × valid credentials, where a valid
 // credential is the user's own, shared, enabled, Pro or Ultra, and without a problem (verify / login / banned / 403).
 // users.daily_limit overrides it (-1 = unlimited); admins are unlimited unless overridden.
 import { one, all, getRules, getSetting, setSetting } from './db.ts';
@@ -25,7 +25,7 @@ export function validShared(userId: number, c: cpa.Creds): number {
     .filter((r) => { const cr = c.byId.get(r.auth_id); return !!cr && !cr.disabled && !accountProblem(r, cr) && isPaid(r); }).length;
 }
 export function usedToday(userId: number): number {
-  return Number(one(`SELECT COUNT(*) AS n FROM usage WHERE user_id = ? AND pool = 'shared' AND ts >= ? AND result != 'daily_limit'`, userId, dayStart())?.n || 0);
+  return Number(one(`SELECT COUNT(*) AS n FROM usage WHERE user_id = ? AND pool = 'shared' AND ts >= ? AND result NOT IN ('daily_limit', 'input_limit')`, userId, dayStart())?.n || 0);
 }
 export async function dailyFor(userId: number): Promise<Daily> {
   return dailyWith(userId, await cpa.creds(10000));
