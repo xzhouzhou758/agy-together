@@ -926,6 +926,19 @@ test('大锅饭输入上限 (admin rule): refused for shared keys only', async (
   } finally { await alice.req('PUT', '/api/admin/rules', { sharedInput: 500000 }); }
 });
 
+test('bot chat settings: admin picks the model and a custom prompt', async () => {
+  assert.equal((await bob.req('GET', '/api/admin/botchat')).status, 403);
+  const g = (await alice.req('GET', '/api/admin/botchat')).data;
+  assert.equal(g.custom, false);
+  assert.ok(g.models.includes('gemini-3-flash'), JSON.stringify(g.models));
+  assert.equal((await alice.req('PUT', '/api/admin/botchat', { model: 'bad model!' })).status, 400);
+  const p = (await alice.req('PUT', '/api/admin/botchat', { model: 'gemini-3-pro-high', prompt: '你是测试机器人' })).data;
+  assert.deepEqual([p.model, p.custom], ['gemini-3-pro-high', true]);
+  assert.equal((await alice.req('GET', '/api/admin/botchat')).data.prompt, '你是测试机器人');
+  await alice.req('PUT', '/api/admin/botchat', { model: 'gemini-3-flash', prompt: null });
+  assert.equal((await alice.req('GET', '/api/admin/botchat')).data.custom, false);
+});
+
 test('plugin not effective -> portal refuses (fail closed)', async () => {
   mock.st.plugin.effective_enabled = false;
   await sleep(150);

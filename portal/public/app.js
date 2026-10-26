@@ -163,7 +163,7 @@ const LOADERS={
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null)};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null)};
   },
 };
 
@@ -661,6 +661,17 @@ function upCard(L){
   return fold('upstreams','外部上游（Tools）',L.length?dotChip(L.some(u=>u.enabled)?'good':'',`${L.filter(u=>u.enabled).length} 个启用`):cnt(0),
     `<p class="faint" style="font-size:12.5px;margin:-6px 0 8px">大锅饭请求会和共享号轮流走这里；号都满了或没号时，也会自动转过来。请求原样转发，换成这里的 API Key。</p>${rows}${form}`,!L.length);
 }
+function botChatForm(C){
+  if(!C)return '';
+  const list=C.models.includes(C.model)?C.models:[C.model,...C.models];
+  return `<div class="bchat mt-l"><h3>@ 机器人问答</h3>
+    <div class="rule"><div><h3>模型</h3><p>跑在管理员自己的号上</p></div><select class="select" id="bc-model" aria-label="问答模型">${list.map(m=>`<option ${m===C.model?'selected':''}>${esc(m)}</option>`).join('')}</select></div>
+    <div class="bc-p"><div class="row"><h3>预设提示词${C.custom?' <span class="chip accent">自定义</span>':' <span class="chip">默认</span>'}</h3>
+      <div class="hstack"><label class="btn sm">${ic('upload')}上传 .txt / .md<input type="file" id="f-botprompt" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="btn sm ghost" data-act="botpromptreset">恢复默认</button></div></div>
+      <textarea class="input mono" id="bc-prompt" rows="12" spellcheck="false" aria-label="预设提示词">${esc(C.prompt)}</textarea>
+      <small class="faint">站内数据（提问人最近的请求、各时段排行、报错原因）会自动接在提示词后面，不用写进去。</small></div>
+    <div class="mt"><button class="btn sm primary" data-act="botchatsave">保存</button></div></div>`;
+}
 function botCard(B,s){
   if(!B)return `<section class="card glass"><div class="card-head"><h2>Discord 机器人</h2></div><p class="faint">读取失败，点右上角刷新再试</p></section>`;
   const step=(n,done,title,body)=>`<div class="bstep ${done?'done':''}"><span class="bnum">${done?ic('check'):n}</span><div class="bbody"><b>${title}</b>${body}</div></div>`;
@@ -681,7 +692,8 @@ function botCard(B,s){
     :B.tokenSet&&!B.error?`<small>自动把 Interactions Endpoint URL 填到 Discord 开发者后台，并注册命令</small><div class="mt"><button class="btn sm primary" data-act="botconnect">一键连接</button></div>`:`<small class="faint">完成第 1 步后可用</small>`;
   return fold('bot','Discord 机器人',ready?dotChip('good','已启用'):dotChip('','未完成'),`
     <div class="bsteps">${step(1,B.inGuild,'邀请机器人进服务器',s1)}${step(2,B.inGuild&&!!B.channelId,'选择提醒频道',s2)}${step(3,B.connected,'连接斜杠命令',s3)}${step(4,!!B.chat?.connected,'@ 机器人问答',B.chat?.connected?`<small>已上线，在频道里 @ 机器人问报错或排行（模型 <span class="mono">${esc(B.chat.model)}</span>，跑在管理员自己的号上）</small>`:B.chat?.error?`<small class="bad-t">${esc(B.chat.error)}</small><small class="faint">打开后等几分钟会自动重连</small>`:`<small class="faint">连接中…（需要在 Discord 开发者后台 Bot 页面打开 Message Content Intent）</small>`)}</div>
-    ${B.inGuild&&B.channelId?`<div class="mt-l"><button class="btn sm" data-act="bottest">发一条测试消息</button></div>`:''}`,!ready,'号出问题自动 @ 号主；/我的号、/今日榜；每天发日报');
+    ${B.inGuild&&B.channelId?`<div class="mt-l"><button class="btn sm" data-act="bottest">发一条测试消息</button></div>`:''}
+    ${botChatForm(D.admin.botchat)}`,!ready,'号出问题自动 @ 号主；/我的号、/今日榜；每天发日报');
 }
 function shopRow(s={}){return `<div class="shop-row"><input class="input sm" data-shop="name" placeholder="名称" maxlength="40" value="${esc(s.name||'')}"><input class="input sm mono" data-shop="url" placeholder="https://" value="${esc(s.url||'')}"><input class="input sm" data-shop="note" placeholder="备注" maxlength="80" value="${esc(s.note||'')}"><button class="btn sm ghost danger icon" data-act="shopdel" aria-label="删除">${ic('trash')}</button></div>`;}
 
@@ -1284,6 +1296,8 @@ document.addEventListener('click',act(async e=>{
     case 'botchid':{const v=$('#bot-ch-id')?.value.trim();if(!v)break;D.admin.site=await api('PUT','api/admin/site',{botChannelId:v});D.admin.bot=await api('GET','api/admin/bot');render();toast('已保存');break;}
     case 'botrefresh':D.admin.bot=await api('GET','api/admin/bot');render();break;
     case 'botconnect':D.admin.bot=await api('POST','api/admin/bot/connect');render();toast('已连接');break;
+    case 'botchatsave':D.admin.botchat={...D.admin.botchat,...await api('PUT','api/admin/botchat',{model:$('#bc-model').value,prompt:$('#bc-prompt').value})};D.admin.botchat.prompt=$('#bc-prompt').value.trim()||D.admin.botchat.defaultPrompt;toast('问答设置已保存');render();break;
+    case 'botpromptreset':$('#bc-prompt').value=D.admin.botchat.defaultPrompt;toast('已填入默认提示词，点保存生效');break;
     case 'bottest':await api('POST','api/admin/bot/test');toast('已发送，去频道看看');break;
     case 'savesite':{
       const b={};$$('[data-site]').forEach(x=>{if(x.type!=='password'||x.value.trim())b[x.dataset.site]=x.value.trim();});
@@ -1295,6 +1309,7 @@ document.addEventListener('click',act(async e=>{
 document.addEventListener('change',act(async e=>{
   const t=e.target;
   if(t.id==='f-files'){await uploadFiles([...t.files]);return;}
+  if(t.id==='f-botprompt'){const f=t.files[0];if(!f)return;if(f.size>20000*3){toast('文件太大（最多约 2 万字）');return;}$('#bc-prompt').value=(await f.text()).trim();t.value='';toast('已读入，点保存生效');return;}
   if(t.name==='defaultPool'){await api('PATCH','api/me',{defaultPool:t.value});me.defaultPool=t.value;toast(`新建密钥默认：${POOL[t.value]}`);}
   else if(t.dataset.key){const k=D.keys.find(x=>x.id===+t.dataset.key);await api('PATCH','api/keys/'+k.id,{pool:t.value});k.pool=t.value;render();toast(`“${k.name}”改为${POOL[t.value]}`);}
   else if(t.name==='logView'){ui.logView=t.value;await reload();}

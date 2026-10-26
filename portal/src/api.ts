@@ -1,5 +1,5 @@
 // JSON API for the web UI. Every handler does its own server-side authorization.
-import { chatStatus, chatModel } from './botchat.ts';
+import { chatStatus, chatModel, chatPrompt, DEFAULT_PROMPT } from './botchat.ts';
 import { existsSync } from 'node:fs';
 import { poolResources } from './poolres.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -1069,6 +1069,27 @@ route('GET', '/api/admin/site', (req) => {
 route('GET', '/api/admin/bot', async (req) => {
   requireAdmin(req);
   return { ...(await botStatus()), chat: { ...chatStatus, model: chatModel() } };
+});
+// @ 机器人问答: model and prompt
+route('GET', '/api/admin/botchat', async (req) => {
+  requireAdmin(req);
+  const ids = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin'`).map((r) => r.auth_id);
+  const models = new Set<string>();
+  for (const id of ids) for (const m of await cpa.credentialModels(id).catch(() => [])) if (m?.id) models.add(String(m.id));
+  return { model: chatModel(), prompt: chatPrompt(), custom: !!getSetting('bot_llm_prompt'), defaultPrompt: DEFAULT_PROMPT, models: [...models].sort() };
+});
+route('PUT', '/api/admin/botchat', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  if (b.model !== undefined) {
+    if (typeof b.model !== 'string' || !/^[\w.:\/-]{1,80}$/.test(b.model)) throw new HttpError(400, 'invalid_model');
+    setSetting('bot_llm_model', b.model);
+  }
+  if (b.prompt !== undefined) {
+    if (b.prompt !== null && (typeof b.prompt !== 'string' || b.prompt.length > 20000)) throw new HttpError(400, 'invalid_prompt');
+    setSetting('bot_llm_prompt', b.prompt && b.prompt.trim() && b.prompt.trim() !== DEFAULT_PROMPT ? b.prompt.trim() : '');
+  }
+  return { ok: true, model: chatModel(), custom: !!getSetting('bot_llm_prompt') };
 });
 route('POST', '/api/admin/bot/connect', async (req) => {
   requireAdmin(req);

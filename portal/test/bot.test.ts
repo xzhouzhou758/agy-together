@@ -204,7 +204,7 @@ test('usage watch: 大锅饭 input-cap refusal @s the caller even with /免打�
   } finally { globalThis.fetch = real; }
 });
 
-test('bot chat context: the asker sees only their own requests, names instead of mentions', async () => {
+test('bot chat context: own request list, everyone in the rankings, names instead of mentions', async () => {
   const { run, one } = await import('../src/db.ts');
   const { chatContext } = await import('../src/botchat.ts');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('121212121', 'asker', 'asker', 'user', 0)");
@@ -214,7 +214,10 @@ test('bot chat context: the asker sees only their own requests, names instead of
   add(a, 'MINE-预填充'); add(o, 'OTHER-SECRET');
   const ctx = chatContext('121212121');
   assert.match(ctx, /MINE-预填充/);
-  assert.ok(!ctx.includes('OTHER-SECRET'));
+  const own = ctx.split('\n\n')[0];                     // the asker's request list: theirs only
+  assert.match(own, /MINE-预填充/);
+  assert.ok(!own.includes('OTHER-SECRET'));
+  assert.match(ctx, /other：.*失败 1 次/);                  // rankings name everyone with their failures
   assert.ok(!/<@\d+>/.test(ctx));
   assert.match(chatContext('999'), /还没登录过/);
 });

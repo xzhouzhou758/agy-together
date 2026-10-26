@@ -5,6 +5,7 @@
 import http from 'node:http';
 import { config } from './config.ts';
 import { one, all, run, now, getSetting } from './db.ts';
+import { tk } from './bot.ts';
 import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
 import { leaderboard, allTimeLine } from './bot.ts';
@@ -14,7 +15,7 @@ const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
 export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
 
-const SYSTEM = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，回答简短、口语化、中文，最多 8 行，不寒暄。
+export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，回答简短、口语化、中文，最多 8 行，不寒暄。
 你只回答两类问题：1) 用户自己的报错是怎么回事、怎么解决；2) 站内用量排行之类的统计（谁吃得最多、今天多少请求等）。其它问题一句话婉拒。
 只根据下面给的数据回答，不知道就说不知道，不要编造数字。不要泄露任何邮箱、密钥。
 常见报错对照：
@@ -27,6 +28,7 @@ const SYSTEM = `你是「AGY Together 小锅饭」Discord 群里的机器人二�
 - 需要验证 Verify your account：号主用这个 Google 账号登录 Antigravity 完成验证。
 - 客户端断开 499：用户自己取消或客户端超时，不是服务端问题。
 - 上游出错 5xx：上游临时故障，重试即可。`;
+export const chatPrompt = () => getSetting('bot_llm_prompt') || DEFAULT_PROMPT;
 
 /** What the model gets to see: the asker's recent requests and the public boards. */
 export function chatContext(discordId: string): string {
@@ -41,7 +43,28 @@ export function chatContext(discordId: string): string {
   parts.push(leaderboard(dayStart(), now(), '今日榜（0 点到现在）'));
   parts.push(leaderboard(now() - 86400e3, now(), '过去 24 小时'));
   parts.push(allTimeLine());
+  parts.push(rankings('今天', dayStart()), rankings('过去 24 小时', now() - 86400e3), rankings('全站历史', 0));
   return parts.join('\n\n').replace(/<@\d+>/g, (m) => { const r = one('SELECT name FROM users WHERE discord_id = ?', m.slice(2, -1)); return r ? r.name : '某人'; });
+}
+
+const TOK = 'COALESCE(u.total_tok, COALESCE(u.in_tok,0) + COALESCE(u.out_tok,0) + COALESCE(u.reasoning_tok,0))';
+/** Per-user table (tokens, requests, failures with the main reason) and per-model use, for one period. */
+function rankings(label: string, since: number): string {
+  const rows = all(`SELECT u.user_id, us.name, COUNT(*) AS n, SUM(u.result != 'ok' AND u.status != 499) AS bad, SUM(${TOK}) AS tok,
+      SUM(u.pool = 'shared') AS shared FROM usage u JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND u.path != '/discord/chat' GROUP BY u.user_id ORDER BY tok DESC LIMIT 25`, since);
+  if (!rows.length) return `【${label}】没有请求`;
+  const RES: Record<string, string> = { client: '请求错误', quota: '额度用完/限流', no_account: '没有可用的号', no_model: '模型不支持', upstream: '上游出错', blocked: '被拦截', rate_limited: '限速', daily_limit: '次数用完', input_limit: '输入过限' };
+  const why = (uid: number) => {
+    const w = one(`SELECT reason, result, status, COUNT(*) AS c FROM usage WHERE user_id = ? AND ts >= ? AND result != 'ok' AND status != 499 GROUP BY COALESCE(reason, result || status) ORDER BY c DESC LIMIT 1`, uid, since);
+    return w ? { r: w.reason || `${RES[w.result] || w.result}（HTTP ${w.status}，没记录原文）` } : null;
+  };
+  const lines = rows.map((r: any, i: number) => {
+    const bad = Number(r.bad || 0), w = bad ? why(r.user_id) : null;
+    return `${i + 1}. ${r.name}：${tk(r.tok)} Token，${r.n} 次请求（大锅饭 ${r.shared}），失败 ${bad} 次${bad ? `（失败率 ${Math.round(bad / Number(r.n) * 100)}%，主要是 ${String(w?.r || '').slice(0, 60)}）` : ''}`;
+  });
+  const models = all(`SELECT u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' GROUP BY u.model ORDER BY tok DESC LIMIT 8`, since)
+    .map((m: any) => `${m.model || '?'} ${m.n} 次 ${tk(m.tok)}`).join('；');
+  return `【${label}】按 Token 排序的用户（客户端断开不算失败）：\n${lines.join('\n')}\n模型：${models}`;
 }
 
 function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace: string | undefined; body: string }> {
@@ -64,7 +87,7 @@ function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace
 export async function answer(discordId: string, question: string, previous?: string): Promise<string> {
   const allow = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id);
   if (!allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
-  const messages = [{ role: 'system', content: SYSTEM + '\n\n===== 数据 =====\n' + chatContext(discordId) }];
+  const messages = [{ role: 'system', content: chatPrompt() + '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) }];
   if (previous) messages.push({ role: 'assistant', content: previous });
   messages.push({ role: 'user', content: question || '你好' });
   const start = now(), admin = one(`SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1`)?.id ?? null;
