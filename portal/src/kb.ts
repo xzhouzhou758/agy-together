@@ -63,30 +63,43 @@ function chunks(title: string, body: string): string[] {
   if (cur) out.push(cur);
   return out.map((c) => `《${title}》${c}`);
 }
-/** The best-matching pieces of the knowledge base for a question, within a size budget. */
-export function kbSearch(question: string): string {
+/** Ranked matches: document id, title and the matching chunk. */
+export function kbHits(question: string, limit = 6, budget = BUDGET): { id: number; title: string; c: string }[] {
   const q = terms(question);
-  if (!q.size) return '';
-  const scored: { s: number; c: string }[] = [];
-  for (const d of all('SELECT title, body FROM kb_docs')) {
+  if (!q.size) return [];
+  const scored: { s: number; id: number; title: string; c: string }[] = [];
+  for (const d of all('SELECT id, title, body FROM kb_docs')) {
     for (const c of chunks(d.title, d.body)) {
       const ct = terms(c);
       let s = 0;
       for (const w of q) if (ct.has(w)) s += w.length > 2 ? 2 : 1;
-      if (s) scored.push({ s: s / Math.sqrt(c.length / 300 + 1), c });
+      if (s) scored.push({ s: s / Math.sqrt(c.length / 300 + 1), id: d.id, title: d.title, c });
     }
   }
   scored.sort((a, b) => b.s - a.s);
-  const pick: string[] = [];
+  const out: { id: number; title: string; c: string }[] = [];
   let len = 0;
   for (const x of scored) {
-    if (len + x.c.length > BUDGET) continue;
-    pick.push(x.c); len += x.c.length;
-    if (pick.length >= 6) break;
+    if (len + x.c.length > budget) continue;
+    out.push({ id: x.id, title: x.title, c: x.c }); len += x.c.length;
+    if (out.length >= limit) break;
   }
-  return pick.join('\n---\n');
+  return out;
 }
-
+/** One document's text from an offset (for the model's open_doc tool). */
+export function kbDoc(id: number, offset = 0, size = 6000): string {
+  const d = one('SELECT title, source, body FROM kb_docs WHERE id = ?', id);
+  if (!d) return '没有这篇文档';
+  const o = Math.max(0, Math.floor(offset) || 0), part = String(d.body).slice(o, o + size);
+  return `《${d.title}》${d.source ? `（${d.source}）` : ''} 第 ${o}–${o + part.length} 字 / 共 ${String(d.body).length} 字${o + part.length < String(d.body).length ? `，后面还有，可用 offset=${o + part.length} 继续` : ''}\n${part}`;
+}
+export function kbTitles(): string {
+  return all('SELECT id, title FROM kb_docs ORDER BY id').map((d: any) => `#${d.id} ${d.title}`).join('\n');
+}
+/** The best-matching pieces of the knowledge base for a question, within a size budget. */
+export function kbSearch(question: string): string {
+  return kbHits(question).map((h) => h.c).join('\n---\n');
+}
 /** Always given: how this site plugs into SillyTavern. */
 export function tavernGuide(): string {
   const base = site.publicURL() || '（站点地址）';

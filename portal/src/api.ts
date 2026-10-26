@@ -1,5 +1,5 @@
 // JSON API for the web UI. Every handler does its own server-side authorization.
-import { chatStatus, chatModel, chatPrompt, DEFAULT_PROMPT } from './botchat.ts';
+import { chatStatus, chatModel, chatSource, chatPrompt, DEFAULT_PROMPT } from './botchat.ts';
 import { kbList, kbAdd, kbDelete, kbFetch } from './kb.ts';
 import { existsSync } from 'node:fs';
 import { poolResources } from './poolres.ts';
@@ -1077,7 +1077,9 @@ route('GET', '/api/admin/botchat', async (req) => {
   const ids = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin'`).map((r) => r.auth_id);
   const models = new Set<string>();
   for (const id of ids) for (const m of await cpa.credentialModels(id).catch(() => [])) if (m?.id) models.add(String(m.id));
-  return { model: chatModel(), prompt: chatPrompt(), custom: !!getSetting('bot_llm_prompt'), defaultPrompt: DEFAULT_PROMPT, models: [...models].sort() };
+  const sources = [{ id: 'cpa', name: '自己的号（CPA）', models: [...models].sort() }];
+  for (const u of enabledUpstreams()) sources.push({ id: 'up:' + u.id, name: u.name + '（外部上游）', models: [...((await modelsOf(u).catch(() => null)) || [])].sort() });
+  return { model: chatModel(), source: chatSource(), sources, prompt: chatPrompt(), custom: !!getSetting('bot_llm_prompt'), defaultPrompt: DEFAULT_PROMPT, models: [...models].sort() };
 });
 route('PUT', '/api/admin/botchat', async (req) => {
   requireAdmin(req);
@@ -1086,11 +1088,15 @@ route('PUT', '/api/admin/botchat', async (req) => {
     if (typeof b.model !== 'string' || !/^[\w.:\/-]{1,80}$/.test(b.model)) throw new HttpError(400, 'invalid_model');
     setSetting('bot_llm_model', b.model);
   }
+  if (b.source !== undefined) {
+    if (b.source !== 'cpa' && !(typeof b.source === 'string' && /^up:\d+$/.test(b.source) && upstreamById(Number(b.source.slice(3))))) throw new HttpError(400, 'invalid_source');
+    setSetting('bot_llm_source', b.source);
+  }
   if (b.prompt !== undefined) {
     if (b.prompt !== null && (typeof b.prompt !== 'string' || b.prompt.length > 20000)) throw new HttpError(400, 'invalid_prompt');
     setSetting('bot_llm_prompt', b.prompt && b.prompt.trim() && b.prompt.trim() !== DEFAULT_PROMPT ? b.prompt.trim() : '');
   }
-  return { ok: true, model: chatModel(), custom: !!getSetting('bot_llm_prompt') };
+  return { ok: true, model: chatModel(), source: chatSource(), custom: !!getSetting('bot_llm_prompt') };
 });
 // 机器人知识库
 route('GET', '/api/admin/kb', (req) => { requireAdmin(req); return kbList(); });

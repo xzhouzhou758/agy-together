@@ -932,6 +932,9 @@ test('bot chat settings: admin picks the model and a custom prompt', async () =>
   assert.equal(g.custom, false);
   assert.ok(g.models.includes('gemini-3-flash'), JSON.stringify(g.models));
   assert.equal((await alice.req('PUT', '/api/admin/botchat', { model: 'bad model!' })).status, 400);
+  assert.equal((await alice.req('PUT', '/api/admin/botchat', { source: 'up:999' })).status, 400);
+  assert.equal(g.source, 'cpa');
+  assert.equal(g.sources[0].id, 'cpa');
   const p = (await alice.req('PUT', '/api/admin/botchat', { model: 'gemini-3-pro-high', prompt: '你是测试机器人' })).data;
   assert.deepEqual([p.model, p.custom], ['gemini-3-pro-high', true]);
   assert.equal((await alice.req('GET', '/api/admin/botchat')).data.prompt, '你是测试机器人');

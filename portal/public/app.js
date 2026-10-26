@@ -663,9 +663,11 @@ function upCard(L){
 }
 function botChatForm(C){
   if(!C)return '';
-  const list=C.models.includes(C.model)?C.models:[C.model,...C.models];
+  const srcs=C.sources||[{id:'cpa',name:'自己的号（CPA）',models:C.models}];
+  const opts=srcs.map(s=>{const ms=s.id===C.source&&!s.models.includes(C.model)?[C.model,...s.models]:s.models;
+    return `<optgroup label="${esc(s.name)}">${ms.map(m=>`<option value="${esc(s.id+'|'+m)}" ${s.id===C.source&&m===C.model?'selected':''}>${esc(m)}</option>`).join('')||'<option disabled>（读不到模型列表）</option>'}</optgroup>`;}).join('');
   return `<div class="bchat mt-l"><h3>@ 机器人问答</h3>
-    <div class="rule"><div><h3>模型</h3><p>跑在管理员自己的号上</p></div><select class="select" id="bc-model" aria-label="问答模型">${list.map(m=>`<option ${m===C.model?'selected':''}>${esc(m)}</option>`).join('')}</select></div>
+    <div class="rule"><div><h3>模型</h3><p>跑在管理员自己的号上，或用外部上游（Tools）</p></div><select class="select" id="bc-model" aria-label="问答模型">${opts}</select></div>
     <div class="bc-p"><div class="row"><h3>预设提示词${C.custom?' <span class="chip accent">自定义</span>':' <span class="chip">默认</span>'}</h3>
       <div class="hstack"><label class="btn sm">${ic('upload')}上传 .txt / .md<input type="file" id="f-botprompt" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="btn sm ghost" data-act="botpromptreset">恢复默认</button></div></div>
       <textarea class="input mono" id="bc-prompt" rows="12" spellcheck="false" aria-label="预设提示词">${esc(C.prompt)}</textarea>
@@ -1302,7 +1304,7 @@ document.addEventListener('click',act(async e=>{
     case 'botrefresh':D.admin.bot=await api('GET','api/admin/bot');render();break;
     case 'botconnect':D.admin.bot=await api('POST','api/admin/bot/connect');render();toast('已连接');break;
     case 'kburl':{const u=$('#kb-url').value.trim();if(!u)return;toast('导入中…');const r=await api('POST','api/admin/kb',{url:u});D.admin.kb=r.list;render();toast('已导入');break;}
-    case 'botchatsave':D.admin.botchat={...D.admin.botchat,...await api('PUT','api/admin/botchat',{model:$('#bc-model').value,prompt:$('#bc-prompt').value})};D.admin.botchat.prompt=$('#bc-prompt').value.trim()||D.admin.botchat.defaultPrompt;toast('问答设置已保存');render();break;
+    case 'botchatsave':D.admin.botchat={...D.admin.botchat,...await api('PUT','api/admin/botchat',(()=>{const v=$('#bc-model').value,i=v.indexOf('|');return {source:v.slice(0,i),model:v.slice(i+1),prompt:$('#bc-prompt').value};})())};D.admin.botchat.prompt=$('#bc-prompt').value.trim()||D.admin.botchat.defaultPrompt;toast('问答设置已保存');render();break;
     case 'botpromptreset':$('#bc-prompt').value=D.admin.botchat.defaultPrompt;toast('已填入默认提示词，点保存生效');break;
     case 'kbdel':if(!confirm('删除这篇文档？'))return;D.admin.kb=await api('DELETE','api/admin/kb/'+arg);render();toast('已删除');break;
     case 'bottest':await api('POST','api/admin/bot/test');toast('已发送，去频道看看');break;

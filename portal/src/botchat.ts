@@ -13,11 +13,14 @@ import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
 import { leaderboard, allTimeLine, tk, myAccounts, maskEmail } from './bot.ts';
 import { dayStart, sharedModels } from './limits.ts';
-import { kbSearch, tavernGuide } from './kb.ts';
+import { kbSearch, kbHits, kbDoc, kbTitles, tavernGuide } from './kb.ts';
+import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
 export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
+/** 'cpa' = the admins' own accounts through CPA; 'up:<id>' = an external upstream (Tools) with its own key. */
+export const chatSource = () => getSetting('bot_llm_source') || 'cpa';
 
 export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，一只聪明又有点贫嘴的柴犬。
 说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
@@ -153,27 +156,84 @@ function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace
   });
 }
 
+function upPost(id: number, body: string): Promise<{ status: number; trace: string | undefined; body: string }> {
+  const u = upstreamById(id);
+  if (!u || !u.key) return Promise.reject(new Error('upstream'));
+  return new Promise((resolve, reject) => {
+    const r = upstreamRequest(u, 'POST', '/v1/chat/completions', { 'content-type': 'application/json' }, Buffer.byteLength(body));
+    r.on('response', (res) => {
+      const ch: Buffer[] = [];
+      res.on('data', (c: Buffer) => ch.push(c));
+      res.on('end', () => resolve({ status: res.statusCode || 502, trace: undefined, body: Buffer.concat(ch).toString('utf8') }));
+      res.on('error', reject);
+    });
+    r.setTimeout(90000, () => r.destroy(new Error('timeout')));
+    r.on('error', reject);
+    r.end(body);
+  });
+}
+
 /** One answer; runs on the admins' accounts only. */
+// tools the model may call to look things up itself before answering
+const TOOLS = [
+  { type: 'function', function: { name: 'search_kb', description: '在酒馆知识库里按关键词搜索，返回最相关的几段（带文档编号）。用词不对就换个说法再搜。',
+    parameters: { type: 'object', properties: { query: { type: 'string', description: '关键词或一句话，中英文都行' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'open_doc', description: '打开知识库里某一篇文档的全文（每次最多 6000 字，用 offset 往后翻）。',
+    parameters: { type: 'object', properties: { id: { type: 'integer' }, offset: { type: 'integer' } }, required: ['id'] } } },
+];
+const MAX_STEPS = 4;
+function runTool(name: string, args: any): string {
+  if (name === 'search_kb') {
+    const h = kbHits(String(args?.query || ''), 5, 3500);
+    return h.length ? h.map((x) => `[文档 #${x.id}] ${x.c}`).join('\n---\n') : '没搜到，换个关键词试试';
+  }
+  if (name === 'open_doc') return kbDoc(Number(args?.id), Number(args?.offset || 0));
+  return '没有这个工具';
+}
+
+/** One answer; runs on the admins' accounts only. The model may search the knowledge base a few times first. */
 export async function answer(discordId: string, question: string, previous?: string): Promise<string> {
-  const allow = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id);
-  if (!allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
-  const messages = [{ role: 'system', content: chatPrompt() + '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) + '\n\n' + tavernGuide() + knowledge(question, previous) }];
+  const src = chatSource(), upId = isUp(src) ? Number(src.slice(3)) : null;
+  const allow = upId == null ? all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id) : [];
+  if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
+  const send = (b: string) => (upId == null ? cpaPost(b, allow) : upPost(upId, b));
+  const titles = kbTitles();
+  const messages: any[] = [{ role: 'system', content: chatPrompt() +
+    (titles ? '\n\n酒馆相关的问题，先看下面已经附上的知识库片段；不够或对不上就自己用 search_kb 换关键词搜、用 open_doc 读全文，查清楚再答，别凭印象瞎说。数据类问题（排行、报错、额度）直接看数据，不用查知识库。\n知识库目录：\n' + titles : '') +
+    '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) + '\n\n' + tavernGuide() + knowledge(question, previous) }];
   if (previous) messages.push({ role: 'assistant', content: previous });
   messages.push({ role: 'user', content: question || '你好' });
-  const start = now(), admin = one(`SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1`)?.id ?? null;
-  const log = (status: number, requestId: string | null, reason: string | null) => run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, owner_id, model, requested_model, path, status, result, reason, latency_ms, stream, request_id)
-    VALUES(?,?,NULL,'private',NULL,?,?,?,'/discord/chat',?,?,?,?,0,?)`, start, admin, admin, chatModel(), chatModel(), status, status < 300 ? 'ok' : status === 429 ? 'quota' : status < 500 ? 'client' : 'upstream', reason, now() - start, requestId);
+  const admin = one(`SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1`)?.id ?? null;
+  const upOwner = upId == null ? admin : upstreamById(upId)?.ownerId ?? admin;
+  const log = (start: number, status: number, requestId: string | null, reason: string | null) => run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, owner_id, model, requested_model, path, status, result, reason, latency_ms, stream, request_id)
+    VALUES(?,?,NULL,'private',?,?,?,?,'/discord/chat',?,?,?,?,0,?)`, start, admin, upId == null ? null : upAuthId(upId), upOwner, chatModel(), chatModel(), status, status < 300 ? 'ok' : status === 429 ? 'quota' : status < 500 ? 'client' : 'upstream', reason, now() - start, requestId);
   try {
-    const r = await cpaPost(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 800, messages }), allow);
-    const tr = parseTrace(r.trace);
-    if (tr) recentAllowed.set(tr.requestId, { allowed: new Set(allow), ts: now() });
-    log(r.status, tr?.requestId || null, r.status < 300 ? 'Discord 机器人回答' : 'Discord 机器人回答失败');
-    if (r.status >= 300) return `我这边出错了（HTTP ${r.status}），晚点再问我 🐶`;
-    const c = JSON.parse(r.body)?.choices?.[0]?.message?.content;
-    const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((p: any) => p?.text || '').join('') : '';
-    return text.trim().slice(0, 1900) || '……我没想出来 🐶';
+    for (let step = 0; step <= MAX_STEPS; step++) {
+      const start = now(), last = step === MAX_STEPS || !titles;
+      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 900, messages, ...(last ? {} : { tools: TOOLS, tool_choice: 'auto' }) }));
+      const tr = parseTrace(r.trace);
+      if (tr) recentAllowed.set(tr.requestId, { allowed: new Set(allow), ts: now() });
+      if (r.status >= 300) { log(start, r.status, tr?.requestId || null, 'Discord 机器人回答失败'); return `我这边出错了（HTTP ${r.status}），晚点再问我 🐶`; }
+      const m = JSON.parse(r.body)?.choices?.[0]?.message || {};
+      const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      log(start, r.status, tr?.requestId || null, calls.length ? 'Discord 机器人查知识库：' + calls.map((c: any) => c.function?.name).join('、') : 'Discord 机器人回答');
+      if (calls.length && !last) {
+        messages.push({ role: 'assistant', content: m.content || '', tool_calls: calls });
+        for (const c of calls) {
+          let args: any = {};
+          try { args = JSON.parse(c.function?.arguments || '{}'); } catch {}
+          messages.push({ role: 'tool', tool_call_id: c.id, content: runTool(String(c.function?.name || ''), args) });
+        }
+        continue;
+      }
+      const ct = m.content;
+      const text = typeof ct === 'string' ? ct : Array.isArray(ct) ? ct.map((p: any) => p?.text || '').join('') : '';
+      return text.trim().slice(0, 1900) || '……我没想出来 🐶';
+    }
+    return '……我没想出来 🐶';
   } catch (e) {
-    return (e as Error).message === 'timeout' ? '想太久超时了，再问一次吧 🐶' : '连不上模型，晚点再问我 🐶';
+    const m = (e as Error).message;
+    return m === 'timeout' ? '想太久超时了，再问一次吧 🐶' : m === 'upstream' ? '机器人用的外部上游不见了，站长去后台重新选一下 🐶' : '连不上模型，晚点再问我 🐶';
   }
 }
 
