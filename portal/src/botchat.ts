@@ -3,6 +3,8 @@
 // accounts through CPA (pinned with the allow header), fed with the asker's recent failures and the
 // public leaderboards. Needs the "Message Content" privileged intent turned on for the bot.
 import http from 'node:http';
+import { existsSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.ts';
 import { one, all, run, now, getSetting } from './db.ts';
 import { tk } from './bot.ts';
@@ -16,7 +18,7 @@ const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESS
 export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
 
 export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，回答简短、口语化、中文，最多 8 行，不寒暄。
-你只回答两类问题：1) 用户自己的报错是怎么回事、怎么解决；2) 站内用量排行之类的统计（谁吃得最多、今天多少请求等）。其它问题一句话婉拒。
+你只回答两类问题：1) 用户自己的报错是怎么回事、怎么解决；2) 用量统计（站内谁吃得最多、今天多少请求，以及数据里给出的其它机器人用了什么模型、多少 Token）。其它问题一句话婉拒。
 只根据下面给的数据回答，不知道就说不知道，不要编造数字。不要泄露任何邮箱、密钥。
 常见报错对照：
 - 预填充 / Requests ending with a model turn：最后一条是 AI 消息，Gemini 不支持，关掉客户端的「助手预填充」。
@@ -44,6 +46,8 @@ export function chatContext(discordId: string): string {
   parts.push(leaderboard(now() - 86400e3, now(), '过去 24 小时'));
   parts.push(allTimeLine());
   parts.push(rankings('今天', dayStart()), rankings('过去 24 小时', now() - 86400e3), rankings('全站历史', 0));
+  const ob = otherBot();
+  if (ob) parts.push(ob);
   return parts.join('\n\n').replace(/<@\d+>/g, (m) => { const r = one('SELECT name FROM users WHERE discord_id = ?', m.slice(2, -1)); return r ? r.name : '某人'; });
 }
 
@@ -65,6 +69,32 @@ function rankings(label: string, since: number): string {
   const models = all(`SELECT u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' GROUP BY u.model ORDER BY tok DESC LIMIT 8`, since)
     .map((m: any) => `${m.model || '?'} ${m.n} 次 ${tk(m.tok)}`).join('；');
   return `【${label}】按 Token 排序的用户（客户端断开不算失败）：\n${lines.join('\n')}\n模型：${models}`;
+}
+
+// Another community bot running on its own Antigravity Tools instance (OTHER_BOT_DB = its token_stats.db,
+// mounted read-only). Opened immutable: the file is on a read-only mount, so rows still in Tools' WAL show up
+// only after its next checkpoint.
+function otherBot(): string {
+  const name = process.env.OTHER_BOT_NAME || '', path = process.env.OTHER_BOT_DB || '';
+  if (!name || !path || !existsSync(path)) return '';
+  let db: DatabaseSync | null = null;
+  try {
+    db = new DatabaseSync('file:' + path + '?immutable=1', { readOnly: true });
+    const sec = (ms: number) => Math.floor(ms / 1000);
+    const period = (label: string, since: number) => {
+      const rows = db!.prepare(`SELECT model, COUNT(*) AS n, SUM(input_tokens) AS i, SUM(output_tokens) AS o, SUM(total_tokens) AS t FROM token_usage WHERE timestamp >= ? GROUP BY model ORDER BY t DESC LIMIT 12`).all(since) as any[];
+      if (!rows.length) return `${label}：没有请求`;
+      const n = rows.reduce((a, r) => a + Number(r.n), 0), t = rows.reduce((a, r) => a + Number(r.t || 0), 0);
+      return `${label}：${n} 次请求，${tk(t)} Token；按模型：${rows.map((r) => `${r.model} ${r.n} 次 ${tk(Number(r.t || 0))}（入 ${tk(Number(r.i || 0))} 出 ${tk(Number(r.o || 0))}）`).join('；')}`;
+    };
+    const first = (db.prepare('SELECT MIN(timestamp) AS f FROM token_usage').get() as any)?.f;
+    return `【${name}】（社区里另一个机器人，用的是单独的 Tools 号池，不是小锅饭的用户${first ? `，记录从 ${new Date(first * 1000).toLocaleDateString('zh-CN')} 开始` : ''}）\n` +
+      [period('今天', sec(dayStart())), period('过去 24 小时', sec(now() - 86400e3)), period('过去 7 天', sec(now() - 7 * 86400e3)), period('全部', 0)].join('\n');
+  } catch (e) {
+    return '';
+  } finally {
+    try { db?.close(); } catch {}
+  }
 }
 
 function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace: string | undefined; body: string }> {

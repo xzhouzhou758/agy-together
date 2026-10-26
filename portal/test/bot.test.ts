@@ -221,3 +221,23 @@ test('bot chat context: own request list, everyone in the rankings, names instea
   assert.ok(!/<@\d+>/.test(ctx));
   assert.match(chatContext('999'), /还没登录过/);
 });
+
+test('bot chat context: another bot\'s Tools token_stats.db is summarised by model', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { chatContext } = await import('../src/botchat.ts');
+  const path = join(process.env.DATA_DIR!, 'other-token_stats.db');
+  const d = new DatabaseSync(path);
+  d.exec('CREATE TABLE token_usage (id INTEGER PRIMARY KEY, timestamp INTEGER, account_email TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER, total_tokens INTEGER)');
+  const t = Math.floor(Date.now() / 1000);
+  d.prepare('INSERT INTO token_usage(timestamp, account_email, model, input_tokens, output_tokens, cached_tokens, total_tokens) VALUES(?,?,?,?,?,?,?)').run(t - 60, 'x@y', 'gemini-4-argon', 90000, 10000, 0, 100000);
+  d.prepare('INSERT INTO token_usage(timestamp, account_email, model, input_tokens, output_tokens, cached_tokens, total_tokens) VALUES(?,?,?,?,?,?,?)').run(t - 30 * 86400, 'x@y', 'gemini-3-flash', 1, 1, 0, 2);
+  d.close();
+  process.env.OTHER_BOT_NAME = 'M宝'; process.env.OTHER_BOT_DB = path;
+  try {
+    const ctx = chatContext('nobody');
+    assert.match(ctx, /【M宝】/);
+    assert.match(ctx, /过去 24 小时：1 次请求.*gemini-4-argon 1 次/);
+    assert.match(ctx, /全部：2 次请求/);
+    assert.ok(!ctx.includes('x@y'));
+  } finally { delete process.env.OTHER_BOT_NAME; delete process.env.OTHER_BOT_DB; }
+});
