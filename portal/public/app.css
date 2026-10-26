@@ -1,7 +1,7 @@
 /* ============ 设计令牌 ============ */
 :root{
-  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif;
-  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"Cascadia Mono",Consolas,monospace;
   --bg:#eef1f6;
   --blob-1:#8fb8ff;--blob-2:#c7a8ff;--blob-3:#8de0d0;--blob-4:#ffc9a8;
   --glass:rgba(255,255,255,.56);
