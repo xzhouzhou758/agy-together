@@ -266,7 +266,6 @@ export async function checkAccounts(): Promise<void> {
 // ---------- usage watch: error streaks and huge inputs (@ the caller, at most once an hour each) ----------
 const STREAK = 3;                  // consecutive failed requests before the caller is told why
 const BIG_INPUT = 500_000;         // input tokens that look like a runaway context
-const USER_REPING = 60 * 60e3;
 const SETTLE = 90e3;               // CPA fills in token counts shortly after a request ends
 const RESULT_TEXT: Record<string, string> = {
   quota: '额度用完 / 上游限流', no_account: '没有可用的号', no_model: '模型不支持或没开放', upstream: '上游出错', blocked: '请求被拦截',
@@ -278,35 +277,33 @@ export async function watchUsage(): Promise<void> {
   const t = now(), from = Number(getSetting('bot_watch_ts') || t - 10 * 60e3), to = t - SETTLE;
   if (to <= from) return;
   setSetting('bot_watch_ts', String(to));
-  const note = (uid: number) => one('SELECT * FROM bot_user_alerts WHERE user_id = ?', uid) || {};
-  const save = (uid: number, f: string, v: number) => run(`INSERT INTO bot_user_alerts(user_id, ${f}) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET ${f} = excluded.${f}`, uid, v);
+  const save = (uid: number, streak: number, told: number) => run(`INSERT INTO bot_user_alerts(user_id, err_streak, err_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET err_streak = excluded.err_streak, err_at = excluded.err_at`, uid, streak, told);
   const users = all(`SELECT DISTINCT u.user_id, us.discord_id, us.name FROM usage u JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND u.ts < ? AND us.active = 1`, from, to);
   for (const u of users) {
-    const n = note(u.user_id);
-    // these two always @ the caller, even with /免打扰: they are about requests the caller is sending right now
+    // no cooldown and no /免打扰: these are about requests the caller is sending right now
     const at = realId(u.discord_id) ? `<@${u.discord_id}>` : `**${String(u.name || '—')}**`;
-    const ping = async (text: string) => post(text, realId(u.discord_id) ? [u.discord_id] : []);
-    // refused by the 大锅饭 input cap in this window (takes the place of the generic huge-input note)
-    const capHit = one(`SELECT MAX(in_est) AS m FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%'`, u.user_id, from, to);
-    if (capHit?.m && (!n.big_at || t - n.big_at > USER_REPING)) {
-      if (await ping(`🛑 ${at} 你在大锅饭里的请求输入有 **${wan(Number(capHit.m))} Token**，超过了大锅饭的输入上限 **${wan(getRules().sharedInput)}**，已被拦下。\n-# 检查一下聊天记录 / 预设是不是太长，或改用小锅饭`)) save(u.user_id, 'big_at', t);
-    }
-    // huge input in this window
-    const big = one(`SELECT MAX(COALESCE(in_tok, in_est)) AS m, model FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND COALESCE(in_tok, in_est) >= ?`, u.user_id, from, to, BIG_INPUT);
-    if (big?.m && !capHit?.m && (!note(u.user_id).big_at || t - n.big_at > USER_REPING)) {
-      if (await ping(`📏 ${at} 你刚才的请求输入有 **${wan(Number(big.m))} Token**${big.model ? `（${big.model}）` : ''}，上下文可能爆了。\n-# 检查一下聊天记录 / 预设是不是太长；可以在「个人中心 → 输入上限」设个上限，超了直接拦下不扣额度`)) save(u.user_id, 'big_at', t);
-    }
-    // the newest requests all failed (client disconnects don't count)
-    const last = all(`SELECT id, result, status, reason FROM usage WHERE user_id = ? AND ts < ? AND status != 499 ORDER BY ts DESC, id DESC LIMIT 20`, u.user_id, to);
+    const ping = (text: string) => post(text, realId(u.discord_id) ? [u.discord_id] : []);
+    const times = (n: number) => (n > 1 ? `（这一分钟 ${n} 次）` : '');
+    // refused by the 大锅饭 input cap
+    const cap = one(`SELECT COUNT(*) AS n, MAX(in_est) AS m FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%'`, u.user_id, from, to);
+    if (Number(cap?.n)) await ping(`🛑 ${at} 你在大锅饭里的请求输入有 **${wan(Number(cap.m))} Token**，超过了大锅饭的输入上限 **${wan(getRules().sharedInput)}**，已被拦下${times(Number(cap.n))}。\n-# 检查一下聊天记录 / 预设是不是太长，或改用小锅饭`);
+    // any other request with a huge input
+    const big = one(`SELECT COUNT(*) AS n, MAX(COALESCE(in_tok, in_est)) AS m, model FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND COALESCE(in_tok, in_est) >= ?
+      AND NOT (pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%')`, u.user_id, from, to, BIG_INPUT);
+    if (Number(big?.n)) await ping(`📏 ${at} 你刚才的请求输入有 **${wan(Number(big.m))} Token**${big.model ? `（${big.model}）` : ''}${times(Number(big.n))}，上下文可能爆了。\n-# 检查一下聊天记录 / 预设是不是太长；可以在「个人中心 → 输入上限」设个上限，超了直接拦下不扣额度`);
+    // the newest requests all failed (client disconnects don't count): told at 3, then again every 3 more
+    const last = all(`SELECT id, result, status, reason FROM usage WHERE user_id = ? AND ts < ? AND status != 499 ORDER BY ts DESC, id DESC LIMIT 300`, u.user_id, to);
     const streak: any[] = [];
     for (const r of last) { if (r.result === 'ok') break; streak.push(r); }
     if (streak.length < STREAK) continue;
     const startId = Number(streak[streak.length - 1].id);
-    if (n.err_streak === startId || (n.err_at && t - n.err_at < USER_REPING)) continue;
+    const n = one('SELECT err_streak, err_at FROM bot_user_alerts WHERE user_id = ?', u.user_id);
+    const told = n?.err_streak === startId ? Number(n.err_at || 0) : 0;
+    if (streak.length < told + STREAK) continue;
     const count = new Map<string, number>();
-    for (const r of streak) { const k = r.reason || RESULT_TEXT[r.result] || `HTTP ${r.status}`; count.set(k, (count.get(k) || 0) + 1); }
+    for (const r of streak.slice(0, 20)) { const k = r.reason || RESULT_TEXT[r.result] || `HTTP ${r.status}`; count.set(k, (count.get(k) || 0) + 1); }
     const top = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, c]) => `· ${k}${c > 1 ? `（${c} 次）` : ''}`).join('\n');
-    if (await ping(`🚨 ${at} 你最近 **${streak.length >= 20 ? '20+' : streak.length}** 次请求都失败了，原因：\n${top}\n-# 看「流量日志」能找到每一次的详情`)) { save(u.user_id, 'err_streak', startId); save(u.user_id, 'err_at', t); }
+    if (await ping(`🚨 ${at} 你已经连续 **${streak.length}** 次请求失败了，原因：\n${top}\n-# 看「流量日志」能找到每一次的详情`)) save(u.user_id, startId, streak.length);
   }
 }
 

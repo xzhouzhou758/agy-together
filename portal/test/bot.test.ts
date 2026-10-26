@@ -161,14 +161,24 @@ test('usage watch: 3 failures in a row and a 500k+ input @ the caller once, with
     assert.equal(posts.length, 2, JSON.stringify(posts));
     const big = posts.find((p) => p.content.includes('📏'))!, err = posts.find((p) => p.content.includes('🚨'))!;
     assert.match(big.content, /62 万 Token/);
-    assert.match(err.content, /3\*\* 次请求都失败了/);
+    assert.match(err.content, /连续 \*\*3\*\* 次请求失败/);
     assert.match(err.content, /预填充.*（2 次）/);
     assert.match(err.content, /额度用完/);
     assert.deepEqual(err.users, ['555666777']);
-    // same streak continues: no repeat
+    // same streak continues: quiet until 3 more failures, then told again
     add(4 * 60e3, 'client', 400, '预填充（最后一条是 AI 消息）不支持');
     await watchUsage();
     assert.equal(posts.length, 2);
+    setSetting('bot_watch_ts', String(Date.now() - 4 * 60e3));
+    add(3.5 * 60e3, 'client', 400, 'x'); add(3.2 * 60e3, 'client', 400, 'x');
+    await watchUsage();
+    assert.equal(posts.length, 3, JSON.stringify(posts));
+    assert.match(posts[2].content, /连续 \*\*6\*\* 次/);
+    // every huge input is reported, no cooldown
+    setSetting('bot_watch_ts', String(Date.now() - 3 * 60e3));
+    add(2.5 * 60e3, 'ok', 200, null, 700000);
+    await watchUsage();
+    assert.ok(posts.at(-1)!.content.includes('📏'), JSON.stringify(posts.at(-1)));
   } finally { globalThis.fetch = real; }
 });
 
