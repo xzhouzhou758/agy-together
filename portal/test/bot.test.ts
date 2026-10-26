@@ -171,3 +171,25 @@ test('usage watch: 3 failures in a row and a 500k+ input @ the caller once, with
     assert.equal(posts.length, 2);
   } finally { globalThis.fetch = real; }
 });
+
+test('usage watch: 大锅饭 input-cap refusal @s the caller even with /免打扰', async () => {
+  const { run, one, setSetting } = await import('../src/db.ts');
+  const { watchUsage } = await import('../src/bot.ts');
+  run("INSERT INTO users(discord_id, name, handle, role, created_at, bot_quiet) VALUES('888999000', 'capped', 'capped', 'user', 0, 1)");
+  const uid = one("SELECT id FROM users WHERE discord_id = '888999000'").id;
+  run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms, in_est) VALUES(?,?,1,'shared','m','/v1/chat/completions',400,'input_limit','输入过限：这次输入约 62 万 Token，超过了大锅饭的输入上限 50 万。',1,620000)`, Date.now() - 3 * 60e3, uid);
+  setSetting('bot_watch_ts', String(Date.now() - 5 * 60e3));
+  const posts: { content: string; users: string[] }[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    if (String(url).includes('discord.com')) { const b = JSON.parse(init.body); posts.push({ content: b.content, users: b.allowed_mentions.users }); return new Response('{"id":"1"}', { status: 200 }); }
+    return real(url, init);
+  }) as typeof fetch;
+  try {
+    await watchUsage();
+    const mine = posts.filter((p) => p.content.includes('<@888999000>'));
+    assert.equal(mine.length, 1, JSON.stringify(posts));
+    assert.match(mine[0].content, /大锅饭的输入上限/);
+    assert.deepEqual(mine[0].users, ['888999000']);
+  } finally { globalThis.fetch = real; }
+});

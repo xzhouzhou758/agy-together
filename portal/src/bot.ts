@@ -7,7 +7,7 @@
 //  - a daily leaderboard is posted to the bot channel at the configured hour.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createPublicKey, verify } from 'node:crypto';
-import { one, all, run, now, getSetting, setSetting, type Row } from './db.ts';
+import { one, all, run, now, getSetting, setSetting, getRules, type Row } from './db.ts';
 import { HttpError, readBody, sendJSON } from './util.ts';
 import * as cpa from './cpa.ts';
 import * as site from './site.ts';
@@ -283,11 +283,18 @@ export async function watchUsage(): Promise<void> {
   const users = all(`SELECT DISTINCT u.user_id, us.discord_id, us.name FROM usage u JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND u.ts < ? AND us.active = 1`, from, to);
   for (const u of users) {
     const n = note(u.user_id);
-    const ping = async (text: string) => post(text, realId(u.discord_id) && !isQuiet(u.discord_id) ? [u.discord_id] : []);
+    // these two always @ the caller, even with /免打扰: they are about requests the caller is sending right now
+    const at = realId(u.discord_id) ? `<@${u.discord_id}>` : `**${String(u.name || '—')}**`;
+    const ping = async (text: string) => post(text, realId(u.discord_id) ? [u.discord_id] : []);
+    // refused by the 大锅饭 input cap in this window (takes the place of the generic huge-input note)
+    const capHit = one(`SELECT MAX(in_est) AS m FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%'`, u.user_id, from, to);
+    if (capHit?.m && (!n.big_at || t - n.big_at > USER_REPING)) {
+      if (await ping(`🛑 ${at} 你在大锅饭里的请求输入有 **${wan(Number(capHit.m))} Token**，超过了大锅饭的输入上限 **${wan(getRules().sharedInput)}**，已被拦下。\n-# 检查一下聊天记录 / 预设是不是太长，或改用小锅饭`)) save(u.user_id, 'big_at', t);
+    }
     // huge input in this window
     const big = one(`SELECT MAX(COALESCE(in_tok, in_est)) AS m, model FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND COALESCE(in_tok, in_est) >= ?`, u.user_id, from, to, BIG_INPUT);
-    if (big?.m && (!n.big_at || t - n.big_at > USER_REPING)) {
-      if (await ping(`📏 ${who(u)} 你刚才的请求输入有 **${wan(Number(big.m))} Token**${big.model ? `（${big.model}）` : ''}，上下文可能爆了。\n-# 检查一下聊天记录 / 预设是不是太长；可以在「个人中心 → 输入上限」设个上限，超了直接拦下不扣额度`)) save(u.user_id, 'big_at', t);
+    if (big?.m && !capHit?.m && (!note(u.user_id).big_at || t - n.big_at > USER_REPING)) {
+      if (await ping(`📏 ${at} 你刚才的请求输入有 **${wan(Number(big.m))} Token**${big.model ? `（${big.model}）` : ''}，上下文可能爆了。\n-# 检查一下聊天记录 / 预设是不是太长；可以在「个人中心 → 输入上限」设个上限，超了直接拦下不扣额度`)) save(u.user_id, 'big_at', t);
     }
     // the newest requests all failed (client disconnects don't count)
     const last = all(`SELECT id, result, status, reason FROM usage WHERE user_id = ? AND ts < ? AND status != 499 ORDER BY ts DESC, id DESC LIMIT 20`, u.user_id, to);
@@ -299,7 +306,7 @@ export async function watchUsage(): Promise<void> {
     const count = new Map<string, number>();
     for (const r of streak) { const k = r.reason || RESULT_TEXT[r.result] || `HTTP ${r.status}`; count.set(k, (count.get(k) || 0) + 1); }
     const top = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, c]) => `· ${k}${c > 1 ? `（${c} 次）` : ''}`).join('\n');
-    if (await ping(`🚨 ${who(u)} 你最近 **${streak.length >= 20 ? '20+' : streak.length}** 次请求都失败了，原因：\n${top}\n-# 看「流量日志」能找到每一次的详情`)) { save(u.user_id, 'err_streak', startId); save(u.user_id, 'err_at', t); }
+    if (await ping(`🚨 ${at} 你最近 **${streak.length >= 20 ? '20+' : streak.length}** 次请求都失败了，原因：\n${top}\n-# 看「流量日志」能找到每一次的详情`)) { save(u.user_id, 'err_streak', startId); save(u.user_id, 'err_at', t); }
   }
 }
 

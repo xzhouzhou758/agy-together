@@ -249,6 +249,15 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     }
   }
 
+  // 大锅饭 input cap (admin rule): same refusal, its own reason so the bot can @ the caller
+  if (isGen && pool === 'shared' && ctx.inEst) {
+    const cap = getRules().sharedInput;
+    if (cap > 0 && ctx.inEst > cap) {
+      return refuse({ status: 400, result: 'input_limit',
+        message: `输入过限：这次输入约 ${wan(ctx.inEst)} Token，超过了大锅饭的输入上限 ${wan(cap)}。请检查上下文是不是爆了，或改用小锅饭` }, 'input_limit_exceeded');
+    }
+  }
+
   // shared-pool key limits
   let countedKey = false;
   if (pool === 'shared' && isGen) {

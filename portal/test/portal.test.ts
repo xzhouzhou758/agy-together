@@ -914,6 +914,18 @@ test('输入上限: oversized input is refused with 输入过限 before reaching
   assert.equal((await gen(K.bob, { body: { model: 'gemini-3-flash', messages: [{ role: 'user', content: 'a'.repeat(12000) }] } })).status, 200);
 });
 
+test('大锅饭输入上限 (admin rule): refused for shared keys only', async () => {
+  assert.equal((await alice.req('GET', '/api/rules')).data.sharedInput, 500000);
+  await alice.req('PUT', '/api/admin/rules', { sharedInput: 2000 });
+  try {
+    const big = { model: 'gemini-3-flash', messages: [{ role: 'user', content: 'a'.repeat(12000) }] };
+    const r = await gen(K.carol, { body: big });
+    assert.equal(r.status, 400);
+    assert.match(r.text, /大锅饭的输入上限/);
+    assert.equal((await gen(K.bob, { body: big })).status, 200); // 小锅饭 unaffected
+  } finally { await alice.req('PUT', '/api/admin/rules', { sharedInput: 500000 }); }
+});
+
 test('plugin not effective -> portal refuses (fail closed)', async () => {
   mock.st.plugin.effective_enabled = false;
   await sleep(150);

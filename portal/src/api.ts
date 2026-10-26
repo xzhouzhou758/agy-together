@@ -955,6 +955,7 @@ route('PUT', '/api/admin/rules', async (req) => {
     reserve: b.reserve === undefined ? cur.reserve : clampInt(b.reserve, 0, 90),
     dailyBase: b.dailyBase === undefined ? cur.dailyBase : clampInt(b.dailyBase, 0, 1e6),
     dailyPer: b.dailyPer === undefined ? cur.dailyPer : clampInt(b.dailyPer, 0, 1e6),
+    sharedInput: b.sharedInput === undefined ? cur.sharedInput : clampInt(b.sharedInput, 0, 1e7),
   };
   setRules(r);
   return r;
