@@ -278,3 +278,29 @@ test('knowledge base: html to text, retrieval picks the matching chunk, tavern g
   assert.ok(!k.includes('《连接》'));
   assert.match(tavernGuide(), /\/v1/);
 });
+
+test('request diagnosis: digest shows prefill, sizes, params and trimmed content', async () => {
+  const { digestBody } = await import('../src/reqdiag.ts');
+  const body = JSON.stringify({ model: 'gemini-3-flash', stream: true, max_tokens: 300, temperature: 1.2,
+    messages: [{ role: 'system', content: 'SYS-HEAD ' + '设定'.repeat(3000) + ' SYS-TAIL' }, { role: 'user', content: '你好' }, { role: 'assistant', content: '好的，我继续写：' }] });
+  const d = digestBody(body);
+  assert.match(d, /max_tokens=300/);
+  assert.match(d, /temperature=1.2/);
+  assert.match(d, /最后一条是 assistant（= 预填充/);
+  assert.match(d, /SYS-HEAD/);
+  assert.match(d, /SYS-TAIL/);
+  assert.match(d, /中间省略/);
+  assert.match(d, /【第 2 条 · assistant】\n好的，我继续写：/);
+  const g = digestBody(JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'hi' }] }, { role: 'model', parts: [{ text: 'yo' }] }], systemInstruction: { parts: [{ text: 'S' }] } }));
+  assert.match(g, /2 条消息/);
+  assert.match(g, /最后一条是 assistant/);
+});
+
+test('long bot answers are split at line breaks under 2000 characters', async () => {
+  const { splitMessage } = await import('../src/botchat.ts');
+  const t = Array.from({ length: 60 }, (_, i) => `第 ${i} 行` + '字'.repeat(60)).join('\n');
+  const p = splitMessage(t);
+  assert.ok(p.length >= 2 && p.length <= 3);
+  assert.ok(p.every((x) => x.length <= 1900));
+  assert.ok(p[1].startsWith('第 '));
+});

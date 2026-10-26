@@ -15,6 +15,7 @@ import { leaderboard, allTimeLine, tk, myAccounts, maskEmail } from './bot.ts';
 import { dayStart, sharedModels } from './limits.ts';
 import { kbSearch, kbHits, kbDoc, kbTitles, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
+import { inspectRequest } from './reqdiag.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -23,14 +24,15 @@ export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
 export const chatSource = () => getSetting('bot_llm_source') || 'cpa';
 
 export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，一只聪明又有点贫嘴的柴犬。
-说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
+回答控制在 Discord 一条消息能放下的长度（大约 1500 字以内）。说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
 先把问题答清楚（数字准确，最多 8 行），最后加 1~2 句自己的点评或调侃，比如谁太能吃、哪个模型最受宠、报错是不是自己作的；点评要友善，别人身攻击。
 群里的人基本都是 SillyTavern（酒馆）玩家，用小锅饭 / 大锅饭的 API 在酒馆里跑角色卡聊天；回答时用酒馆的说法（API 连接、预设、角色卡、世界书、上下文长度、流式、预填充等），步骤具体到酒馆里点哪里。
 你回答三类问题：0) 酒馆怎么接小锅饭、酒馆里的设置和用法（以「酒馆接入」和「知识库」里的内容为准）；1) 用户自己的报错是怎么回事、怎么解决；2) 用量统计（站内谁吃得最多、今天多少请求，以及数据里给出的其它机器人用了什么模型、多少 Token）。和酒馆、本站无关的问题一句话婉拒。
 只根据下面给的数据回答，不知道就说不知道，不要编造数字。不要泄露任何邮箱、密钥；提问人自己的号只在他问自己的号时才提。
 常见报错对照：
 - 预填充 / Requests ending with a model turn：最后一条是 AI 消息，Gemini 不支持，关掉客户端的「助手预填充」。
-- 输入过限：输入超过个人或大锅饭的输入上限，检查聊天记录 / 预设长度，或在「个人中心」调上限。
+- 输入过限（门户返回「输入过限：…你设置的上限 / 大锅饭的输入上限」）：超过个人或大锅饭的输入上限，个人上限可以在「个人中心」调。
+- The input token count exceeds the maximum number of tokens allowed N：这是模型本身的上下文窗口（如 131072 = 128K），调不了，只能缩短上下文（酒馆里把上下文长度设到 N 以下、总结 / 隐藏旧楼层、精简世界书和预设），或换窗口更大的模型。
 - 次数用完 daily_limit：今日大锅饭次数用完，0 点重置；共享一个 Pro 号每天多 500 次。
 - 额度用完 / 429 / RESOURCE_EXHAUSTED：号的额度或上游限流，等刷新或换号。
 - 没有可用的号 / no_account：号都在冷却、停用或不支持这个模型。
@@ -181,8 +183,12 @@ const TOOLS = [
   { type: 'function', function: { name: 'open_doc', description: '打开知识库里某一篇文档的全文（每次最多 6000 字，用 offset 往后翻）。',
     parameters: { type: 'object', properties: { id: { type: 'integer' }, offset: { type: 'integer' } }, required: ['id'] } } },
 ];
+const INSPECT = { type: 'function', function: { name: 'inspect_my_request',
+  description: '读取提问人自己最近一次请求的完整内容（参数、每条消息的长度、系统提示词和最后几条消息、上游报错）来找原因。只能看提问人自己的。',
+  parameters: { type: 'object', properties: { which: { type: 'integer', description: '0 = 最近一次，1 = 再往前一次…（最多 4）' }, failed_only: { type: 'boolean', description: '默认只看失败的请求' } } } } };
 const MAX_STEPS = 4;
-function runTool(name: string, args: any): string {
+async function runTool(name: string, args: any, userId: number | null): Promise<string> {
+  if (name === 'inspect_my_request') return userId ? inspectRequest(userId, Number(args?.which || 0), args?.failed_only !== false).catch(() => '读日志失败') : '提问人没登录过小锅饭';
   if (name === 'search_kb') {
     const h = kbHits(String(args?.query || ''), 5, 3500);
     return h.length ? h.map((x) => `[文档 #${x.id}] ${x.c}`).join('\n---\n') : '没搜到，换个关键词试试';
@@ -197,8 +203,9 @@ export async function answer(discordId: string, question: string, previous?: str
   const allow = upId == null ? all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id) : [];
   if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
   const send = (b: string) => (upId == null ? cpaPost(b, allow) : upPost(upId, b));
-  const titles = kbTitles();
+  const titles = kbTitles(), asker: number | null = one('SELECT id FROM users WHERE discord_id = ?', discordId)?.id ?? null;
   const messages: any[] = [{ role: 'system', content: chatPrompt() +
+    (asker ? '\n\n提问人问自己为什么报错 / 回复不对时，用 inspect_my_request 读他自己最近的请求，看参数、消息结构、预填充、哪条特别长、上游报错原文，定位到具体原因再说怎么改。回答在公开频道：可以点出是哪一部分（比如系统提示词里的某段、第几条消息），但不要大段复述他的聊天内容，引用原文最多一两句，也不要评论他写的内容本身（题材、剧情、人物）。' : '') +
     (titles ? '\n\n酒馆相关的问题，先看下面已经附上的知识库片段；不够或对不上就自己用 search_kb 换关键词搜、用 open_doc 读全文，查清楚再答，别凭印象瞎说。数据类问题（排行、报错、额度）直接看数据，不用查知识库。\n知识库目录：\n' + titles : '') +
     '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) + '\n\n' + tavernGuide() + knowledge(question, previous) }];
   if (previous) messages.push({ role: 'assistant', content: previous });
@@ -209,8 +216,8 @@ export async function answer(discordId: string, question: string, previous?: str
     VALUES(?,?,NULL,'private',?,?,?,?,'/discord/chat',?,?,?,?,0,?)`, start, admin, upId == null ? null : upAuthId(upId), upOwner, chatModel(), chatModel(), status, status < 300 ? 'ok' : status === 429 ? 'quota' : status < 500 ? 'client' : 'upstream', reason, now() - start, requestId);
   try {
     for (let step = 0; step <= MAX_STEPS; step++) {
-      const start = now(), last = step === MAX_STEPS || !titles;
-      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 900, messages, ...(last ? {} : { tools: TOOLS, tool_choice: 'auto' }) }));
+      const start = now(), last = step === MAX_STEPS || (!titles && !asker);
+      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: asker ? [...TOOLS, INSPECT] : TOOLS, tool_choice: 'auto' }) }));
       const tr = parseTrace(r.trace);
       if (tr) recentAllowed.set(tr.requestId, { allowed: new Set(allow), ts: now() });
       if (r.status >= 300) { log(start, r.status, tr?.requestId || null, 'Discord 机器人回答失败'); return `我这边出错了（HTTP ${r.status}），晚点再问我 🐶`; }
@@ -222,19 +229,33 @@ export async function answer(discordId: string, question: string, previous?: str
         for (const c of calls) {
           let args: any = {};
           try { args = JSON.parse(c.function?.arguments || '{}'); } catch {}
-          messages.push({ role: 'tool', tool_call_id: c.id, content: runTool(String(c.function?.name || ''), args) });
+          messages.push({ role: 'tool', tool_call_id: c.id, content: await runTool(String(c.function?.name || ''), args, asker) });
         }
         continue;
       }
       const ct = m.content;
       const text = typeof ct === 'string' ? ct : Array.isArray(ct) ? ct.map((p: any) => p?.text || '').join('') : '';
-      return text.trim().slice(0, 1900) || '……我没想出来 🐶';
+      const cut = JSON.parse(r.body)?.choices?.[0]?.finish_reason === 'length';
+      return (text.trim() + (cut ? '\n……（说太多被截了，想听后面的再 @ 我）' : '')).slice(0, 5800) || '……我没想出来 🐶';
     }
     return '……我没想出来 🐶';
   } catch (e) {
     const m = (e as Error).message;
     return m === 'timeout' ? '想太久超时了，再问一次吧 🐶' : m === 'upstream' ? '机器人用的外部上游不见了，站长去后台重新选一下 🐶' : '连不上模型，晚点再问我 🐶';
   }
+}
+
+export function splitMessage(text: string, max = 1900): string[] {
+  const out: string[] = [];
+  let rest = text.trim();
+  while (rest.length > max) {
+    let at = rest.lastIndexOf('\n', max);
+    if (at < max * 0.5) at = rest.lastIndexOf('。', max) + 1 || max;
+    out.push(rest.slice(0, at).trim());
+    rest = rest.slice(at).trim();
+  }
+  if (rest) out.push(rest);
+  return out.slice(0, 3);
 }
 
 // ---------- gateway ----------
@@ -260,9 +281,13 @@ async function onMessage(d: any) {
   const prev = d.referenced_message?.author?.id === me ? String(d.referenced_message.content || '') : undefined;
   rest('POST', `/channels/${d.channel_id}/typing`).catch(() => {});
   const text = await answer(String(d.author.id), q, prev);
-  await rest('POST', `/channels/${d.channel_id}/messages`, {
-    content: text, message_reference: { message_id: d.id, fail_if_not_exists: false }, allowed_mentions: { parse: [], replied_user: true },
-  }).catch(() => {});
+  // Discord caps a message at 2000 characters: longer answers go out as a few replies, split at line breaks
+  const parts = splitMessage(text);
+  for (let i = 0; i < parts.length; i++) {
+    await rest('POST', `/channels/${d.channel_id}/messages`, {
+      content: parts[i], ...(i === 0 ? { message_reference: { message_id: d.id, fail_if_not_exists: false } } : {}), allowed_mentions: { parse: [], replied_user: i === 0 },
+    }).catch(() => {});
+  }
 }
 
 function send(op: number, d: unknown) { if (ws?.readyState === 1) ws.send(JSON.stringify({ op, d })); }
