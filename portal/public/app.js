@@ -1121,6 +1121,7 @@ document.addEventListener('click',act(async e=>{
     case 'add':flow={};addDialog(1);break;
     case 'reauth':flow={};ui.addTab='oauth';addDialog(1);break;
     case 'export':exportDialog();break;
+    case 'rtimport':await importTokens($('#f-rt')?.value||'');break;
     case 'exportall':$$('#layer input[data-exp]').forEach(x=>x.checked=el.checked);break;
     case 'exportgo':{
       const ids=$$('#layer input[data-exp]:checked').map(x=>x.dataset.exp);
