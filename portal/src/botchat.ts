@@ -17,7 +17,9 @@ const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
 export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
 
-export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，回答简短、口语化、中文，最多 8 行，不寒暄。
+export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，一只聪明又有点贫嘴的柴犬。
+说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
+先把问题答清楚（数字准确，最多 8 行），最后加 1~2 句自己的点评或调侃，比如谁太能吃、哪个模型最受宠、报错是不是自己作的；点评要友善，别人身攻击。
 你只回答两类问题：1) 用户自己的报错是怎么回事、怎么解决；2) 用量统计（站内谁吃得最多、今天多少请求，以及数据里给出的其它机器人用了什么模型、多少 Token）。其它问题一句话婉拒。
 只根据下面给的数据回答，不知道就说不知道，不要编造数字。不要泄露任何邮箱、密钥。
 常见报错对照：
@@ -88,7 +90,8 @@ function otherBot(): string {
       return `${label}：${n} 次请求，${tk(t)} Token；按模型：${rows.map((r) => `${r.model} ${r.n} 次 ${tk(Number(r.t || 0))}（入 ${tk(Number(r.i || 0))} 出 ${tk(Number(r.o || 0))}）`).join('；')}`;
     };
     const first = (db.prepare('SELECT MIN(timestamp) AS f FROM token_usage').get() as any)?.f;
-    return `【${name}】（社区里另一个机器人，用的是单独的 Tools 号池，不是小锅饭的用户${first ? `，记录从 ${new Date(first * 1000).toLocaleDateString('zh-CN')} 开始` : ''}）\n` +
+    const alias = process.env.OTHER_BOT_ALIASES ? `，Discord 上也叫 ${process.env.OTHER_BOT_ALIASES}` : '';
+    return `【${name}】（社区里另一个机器人${alias}，用的是单独的 Tools 号池，不是小锅饭的用户${first ? `，记录从 ${new Date(first * 1000).toLocaleDateString('zh-CN')} 开始` : ''}）\n` +
       [period('今天', sec(dayStart())), period('过去 24 小时', sec(now() - 86400e3)), period('过去 7 天', sec(now() - 7 * 86400e3)), period('全部', 0)].join('\n');
   } catch (e) {
     return '';
