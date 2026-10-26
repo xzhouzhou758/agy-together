@@ -90,7 +90,7 @@ function modelFrom(path: string, body: Buffer, ct: string | undefined): { model:
   return { model: model.slice(0, 120), stream, json };
 }
 
-type Ctx = { userId: number; keyId: number; pool: 'private' | 'shared'; model: string; path: string; stream: boolean; start: number; ttfb?: number | null };
+type Ctx = { userId: number; keyId: number; pool: 'private' | 'shared'; model: string; path: string; stream: boolean; start: number; ttfb?: number | null; inEst?: number | null };
 
 type Extra = { authId: string; ownerId: number | null; tok: Tok };
 function record(c: Ctx, f: { status: number; result: string; authId?: string | null; requestId?: string | null; reason?: string | null; x?: Extra }) {
@@ -98,11 +98,11 @@ function record(c: Ctx, f: { status: number; result: string; authId?: string | n
   const owner = f.x ? f.x.ownerId : authId ? one('SELECT owner_id FROM accounts WHERE auth_id = ?', authId)?.owner_id ?? null : null;
   const t = f.x?.tok, has = !!t && (t.in || t.out);
   run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, owner_id, model, requested_model, path, status, result, reason, latency_ms, stream, request_id, ttfb_ms,
-       in_tok, out_tok, reasoning_tok, cache_tok, cache_write_tok, total_tok)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       in_tok, out_tok, reasoning_tok, cache_tok, cache_write_tok, total_tok, in_est)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     c.start, c.userId, c.keyId, c.pool, authId, owner, c.model, c.model || null, c.path.slice(0, 120), f.status, f.result, f.reason ? f.reason.slice(0, 200) : null,
     now() - c.start, c.stream ? 1 : 0, f.requestId || null, c.ttfb ?? null,
-    has ? t!.in : null, has ? t!.out : null, has ? t!.think : null, has ? t!.cache : null, has ? t!.cacheWrite : null, has ? t!.in + t!.out : null);
+    has ? t!.in : null, has ? t!.out : null, has ? t!.think : null, has ? t!.cache : null, has ? t!.cacheWrite : null, has ? t!.in + t!.out : null, c.inEst ?? null);
 }
 
 /** Per-user rotation mode and session salt (the salt is created on first use). */
@@ -221,7 +221,7 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     return fail(e instanceof HttpError ? e.status : 400, 'invalid_request', e instanceof HttpError && e.status === 413 ? '请求体太大' : '无法读取请求体');
   }
   const { model, stream, json } = modelFrom(P, body, req.headers['content-type']);
-  const ctx: Ctx = { userId: key.user_id, keyId: key.id, pool, model, path: P, stream, start: now() };
+  const ctx: Ctx = { userId: key.user_id, keyId: key.id, pool, model, path: P, stream, start: now(), inEst: method === 'POST' && json ? estimateInput(json) : null };
   const isGen = method === 'POST';
   const listing = method === 'GET' && /\/models\/?$/.test(P);
   run('UPDATE api_keys SET last_used_at = ? WHERE id = ?', now(), key.id);
@@ -242,7 +242,7 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   // 输入上限 (the user's own setting, every key): stop a runaway context before it reaches an account
   if (isGen && json) {
     const cap = Number(one('SELECT input_limit FROM users WHERE id = ?', key.user_id)?.input_limit || 0);
-    const est = cap > 0 ? estimateInput(json) : 0;
+    const est = ctx.inEst || 0;
     if (cap > 0 && est > cap) {
       return refuse({ status: 400, result: 'input_limit',
         message: `输入过限：这次输入约 ${wan(est)} Token，超过了你设置的上限 ${wan(cap)}。请检查上下文是不是爆了；确实需要的话到「个人中心」调高或关闭上限` }, 'input_limit_exceeded');

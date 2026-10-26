@@ -138,6 +138,9 @@ addCol('usage', 'cpa_latency_ms', 'INTEGER');
 addCol('usage', 'upstream_status', 'INTEGER'); // fail.status_code of the last failed attempt (bodies never stored)
 addCol('usage', 'reasoning_effort', 'TEXT');
 addCol('usage', 'reason', 'TEXT');            // short readable reason for a non-ok result
+addCol('usage', 'in_est', 'INTEGER');          // estimated input tokens of the request body (known even when the request fails)
+// Discord bot: per-user notes for the error-streak / huge-input pings
+db.exec(`CREATE TABLE IF NOT EXISTS bot_user_alerts (user_id INTEGER PRIMARY KEY, err_streak INTEGER, err_at INTEGER, big_at INTEGER)`);
 // Accounts the portal disabled itself after an upstream 403 (re-enabled automatically once they work again).
 addCol('accounts', 'auto_disabled_at', 'INTEGER');
 addCol('accounts', 'auto_disabled_reason', 'TEXT');

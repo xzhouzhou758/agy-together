@@ -134,3 +134,40 @@ test('/免打扰 users are never mentioned in alerts', async () => {
   assert.ok(!p.content.includes('<@'), p.content);
   assert.match(p.content, /quiet/);
 });
+
+test('usage watch: 3 failures in a row and a 500k+ input @ the caller once, with the reason', async () => {
+  const { run, one, setSetting } = await import('../src/db.ts');
+  const { watchUsage } = await import('../src/bot.ts');
+  setSetting('bot_channel_id', 'chan'); setSetting('discord_bot_token', 'bot-token');
+  run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('555666777', 'streaky', 'streaky', 'user', 0)");
+  const uid = one("SELECT id FROM users WHERE discord_id = '555666777'").id;
+  const add = (ago: number, result: string, status: number, reason: string | null, inTok: number | null = null, inEst: number | null = null) =>
+    run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms, in_tok, in_est) VALUES(?,?,1,'shared','gemini-3-flash','/v1/chat/completions',?,?,?,1,?,?)`,
+      Date.now() - ago, uid, status, result, reason, inTok, inEst);
+  const posts: { content: string; users: string[] }[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    if (String(url).includes('discord.com')) { const b = JSON.parse(init.body); posts.push({ content: b.content, users: b.allowed_mentions.users }); return new Response('{"id":"1"}', { status: 200 }); }
+    return real(url, init);
+  }) as typeof fetch;
+  try {
+    setSetting('bot_watch_ts', String(Date.now() - 10 * 60e3));
+    add(9 * 60e3, 'ok', 200, null);
+    add(8 * 60e3, 'client', 400, '预填充（最后一条是 AI 消息）不支持');
+    add(7 * 60e3, 'client', 499, '客户端断开');                    // not counted
+    add(6 * 60e3, 'client', 400, '预填充（最后一条是 AI 消息）不支持');
+    add(5 * 60e3, 'quota', 429, null, null, 620000);                // failed, but the estimate shows a huge input
+    await watchUsage();
+    assert.equal(posts.length, 2, JSON.stringify(posts));
+    const big = posts.find((p) => p.content.includes('📏'))!, err = posts.find((p) => p.content.includes('🚨'))!;
+    assert.match(big.content, /62 万 Token/);
+    assert.match(err.content, /3\*\* 次请求都失败了/);
+    assert.match(err.content, /预填充.*（2 次）/);
+    assert.match(err.content, /额度用完/);
+    assert.deepEqual(err.users, ['555666777']);
+    // same streak continues: no repeat
+    add(4 * 60e3, 'client', 400, '预填充（最后一条是 AI 消息）不支持');
+    await watchUsage();
+    assert.equal(posts.length, 2);
+  } finally { globalThis.fetch = real; }
+});
