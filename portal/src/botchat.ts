@@ -13,6 +13,7 @@ import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
 import { leaderboard, allTimeLine, tk, myAccounts, maskEmail } from './bot.ts';
 import { dayStart, sharedModels } from './limits.ts';
+import { kbSearch, tavernGuide } from './kb.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -21,7 +22,8 @@ export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
 export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，一只聪明又有点贫嘴的柴犬。
 说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
 先把问题答清楚（数字准确，最多 8 行），最后加 1~2 句自己的点评或调侃，比如谁太能吃、哪个模型最受宠、报错是不是自己作的；点评要友善，别人身攻击。
-你只回答两类问题：1) 用户自己的报错是怎么回事、怎么解决；2) 用量统计（站内谁吃得最多、今天多少请求，以及数据里给出的其它机器人用了什么模型、多少 Token）。其它问题一句话婉拒。
+群里的人基本都是 SillyTavern（酒馆）玩家，用小锅饭 / 大锅饭的 API 在酒馆里跑角色卡聊天；回答时用酒馆的说法（API 连接、预设、角色卡、世界书、上下文长度、流式、预填充等），步骤具体到酒馆里点哪里。
+你回答三类问题：0) 酒馆怎么接小锅饭、酒馆里的设置和用法（以「酒馆接入」和「知识库」里的内容为准）；1) 用户自己的报错是怎么回事、怎么解决；2) 用量统计（站内谁吃得最多、今天多少请求，以及数据里给出的其它机器人用了什么模型、多少 Token）。和酒馆、本站无关的问题一句话婉拒。
 只根据下面给的数据回答，不知道就说不知道，不要编造数字。不要泄露任何邮箱、密钥；提问人自己的号只在他问自己的号时才提。
 常见报错对照：
 - 预填充 / Requests ending with a model turn：最后一条是 AI 消息，Gemini 不支持，关掉客户端的「助手预填充」。
@@ -130,6 +132,11 @@ export async function siteContext(discordId: string): Promise<string> {
   return out.join('\n\n');
 }
 
+function knowledge(question: string, previous?: string): string {
+  const k = kbSearch((previous ? previous.slice(0, 300) + '\n' : '') + question);
+  return k ? '\n\n【知识库（和问题最相关的几段，答酒馆问题时优先依据这里）】\n' + k : '';
+}
+
 function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace: string | undefined; body: string }> {
   const t = new URL(config.cpaURL);
   return new Promise((resolve, reject) => {
@@ -150,7 +157,7 @@ function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace
 export async function answer(discordId: string, question: string, previous?: string): Promise<string> {
   const allow = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id);
   if (!allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
-  const messages = [{ role: 'system', content: chatPrompt() + '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) }];
+  const messages = [{ role: 'system', content: chatPrompt() + '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) + '\n\n' + tavernGuide() + knowledge(question, previous) }];
   if (previous) messages.push({ role: 'assistant', content: previous });
   messages.push({ role: 'user', content: question || '你好' });
   const start = now(), admin = one(`SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1`)?.id ?? null;

@@ -1,5 +1,6 @@
 // JSON API for the web UI. Every handler does its own server-side authorization.
 import { chatStatus, chatModel, chatPrompt, DEFAULT_PROMPT } from './botchat.ts';
+import { kbList, kbAdd, kbDelete, kbFetch } from './kb.ts';
 import { existsSync } from 'node:fs';
 import { poolResources } from './poolres.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -1090,6 +1091,23 @@ route('PUT', '/api/admin/botchat', async (req) => {
     setSetting('bot_llm_prompt', b.prompt && b.prompt.trim() && b.prompt.trim() !== DEFAULT_PROMPT ? b.prompt.trim() : '');
   }
   return { ok: true, model: chatModel(), custom: !!getSetting('bot_llm_prompt') };
+});
+// 机器人知识库
+route('GET', '/api/admin/kb', (req) => { requireAdmin(req); return kbList(); });
+route('POST', '/api/admin/kb', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  let title = typeof b.title === 'string' ? b.title : '', body = typeof b.body === 'string' ? b.body : '', source: string | null = null;
+  if (typeof b.url === 'string' && b.url) {
+    try { const f = await kbFetch(b.url); title ||= f.title; body = f.text; source = b.url; } catch (e) { throw new HttpError(502, 'fetch_failed: ' + (e as Error).message); }
+  }
+  if (!body.trim()) throw new HttpError(400, 'empty');
+  return { id: kbAdd(title, body, source), list: kbList() };
+});
+route('DELETE', '/api/admin/kb/:id', (req, _res, p) => {
+  requireAdmin(req);
+  if (!kbDelete(Number(p.id))) throw new HttpError(404, 'not_found');
+  return kbList();
 });
 route('POST', '/api/admin/bot/connect', async (req) => {
   requireAdmin(req);

@@ -264,3 +264,17 @@ test('bot chat site context: rules, the asker\'s own accounts with masked emails
     assert.match(ctx, /输入上限上线/);
   } finally { globalThis.fetch = real; }
 });
+
+test('knowledge base: html to text, retrieval picks the matching chunk, tavern guide uses the site url', async () => {
+  const { kbAdd, kbSearch, htmlText, tavernGuide } = await import('../src/kb.ts');
+  const h = htmlText('<html><head><title>Chat Completions</title><script>x()</script></head><body><nav>menu</nav><main><h2>Prefill</h2><p>Assistant Prefill &amp; Gemini</p></main></body></html>');
+  assert.equal(h.title, 'Chat Completions');
+  assert.match(h.text, /## Prefill/);
+  assert.ok(!h.text.includes('menu') && !h.text.includes('x()'));
+  kbAdd('世界书', '世界书（World Info）按关键词触发，把设定插进上下文。', null);
+  kbAdd('连接', '在 API 连接里选择 Chat Completion，来源选 Custom (OpenAI-compatible)。', null);
+  const k = kbSearch('世界书怎么触发');
+  assert.match(k, /《世界书》/);
+  assert.ok(!k.includes('《连接》'));
+  assert.match(tavernGuide(), /\/v1/);
+});

@@ -165,6 +165,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS announcements (
   updated_at INTEGER NOT NULL
 )`);
 addCol('users', 'ann_seen', 'INTEGER');
+// Discord bot knowledge base (see kb.ts)
+db.exec(`CREATE TABLE IF NOT EXISTS kb_docs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, source TEXT, body TEXT NOT NULL, created_at INTEGER NOT NULL)`);
 // 大锅饭 daily request limit: NULL = rule default, -1 = unlimited, >= 0 = fixed per day.
 addCol('users', 'daily_limit', 'INTEGER');
 addCol('users', 'input_limit', 'INTEGER');

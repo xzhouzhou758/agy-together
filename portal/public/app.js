@@ -163,7 +163,7 @@ const LOADERS={
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null)};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null)};
   },
 };
 
@@ -670,7 +670,12 @@ function botChatForm(C){
       <div class="hstack"><label class="btn sm">${ic('upload')}上传 .txt / .md<input type="file" id="f-botprompt" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="btn sm ghost" data-act="botpromptreset">恢复默认</button></div></div>
       <textarea class="input mono" id="bc-prompt" rows="12" spellcheck="false" aria-label="预设提示词">${esc(C.prompt)}</textarea>
       <small class="faint">站内数据（提问人最近的请求、各时段排行、报错原因）会自动接在提示词后面，不用写进去。</small></div>
-    <div class="mt"><button class="btn sm primary" data-act="botchatsave">保存</button></div></div>`;
+    <div class="mt"><button class="btn sm primary" data-act="botchatsave">保存</button></div>
+    <div class="bc-p"><div class="row"><h3>知识库 <span class="chip">${(D.admin.kb||[]).length} 篇</span></h3>
+      <label class="btn sm">${ic('upload')}上传 .md / .txt（可多选）<input type="file" id="f-kb" accept=".txt,.md,text/plain,text/markdown" multiple hidden></label></div>
+      <small class="faint">酒馆教程、FAQ、群公告之类。有人提问时，机器人会挑最相关的几段来回答。</small>
+      <div class="hstack"><input class="input sm" id="kb-url" placeholder="或粘贴网页地址导入，例如 https://docs.sillytavern.app/…" style="flex:1"><button class="btn sm" data-act="kburl">导入网页</button></div>
+      <div class="kb-list">${(D.admin.kb||[]).map(d=>`<div class="kb-row"><span class="kb-t" title="${esc(d.source||'')}">${esc(d.title)}</span><small class="faint mono">${(d.size/1000).toFixed(1)}k 字${d.source?' · 网页':''}</small><button class="btn sm ghost danger icon" data-act="kbdel:${d.id}" aria-label="删除 ${esc(d.title)}">${ic('trash')}</button></div>`).join('')||'<small class="faint">还没有文档</small>'}</div></div></div>`;
 }
 function botCard(B,s){
   if(!B)return `<section class="card glass"><div class="card-head"><h2>Discord 机器人</h2></div><p class="faint">读取失败，点右上角刷新再试</p></section>`;
@@ -1296,8 +1301,10 @@ document.addEventListener('click',act(async e=>{
     case 'botchid':{const v=$('#bot-ch-id')?.value.trim();if(!v)break;D.admin.site=await api('PUT','api/admin/site',{botChannelId:v});D.admin.bot=await api('GET','api/admin/bot');render();toast('已保存');break;}
     case 'botrefresh':D.admin.bot=await api('GET','api/admin/bot');render();break;
     case 'botconnect':D.admin.bot=await api('POST','api/admin/bot/connect');render();toast('已连接');break;
+    case 'kburl':{const u=$('#kb-url').value.trim();if(!u)return;toast('导入中…');const r=await api('POST','api/admin/kb',{url:u});D.admin.kb=r.list;render();toast('已导入');break;}
     case 'botchatsave':D.admin.botchat={...D.admin.botchat,...await api('PUT','api/admin/botchat',{model:$('#bc-model').value,prompt:$('#bc-prompt').value})};D.admin.botchat.prompt=$('#bc-prompt').value.trim()||D.admin.botchat.defaultPrompt;toast('问答设置已保存');render();break;
     case 'botpromptreset':$('#bc-prompt').value=D.admin.botchat.defaultPrompt;toast('已填入默认提示词，点保存生效');break;
+    case 'kbdel':if(!confirm('删除这篇文档？'))return;D.admin.kb=await api('DELETE','api/admin/kb/'+arg);render();toast('已删除');break;
     case 'bottest':await api('POST','api/admin/bot/test');toast('已发送，去频道看看');break;
     case 'savesite':{
       const b={};$$('[data-site]').forEach(x=>{if(x.type!=='password'||x.value.trim())b[x.dataset.site]=x.value.trim();});
@@ -1309,6 +1316,7 @@ document.addEventListener('click',act(async e=>{
 document.addEventListener('change',act(async e=>{
   const t=e.target;
   if(t.id==='f-files'){await uploadFiles([...t.files]);return;}
+  if(t.id==='f-kb'){const fs=[...t.files];t.value='';for(const f of fs){if(f.size>600000){toast(`${f.name} 太大，跳过`);continue;}const r=await api('POST','api/admin/kb',{title:f.name.replace(/\.(md|txt)$/i,''),body:await f.text()});D.admin.kb=r.list;}render();toast(`已加入 ${fs.length} 篇`);return;}
   if(t.id==='f-botprompt'){const f=t.files[0];if(!f)return;if(f.size>20000*3){toast('文件太大（最多约 2 万字）');return;}$('#bc-prompt').value=(await f.text()).trim();t.value='';toast('已读入，点保存生效');return;}
   if(t.name==='defaultPool'){await api('PATCH','api/me',{defaultPool:t.value});me.defaultPool=t.value;toast(`新建密钥默认：${POOL[t.value]}`);}
   else if(t.dataset.key){const k=D.keys.find(x=>x.id===+t.dataset.key);await api('PATCH','api/keys/'+k.id,{pool:t.value});k.pool=t.value;render();toast(`“${k.name}”改为${POOL[t.value]}`);}
