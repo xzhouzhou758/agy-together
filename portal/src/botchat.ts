@@ -132,7 +132,7 @@ async function connect(): Promise<void> {
     else if (p.op === 7) close();                       // reconnect (resume)
     else if (p.op === 9) { session = null; close(); }   // invalid session: identify again
     else if (p.op === 0) {
-      if (p.t === 'READY') { me = p.d.user.id; session = { id: p.d.session_id, url: p.d.resume_gateway_url }; chatStatus.connected = true; chatStatus.error = ''; retry = 1; }
+      if (p.t === 'READY') { me = p.d.user.id; session = { id: p.d.session_id, url: p.d.resume_gateway_url }; chatStatus.connected = true; chatStatus.error = ''; retry = 1; console.log('[botchat] connected as', p.d.user.username); }
       else if (p.t === 'RESUMED') { chatStatus.connected = true; retry = 1; }
       else if (p.t === 'MESSAGE_CREATE') onMessage(p.d).catch((e) => console.error('[botchat]', (e as Error).message));
     }
