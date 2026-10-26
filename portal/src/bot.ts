@@ -146,6 +146,8 @@ export async function registerCommands(): Promise<void> {
   const cmds = [
     { name: '我的号', description: '看看我的号现在怎么样（只有你看得到）', type: 1 },
     { name: '今日榜', description: '今天到现在的用量排行', type: 1 },
+    { name: '免打扰', description: '机器人发消息时不再 @ 我（号出问题照样会说，只是不 @）', type: 1,
+      options: [{ name: '开启', description: '开启 = 不 @ 我；关闭 = 恢复 @ 我。不填就是切换', type: 5, required: false }] },
   ];
   try {
     const r = await fetch(`${DAPI}/applications/${d.clientId}/guilds/${d.guildId}/commands`, {
@@ -160,7 +162,9 @@ export async function registerCommands(): Promise<void> {
 
 // ---------- formatting ----------
 const realId = (d: unknown) => (typeof d === 'string' && /^\d{5,25}$/.test(d) ? d : '');
-const who = (r: { discord_id?: unknown; name?: unknown }) => (realId(r.discord_id) ? `<@${r.discord_id}>` : `**${String(r.name || '—')}**`);
+/** The user asked the bot not to @ them (/免打扰): their name is written out instead. */
+export const isQuiet = (discordId: unknown) => !!realId(discordId) && !!one('SELECT bot_quiet FROM users WHERE discord_id = ?', discordId)?.bot_quiet;
+const who = (r: { discord_id?: unknown; name?: unknown }) => (realId(r.discord_id) && !isQuiet(r.discord_id) ? `<@${r.discord_id}>` : `**${String(r.name || '—')}**`);
 export function maskEmail(e: string): string {
   const [u, d] = String(e || '').split('@');
   if (!d) return u ? u.slice(0, 3) + '***' : '—';
@@ -212,7 +216,7 @@ export function alertPosts(alerts: Alert[]): { content: string; mention: string[
     const ok = list.filter((a) => a.recovered), due = list.filter((a) => !a.recovered);
     if (ok.length) out.push({ content: ownerMessage(o, ok, true), mention: [], authIds: [] });
     // truncated accounts count as notified too: the owner was pinged about the whole batch
-    if (due.length) out.push({ content: ownerMessage(o, due), mention: id ? [id] : [], authIds: due.map((a) => a.auth_id) });
+    if (due.length) out.push({ content: ownerMessage(o, due), mention: id && !isQuiet(id) ? [id] : [], authIds: due.map((a) => a.auth_id) });
   }
   return out;
 }
@@ -263,7 +267,7 @@ export async function checkAccounts(): Promise<void> {
 export function leaderboard(since: number, until: number, title: string): string {
   const w = 'u.ts >= ? AND u.ts < ?';
   const tot = one(`SELECT COUNT(*) AS n, SUM(u.result = 'ok') AS ok, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users FROM usage u WHERE ${w}`, since, until);
-  if (!Number(tot?.n)) return `${title}\n今天还没有人用 😴`;
+  if (!Number(tot?.n)) return `${title}\n这段时间还没有人用 😴`;
   const top = (sql: string, ...a: any[]) => one(sql, since, until, ...a);
   const byUser = (extra: string, order = 'tok') => top(`SELECT us.name, us.discord_id, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u JOIN users us ON us.id = u.user_id WHERE ${w} ${extra} GROUP BY u.user_id ORDER BY ${order} DESC LIMIT 1`);
   const lines = [title, `全站 **${Number(tot.n).toLocaleString()}** 次请求 · **${tk(tot.tok)}** Token · 成功率 ${Math.round(Number(tot.ok) / Number(tot.n) * 100)}% · ${tot.users} 人在用`, ''];
@@ -291,7 +295,14 @@ async function dailyTick(): Promise<void> {
   const key = d.toISOString().slice(0, 10) + ':' + dayStart();
   if (getSetting('bot_daily_last') === key) return;
   setSetting('bot_daily_last', key);
-  await post(leaderboard(dayStart(), now(), `🐶 **${d.getMonth() + 1} 月 ${d.getDate()} 日 · 小锅饭日报**`));
+  await post(leaderboard(now() - 86400e3, now(), `🐶 **${d.getMonth() + 1} 月 ${d.getDate()} 日 · 小锅饭日报**（过去 24 小时）`) + '\n\n' + allTimeLine());
+}
+/** 全站历史总用量 */
+export function allTimeLine(): string {
+  const t = one(`SELECT COUNT(*) AS n, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users, MIN(u.ts) AS first FROM usage u WHERE u.result = 'ok'`);
+  if (!Number(t?.n)) return '';
+  const f = new Date(Number(t.first));
+  return `📦 **全站累计**（${f.getFullYear()}.${f.getMonth() + 1}.${f.getDate()} 起）· **${Number(t.n).toLocaleString()}** 次成功请求 · **${tk(t.tok)}** Token · ${t.users} 人用过`;
 }
 
 // ---------- /我的号 ----------
@@ -350,7 +361,15 @@ export async function handleInteraction(req: IncomingMessage, res: ServerRespons
   if (guild && i.guild_id !== guild) return reply('请在服务器里使用这个命令', true);
   const name = String(i.data?.name || '');
   if (name === '我的号') return reply(myAccounts(uid, await cpa.creds(30000)), true);
-  if (name === '今日榜') return reply(leaderboard(dayStart(), now(), '🐶 **今日榜**（截至现在）'), false);
+  if (name === '今日榜') return reply(leaderboard(dayStart(), now(), '🐶 **今日榜**（截至现在）') + '\n\n' + allTimeLine(), false);
+  if (name === '免打扰') {
+    const u = one('SELECT id, bot_quiet FROM users WHERE discord_id = ?', uid);
+    if (!u) return reply('你还没登录过小锅饭，机器人本来也不会 @ 你', true);
+    const opt = (i.data?.options || []).find((o: any) => o.name === '开启');
+    const on = typeof opt?.value === 'boolean' ? opt.value : !u.bot_quiet;
+    run('UPDATE users SET bot_quiet = ? WHERE id = ?', on ? 1 : 0, u.id);
+    return reply(on ? '🔕 好的，以后机器人发消息不再 @ 你（号出问题照样会在频道里说，只是写你的名字）。想恢复再用一次 /免打扰' : '🔔 已恢复：号出问题时机器人会 @ 你', true);
+  }
   return reply('不认识这个命令', true);
 }
 

@@ -124,3 +124,13 @@ test('account watch: a flapping "Verify your account" pings once, turns the acco
     assert.equal(posts.length, 2);
   } finally { globalThis.fetch = real; }
 });
+
+test('/免打扰 users are never mentioned in alerts', async () => {
+  const { run } = await import('../src/db.ts');
+  run("INSERT INTO users(discord_id, name, handle, role, created_at, bot_quiet) VALUES('222333444', 'quiet', 'quiet', 'user', 0, 1)");
+  const o = { discord_id: '222333444', name: 'quiet' };
+  const [p] = alertPosts([{ owner_id: 9, owner: o, auth_id: 'q1', email: 'q***@x', label: '需要验证', hint: 'h' }]);
+  assert.deepEqual(p.mention, []);
+  assert.ok(!p.content.includes('<@'), p.content);
+  assert.match(p.content, /quiet/);
+});

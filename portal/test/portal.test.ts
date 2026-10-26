@@ -451,6 +451,16 @@ test('discord bot: signed interactions, /我的号 is private and owner-scoped, 
   assert.equal(board.flags, 0);
   assert.match(board.content, /用量王/);
   assert.deepEqual(board.allowed_mentions, { parse: [] }, 'leaderboard never pings');
+  assert.match(board.content, /全站累计/);
+  // /免打扰: toggles, private, and the board writes the name instead of <@id>
+  const q = (on?: boolean) => send({ type: 2, guild_id: guild, member: { user: { id: '100002' } }, data: { name: '免打扰', options: on === undefined ? [] : [{ name: '开启', type: 5, value: on }] } });
+  const r1 = (await q(true)).data.data;
+  assert.equal(r1.flags, 64);
+  assert.match(r1.content, /不再 @ 你/);
+  const b2 = (await cmd('今日榜', '100003')).data.data.content;
+  assert.ok(!b2.includes('<@100002>'), b2);
+  assert.match((await q()).data.data.content, /已恢复/);
+  assert.match((await cmd('免打扰', '999999999')).data.data.content, /还没登录过/);
 });
 
 test('token stats: totals, buckets, scope and anonymity', async () => {
