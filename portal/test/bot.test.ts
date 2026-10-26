@@ -241,3 +241,26 @@ test('bot chat context: another bot\'s Tools token_stats.db is summarised by mod
     assert.ok(!ctx.includes('x@y'));
   } finally { delete process.env.OTHER_BOT_NAME; delete process.env.OTHER_BOT_DB; }
 });
+
+test('bot chat site context: rules, the asker\'s own accounts with masked emails, announcements', async () => {
+  const { run, one, now } = await import('../src/db.ts');
+  const { siteContext } = await import('../src/botchat.ts');
+  const cpa = await import('../src/cpa.ts');
+  run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('565656565', 'owner2', 'owner2', 'user', 0)");
+  const uid = one("SELECT id FROM users WHERE discord_id = '565656565'").id;
+  run("INSERT INTO accounts(auth_id, email, owner_id, shared, created_at) VALUES('own2.json', 'longname@gmail.com', ?, 0, 0)", uid);
+  run("INSERT INTO announcements(title, body, created_at, updated_at) VALUES('输入上限上线', '个人中心可以设', ?, ?)", now(), now());
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    if (String(url).includes('/credentials')) return new Response(JSON.stringify({ files: [{ id: 'own2.json', name: 'own2.json', auth_index: 'z1', type: 'antigravity', email: 'longname@gmail.com', disabled: false, status: 'active' }] }), { status: 200 });
+    return real(url, init);
+  }) as typeof fetch;
+  try {
+    await cpa.refreshCreds();
+    const ctx = await siteContext('565656565');
+    assert.match(ctx, /【大锅饭规则】每人每天次数 = 200 \+ 500/);
+    assert.match(ctx, /lon\*\*\*@gmail\.com/);
+    assert.ok(!ctx.includes('longname@'));
+    assert.match(ctx, /输入上限上线/);
+  } finally { globalThis.fetch = real; }
+});

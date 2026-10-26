@@ -6,12 +6,13 @@ import http from 'node:http';
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.ts';
-import { one, all, run, now, getSetting } from './db.ts';
-import { tk } from './bot.ts';
+import { one, all, run, now, getSetting, getRules } from './db.ts';
+import * as cpa from './cpa.ts';
+import { poolResources } from './poolres.ts';
 import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
-import { leaderboard, allTimeLine } from './bot.ts';
-import { dayStart } from './limits.ts';
+import { leaderboard, allTimeLine, tk, myAccounts, maskEmail } from './bot.ts';
+import { dayStart, sharedModels } from './limits.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -21,7 +22,7 @@ export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里�
 说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
 先把问题答清楚（数字准确，最多 8 行），最后加 1~2 句自己的点评或调侃，比如谁太能吃、哪个模型最受宠、报错是不是自己作的；点评要友善，别人身攻击。
 你只回答两类问题：1) 用户自己的报错是怎么回事、怎么解决；2) 用量统计（站内谁吃得最多、今天多少请求，以及数据里给出的其它机器人用了什么模型、多少 Token）。其它问题一句话婉拒。
-只根据下面给的数据回答，不知道就说不知道，不要编造数字。不要泄露任何邮箱、密钥。
+只根据下面给的数据回答，不知道就说不知道，不要编造数字。不要泄露任何邮箱、密钥；提问人自己的号只在他问自己的号时才提。
 常见报错对照：
 - 预填充 / Requests ending with a model turn：最后一条是 AI 消息，Gemini 不支持，关掉客户端的「助手预填充」。
 - 输入过限：输入超过个人或大锅饭的输入上限，检查聊天记录 / 预设长度，或在「个人中心」调上限。
@@ -100,6 +101,35 @@ function otherBot(): string {
   }
 }
 
+/** Pool health, the asker's own accounts and daily count, the 大锅饭 rules / models, recent announcements. */
+export async function siteContext(discordId: string): Promise<string> {
+  const out: string[] = [];
+  const pct = (x: number) => Math.round(x * 100) + '%';
+  try {
+    const R: any = await poolResources(false);
+    const c = R.counts, fam = (k: string, lab: string) => {
+      const F = R.fam[k];
+      if (!F || (!F.accounts && !F.off)) return '';
+      const w = (x: any, l: string) => (x?.n ? `${l} 平均剩 ${pct(x.sum / x.n)}、${x.ok}/${x.n} 个号有余量${x.next ? `、最早 ${new Date(x.next).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 刷新` : ''}` : '');
+      return `- ${lab}${F.open ? '' : '（大锅饭未开放）'}：约 ${F.full} 个满额号；${[w(F.h5, '5 小时窗口'), w(F.weekly, '周窗口')].filter(Boolean).join('；')}${k === 'argon' && F.off ? `；${F.off} 个号没开通 Argon` : ''}`;
+    };
+    out.push(`【大锅饭号池现状】${c.total} 个号：正常 ${c.ok}、冷却 ${c.cooldown}、出问题 ${c.problem}、停用 ${c.off}（Ultra ${c.ultra}、Pro ${c.pro}、Free ${c.free}）。已扣除号主的自用保留。\n` +
+      [fam('gemini', 'Gemini'), fam('claude', 'Claude'), fam('argon', 'Gemini 4 Argon')].filter(Boolean).join('\n') +
+      `\n大锅饭号池今天 ${R.shared.today.n} 次请求 ${tk(R.shared.today.t)} Token；站长兜底公益池${R.upstreams ? '在线' : '未启用'}，今天接了 ${R.backup.today.n} 次 ${tk(R.backup.today.t)} Token，占大锅饭今日请求的 ${R.backup.share}%。`);
+  } catch {}
+  const r = getRules(), open = sharedModels();
+  out.push(`【大锅饭规则】每人每天次数 = ${r.dailyBase} + ${r.dailyPer} × 自己共享进大锅饭的 Pro/Ultra 号数（出问题的号不算），0 点重置；` +
+    `大锅饭输入上限 ${r.sharedInput ? Math.round(r.sharedInput / 1e4) + ' 万 Token' : '不限'}；单号并发 ${r.accConc}；号主默认自用保留 ${r.reserve}%。` +
+    `大锅饭开放的模型：${open ? [...open].join('、') || '无' : '全部'}。小锅饭（自己的号）不受这些限制。个人还能在「个人中心」设输入上限。`);
+  try {
+    const mine = myAccounts(discordId, await cpa.creds(30000)).replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, (e) => maskEmail(e));
+    out.push(`【提问人自己的号和今日次数】（只给他本人看的，回答时邮箱只能用打码后的样子）\n${mine}`);
+  } catch {}
+  const anns = all('SELECT title, body, created_at FROM announcements ORDER BY pinned DESC, id DESC LIMIT 5');
+  if (anns.length) out.push('【最近公告 / 更新】\n' + anns.map((a: any) => `· ${new Date(a.created_at).toLocaleDateString('zh-CN')} ${a.title}：${String(a.body).replace(/\s+/g, ' ').slice(0, 400)}`).join('\n'));
+  return out.join('\n\n');
+}
+
 function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace: string | undefined; body: string }> {
   const t = new URL(config.cpaURL);
   return new Promise((resolve, reject) => {
@@ -120,7 +150,7 @@ function cpaPost(body: string, allow: string[]): Promise<{ status: number; trace
 export async function answer(discordId: string, question: string, previous?: string): Promise<string> {
   const allow = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id);
   if (!allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
-  const messages = [{ role: 'system', content: chatPrompt() + '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) }];
+  const messages = [{ role: 'system', content: chatPrompt() + '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) }];
   if (previous) messages.push({ role: 'assistant', content: previous });
   messages.push({ role: 'user', content: question || '你好' });
   const start = now(), admin = one(`SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1`)?.id ?? null;
