@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { startBotChat } from './botchat.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -97,6 +98,7 @@ server.listen(config.port, config.host, () => {
   startRoleRecheck();
   startQuotaRefresher();
   startBot();
+  startBotChat();
   startAutoDisable();
   cpa.refreshCreds().catch((e) => console.error('[cpa] initial credential list failed:', e.message));
   setInterval(() => {

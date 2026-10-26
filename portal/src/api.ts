@@ -1,4 +1,5 @@
 // JSON API for the web UI. Every handler does its own server-side authorization.
+import { chatStatus, chatModel } from './botchat.ts';
 import { existsSync } from 'node:fs';
 import { poolResources } from './poolres.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -1067,7 +1068,7 @@ route('GET', '/api/admin/site', (req) => {
 });
 route('GET', '/api/admin/bot', async (req) => {
   requireAdmin(req);
-  return botStatus();
+  return { ...(await botStatus()), chat: { ...chatStatus, model: chatModel() } };
 });
 route('POST', '/api/admin/bot/connect', async (req) => {
   requireAdmin(req);

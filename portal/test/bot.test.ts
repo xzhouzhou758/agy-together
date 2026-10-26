@@ -203,3 +203,18 @@ test('usage watch: 大锅饭 input-cap refusal @s the caller even with /免打�
     assert.deepEqual(mine[0].users, ['888999000']);
   } finally { globalThis.fetch = real; }
 });
+
+test('bot chat context: the asker sees only their own requests, names instead of mentions', async () => {
+  const { run, one } = await import('../src/db.ts');
+  const { chatContext } = await import('../src/botchat.ts');
+  run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('121212121', 'asker', 'asker', 'user', 0)");
+  run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('343434343', 'other', 'other', 'user', 0)");
+  const a = one("SELECT id FROM users WHERE discord_id = '121212121'").id, o = one("SELECT id FROM users WHERE discord_id = '343434343'").id;
+  const add = (uid: number, reason: string) => run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms) VALUES(?,?,1,'shared','gemini-3-flash','/v1/chat/completions',400,'client',?,1)`, Date.now(), uid, reason);
+  add(a, 'MINE-预填充'); add(o, 'OTHER-SECRET');
+  const ctx = chatContext('121212121');
+  assert.match(ctx, /MINE-预填充/);
+  assert.ok(!ctx.includes('OTHER-SECRET'));
+  assert.ok(!/<@\d+>/.test(ctx));
+  assert.match(chatContext('999'), /还没登录过/);
+});

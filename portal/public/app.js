@@ -680,7 +680,7 @@ function botCard(B,s){
   const s3=B.connected?`<small>已连接，频道里输入 <span class="mono">/我的号</span> 或 <span class="mono">/今日榜</span> 试试</small>`
     :B.tokenSet&&!B.error?`<small>自动把 Interactions Endpoint URL 填到 Discord 开发者后台，并注册命令</small><div class="mt"><button class="btn sm primary" data-act="botconnect">一键连接</button></div>`:`<small class="faint">完成第 1 步后可用</small>`;
   return fold('bot','Discord 机器人',ready?dotChip('good','已启用'):dotChip('','未完成'),`
-    <div class="bsteps">${step(1,B.inGuild,'邀请机器人进服务器',s1)}${step(2,B.inGuild&&!!B.channelId,'选择提醒频道',s2)}${step(3,B.connected,'连接斜杠命令',s3)}</div>
+    <div class="bsteps">${step(1,B.inGuild,'邀请机器人进服务器',s1)}${step(2,B.inGuild&&!!B.channelId,'选择提醒频道',s2)}${step(3,B.connected,'连接斜杠命令',s3)}${step(4,!!B.chat?.connected,'@ 机器人问答',B.chat?.connected?`<small>已上线，在频道里 @ 机器人问报错或排行（模型 <span class="mono">${esc(B.chat.model)}</span>，跑在管理员自己的号上）</small>`:B.chat?.error?`<small class="bad-t">${esc(B.chat.error)}</small><small class="faint">打开后等几分钟会自动重连</small>`:`<small class="faint">连接中…（需要在 Discord 开发者后台 Bot 页面打开 Message Content Intent）</small>`)}</div>
     ${B.inGuild&&B.channelId?`<div class="mt-l"><button class="btn sm" data-act="bottest">发一条测试消息</button></div>`:''}`,!ready,'号出问题自动 @ 号主；/我的号、/今日榜；每天发日报');
 }
 function shopRow(s={}){return `<div class="shop-row"><input class="input sm" data-shop="name" placeholder="名称" maxlength="40" value="${esc(s.name||'')}"><input class="input sm mono" data-shop="url" placeholder="https://" value="${esc(s.url||'')}"><input class="input sm" data-shop="note" placeholder="备注" maxlength="80" value="${esc(s.note||'')}"><button class="btn sm ghost danger icon" data-act="shopdel" aria-label="删除">${ic('trash')}</button></div>`;}
