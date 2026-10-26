@@ -24,7 +24,7 @@ export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
 export const chatSource = () => getSetting('bot_llm_source') || 'cpa';
 
 export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里的机器人二狗子，一只聪明又有点贫嘴的柴犬。
-回答控制在 Discord 一条消息能放下的长度（大约 1500 字以内）。说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
+回答控制在 Discord 一条消息能放下的长度（大约 1500 字以内）。提到被 @ 的人时写「@名字」。说话像群友聊天：自然、口语化、带点幽默，可以用「哈」「嘛」「啧」这类语气词和少量 emoji，别像报表、别用「如下」「具体明细」这种腔调。
 先把问题答清楚（数字准确，最多 8 行），最后加 1~2 句自己的点评或调侃，比如谁太能吃、哪个模型最受宠、报错是不是自己作的；点评要友善，别人身攻击。
 群里的人基本都是 SillyTavern（酒馆）玩家，用小锅饭 / 大锅饭的 API 在酒馆里跑角色卡聊天；回答时用酒馆的说法（API 连接、预设、角色卡、世界书、上下文长度、流式、预填充等），步骤具体到酒馆里点哪里。
 你回答三类问题：0) 酒馆怎么接小锅饭、酒馆里的设置和用法（以「酒馆接入」和「知识库」里的内容为准）；1) 用户自己的报错是怎么回事、怎么解决；2) 用量统计（站内谁吃得最多、今天多少请求，以及数据里给出的其它机器人用了什么模型、多少 Token）。和酒馆、本站无关的问题一句话婉拒。
@@ -273,19 +273,26 @@ async function onMessage(d: any) {
   const guild = site.discord().guildId;
   if (guild && d.guild_id !== guild) return;
   // other people / bots @-ed in the question: their display name instead of the bare <@id>
-  const names = new Map<string, string>();
-  for (const m of d.mentions || []) names.set(String(m.id), `${m.member?.nick || m.global_name || m.username || '某人'}${m.bot ? '（机器人）' : ''}`);
+  const names = new Map<string, string>(), back = new Map<string, string>();
+  for (const m of d.mentions || []) {
+    if (m.id === me) continue;
+    names.set(String(m.id), `${m.member?.nick || m.global_name || m.username || '某人'}${m.bot ? '（机器人）' : ''}`);
+    for (const n of [m.member?.nick, m.global_name, m.username]) if (n) back.set(String(n), String(m.id));
+  }
   const q = String(d.content || '').replace(new RegExp(`<@!?${me}>`, 'g'), '')
     .replace(/<@!?(\d+)>/g, (_x, id) => '@' + (names.get(id) || one('SELECT name FROM users WHERE discord_id = ?', id)?.name || '某人'))
     .trim().slice(0, 1000);
   const prev = d.referenced_message?.author?.id === me ? String(d.referenced_message.content || '') : undefined;
   rest('POST', `/channels/${d.channel_id}/typing`).catch(() => {});
-  const text = await answer(String(d.author.id), q, prev);
+  // "@Name" in the answer for someone the asker @-ed becomes a real Discord mention again
+  let text = await answer(String(d.author.id), q, prev);
+  for (const [n, id] of [...back.entries()].sort((a, b) => b[0].length - a[0].length)) text = text.split('@' + n).join(`<@${id}>`).replace(/<@(\d+)>（机器人）/g, '<@$1>');
+  const pinged = [...new Set(back.values())];
   // Discord caps a message at 2000 characters: longer answers go out as a few replies, split at line breaks
   const parts = splitMessage(text);
   for (let i = 0; i < parts.length; i++) {
     await rest('POST', `/channels/${d.channel_id}/messages`, {
-      content: parts[i], ...(i === 0 ? { message_reference: { message_id: d.id, fail_if_not_exists: false } } : {}), allowed_mentions: { parse: [], replied_user: i === 0 },
+      content: parts[i], ...(i === 0 ? { message_reference: { message_id: d.id, fail_if_not_exists: false } } : {}), allowed_mentions: { parse: [], users: pinged, replied_user: i === 0 },
     }).catch(() => {});
   }
 }
