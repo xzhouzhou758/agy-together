@@ -151,7 +151,12 @@ async function onMessage(d: any) {
   if (!me || d.author?.bot || !Array.isArray(d.mentions) || !d.mentions.some((m: any) => m.id === me)) return;
   const guild = site.discord().guildId;
   if (guild && d.guild_id !== guild) return;
-  const q = String(d.content || '').replace(new RegExp(`<@!?${me}>`, 'g'), '').trim().slice(0, 1000);
+  // other people / bots @-ed in the question: their display name instead of the bare <@id>
+  const names = new Map<string, string>();
+  for (const m of d.mentions || []) names.set(String(m.id), `${m.member?.nick || m.global_name || m.username || '某人'}${m.bot ? '（机器人）' : ''}`);
+  const q = String(d.content || '').replace(new RegExp(`<@!?${me}>`, 'g'), '')
+    .replace(/<@!?(\d+)>/g, (_x, id) => '@' + (names.get(id) || one('SELECT name FROM users WHERE discord_id = ?', id)?.name || '某人'))
+    .trim().slice(0, 1000);
   const prev = d.referenced_message?.author?.id === me ? String(d.referenced_message.content || '') : undefined;
   rest('POST', `/channels/${d.channel_id}/typing`).catch(() => {});
   const text = await answer(String(d.author.id), q, prev);
