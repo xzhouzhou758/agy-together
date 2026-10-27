@@ -316,3 +316,23 @@ test('bot chat live models: biggest successful input and context-window refusals
   const out = liveModels();
   assert.match(out, /gem-live：6 次，最大输入 [^；]+；报过超出窗口 131072（1 次）/);
 });
+
+test('restart log: deploys vs crashes, machine reboots and CPA outages reach the bot', async () => {
+  const { setSetting } = await import('../src/db.ts');
+  const { recordStart, recordStop, cpaProbe, restartLog } = await import('../src/restarts.ts');
+  const t = Date.now() - 3600e3;
+  recordStart(t, 1000);                                   // first start: remembers the boot time
+  setSetting('heartbeat_ts', String(t + 60e3)); recordStop(t + 70e3);
+  recordStart(t + 120e3, 1000);                           // stopped cleanly → deploy
+  setSetting('heartbeat_ts', String(t + 200e3));
+  recordStart(t + 300e3, 2000);                           // no stop, new boot time → crash + reboot
+  cpaProbe(false, t + 400e3); cpaProbe(false, t + 405e3); cpaProbe(true, t + 410e3);
+  const out = restartLog();
+  assert.match(out, /门户重启（更新 \/ 部署）/);
+  assert.match(out, /门户意外退出后重启/);
+  assert.match(out, /服务器整机重启/);
+  assert.match(out, /中断约 10 秒）CPA 连不上（2 次探测失败/);
+  cpaProbe(false);
+  assert.match(restartLog(), /正在中断中/);
+  cpaProbe(true);
+});

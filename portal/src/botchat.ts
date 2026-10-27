@@ -16,6 +16,7 @@ import { dayStart, sharedModels } from './limits.ts';
 import { kbSearch, kbHits, kbDoc, kbTitles, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
 import { inspectRequest } from './reqdiag.ts';
+import { restartLog } from './restarts.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -47,7 +48,8 @@ export const chatPrompt = () => getSetting('bot_llm_prompt') || DEFAULT_PROMPT;
 export const CONTEXT_FACTS = `【上下文长度常识（以这里为准，知识库里旧文章和你自己的印象如果说得更小，都是过时的）】
 - 现在站里的主力模型（Gemini 3.x / 4 系列、Claude 4.6 / 5.x）上下文窗口基本都是百万级（约 100 万 Token）；报错里出现 131072 说明这次落到了 128K 窗口的号或通道。
 - 输入几万到二三十万 Token 都是正常的酒馆长聊天，不要说别人「太长」「太多」或建议压缩。只有这些情况才提醒：接近或超过模型窗口（报 The input token count exceeds…）、超过个人或大锅饭的输入上限被拦下、或单次输入到了五十万以上。
-- 长上下文的真实代价是更慢、更费额度，而不是「模型装不下」；要说就说这个。`;
+- 长上下文的真实代价是更慢、更费额度，而不是「模型装不下」；要说就说这个。
+【服务器重启】有人问报错时，先对一下数据里的「服务器重启 / 中断记录」：失败的时间落在某次重启 / 中断的时间段里或前后一两分钟内，就直接告诉他多半是服务器当时在重启，重试就好，不是他设置的问题。`;
 
 /** What the model gets to see: the asker's recent requests and the public boards. */
 export function chatContext(discordId: string): string {
@@ -63,7 +65,7 @@ export function chatContext(discordId: string): string {
   parts.push(leaderboard(now() - 86400e3, now(), '过去 24 小时'));
   parts.push(allTimeLine());
   parts.push(rankings('今天', dayStart()), rankings('过去 24 小时', now() - 86400e3), rankings('全站历史（含每人分模型）', 0, true));
-  parts.push(liveModels());
+  parts.push(liveModels(), restartLog());
   const ob = otherBot();
   if (ob) parts.push(ob);
   return parts.join('\n\n').replace(/<@\d+>/g, (m) => { const r = one('SELECT name FROM users WHERE discord_id = ?', m.slice(2, -1)); return r ? r.name : '某人'; });

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { startBotChat } from './botchat.ts';
+import { startRestartLog, recordStop } from './restarts.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,6 +101,7 @@ server.listen(config.port, config.host, () => {
   startBot();
   startBotChat();
   startAutoDisable();
+  startRestartLog();
   cpa.refreshCreds().catch((e) => console.error('[cpa] initial credential list failed:', e.message));
   setInterval(() => {
     try { pruneSessions(); pruneUsage(); } catch (e) { console.error('[prune]', e); }
@@ -108,6 +110,7 @@ server.listen(config.port, config.host, () => {
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
+    recordStop();
     server.close();
     setTimeout(() => process.exit(0), 3000).unref();
   });
