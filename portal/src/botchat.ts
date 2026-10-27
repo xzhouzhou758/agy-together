@@ -42,6 +42,13 @@ export const DEFAULT_PROMPT = `你是「AGY Together 小锅饭」Discord 群里�
 - 上游出错 5xx：上游临时故障，重试即可。`;
 export const chatPrompt = () => getSetting('bot_llm_prompt') || DEFAULT_PROMPT;
 
+/** Always added after the (admin-editable) prompt: the model's own training and older knowledge-base pages
+ *  still think 32K–128K is a big context, so people sending 60K got told off for it. */
+export const CONTEXT_FACTS = `【上下文长度常识（以这里为准，知识库里旧文章和你自己的印象如果说得更小，都是过时的）】
+- 现在站里的主力模型（Gemini 3.x / 4 系列、Claude 4.6 / 5.x）上下文窗口基本都是百万级（约 100 万 Token）；报错里出现 131072 说明这次落到了 128K 窗口的号或通道。
+- 输入几万到二三十万 Token 都是正常的酒馆长聊天，不要说别人「太长」「太多」或建议压缩。只有这些情况才提醒：接近或超过模型窗口（报 The input token count exceeds…）、超过个人或大锅饭的输入上限被拦下、或单次输入到了五十万以上。
+- 长上下文的真实代价是更慢、更费额度，而不是「模型装不下」；要说就说这个。`;
+
 /** What the model gets to see: the asker's recent requests and the public boards. */
 export function chatContext(discordId: string): string {
   const u = one('SELECT id, name FROM users WHERE discord_id = ?', discordId);
@@ -56,6 +63,7 @@ export function chatContext(discordId: string): string {
   parts.push(leaderboard(now() - 86400e3, now(), '过去 24 小时'));
   parts.push(allTimeLine());
   parts.push(rankings('今天', dayStart()), rankings('过去 24 小时', now() - 86400e3), rankings('全站历史（含每人分模型）', 0, true));
+  parts.push(liveModels());
   const ob = otherBot();
   if (ob) parts.push(ob);
   return parts.join('\n\n').replace(/<@\d+>/g, (m) => { const r = one('SELECT name FROM users WHERE discord_id = ?', m.slice(2, -1)); return r ? r.name : '某人'; });
@@ -88,6 +96,22 @@ function rankings(label: string, since: number, byModel = false): string {
   const models = all(`SELECT u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' GROUP BY u.model ORDER BY tok DESC LIMIT 8`, since)
     .map((m: any) => `${m.model || '?'} ${m.n} 次 ${tk(m.tok)}`).join('；');
   return `【${label}】按 Token 排序的用户（客户端断开不算失败）：\n${lines.join('\n')}\n模型：${models}`;
+}
+
+/** The models people actually used in the last two weeks: the largest input that went through and any
+ *  context-window refusals, so the bot judges "too long" from this site's data instead of old articles. */
+export function liveModels(): string {
+  const since = now() - 14 * 86400e3;
+  const rows = all(`SELECT model, COUNT(*) AS n, MAX(CASE WHEN result = 'ok' THEN COALESCE(in_tok, in_est) END) AS big FROM usage
+    WHERE ts >= ? AND path != '/discord/chat' AND model IS NOT NULL AND model != '' GROUP BY model HAVING n >= 5 ORDER BY n DESC LIMIT 20`, since);
+  if (!rows.length) return '【本站最近两周在用的模型】没有数据';
+  const over = new Map<string, string[]>();
+  for (const r of all(`SELECT model, reason, COUNT(*) AS c FROM usage WHERE ts >= ? AND reason LIKE '%maximum number of tokens allowed%' GROUP BY model, reason`, since)) {
+    const m = /allowed (\d+)/.exec(String(r.reason));
+    if (m) (over.get(r.model) || over.set(r.model, []).get(r.model)!).push(`${m[1]}（${r.c} 次）`);
+  }
+  return '【本站最近两周在用的模型】（实时数据；「最大输入」= 实际成功跑过的最长一次，说明窗口至少有这么大）\n' +
+    rows.map((r: any) => `- ${r.model}：${r.n} 次，最大输入 ${r.big ? tk(Number(r.big)) : '?'}${over.get(r.model) ? `；报过超出窗口 ${over.get(r.model)!.join('、')}` : ''}`).join('\n');
 }
 
 // Another community bot running on its own Antigravity Tools instance (OTHER_BOT_DB = its token_stats.db,
@@ -213,7 +237,7 @@ export async function answer(discordId: string, question: string, previous?: str
   if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
   const send = (b: string) => (upId == null ? cpaPost(b, allow) : upPost(upId, b));
   const titles = kbTitles(), asker: number | null = one('SELECT id FROM users WHERE discord_id = ?', discordId)?.id ?? null;
-  const messages: any[] = [{ role: 'system', content: chatPrompt() +
+  const messages: any[] = [{ role: 'system', content: chatPrompt() + '\n\n' + CONTEXT_FACTS +
     (asker ? '\n\n提问人问自己为什么报错 / 回复不对时，用 inspect_my_request 读他自己最近的请求，看参数、消息结构、预填充、哪条特别长、上游报错原文，定位到具体原因再说怎么改。回答在公开频道：可以点出是哪一部分（比如系统提示词里的某段、第几条消息），但不要大段复述他的聊天内容，引用原文最多一两句，也不要评论他写的内容本身（题材、剧情、人物）。' : '') +
     (titles ? '\n\n酒馆相关的问题，先看下面已经附上的知识库片段；不够或对不上就自己用 search_kb 换关键词搜、用 open_doc 读全文，查清楚再答，别凭印象瞎说。数据类问题（排行、报错、额度）直接看数据，不用查知识库。\n知识库目录：\n' + titles : '') +
     '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) + '\n\n' + tavernGuide() + knowledge(question, previous) }];

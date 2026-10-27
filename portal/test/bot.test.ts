@@ -305,3 +305,14 @@ test('long bot answers are split at line breaks under 2000 characters', async ()
   assert.ok(p.every((x) => x.length <= 1900));
   assert.ok(p[1].startsWith('第 '));
 });
+
+test('bot chat live models: biggest successful input and context-window refusals', async () => {
+  const { run } = await import('../src/db.ts');
+  const { liveModels } = await import('../src/botchat.ts');
+  const add = (inp: number, result: string, reason: string | null) => run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, in_tok, latency_ms)
+    VALUES(?,1,1,'private','gem-live','/v1/chat/completions',?,?,?,?,1)`, Date.now(), result === 'ok' ? 200 : 400, result, reason, inp);
+  for (let i = 0; i < 5; i++) add(600000 + i, 'ok', null);
+  add(140000, 'client', 'The input token count exceeds the maximum number of tokens allowed 131072.');
+  const out = liveModels();
+  assert.match(out, /gem-live：6 次，最大输入 [^；]+；报过超出窗口 131072（1 次）/);
+});
