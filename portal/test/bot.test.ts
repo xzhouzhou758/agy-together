@@ -218,6 +218,7 @@ test('bot chat context: own request list, everyone in the rankings, names instea
   assert.match(own, /MINE-预填充/);
   assert.ok(!own.includes('OTHER-SECRET'));
   assert.match(ctx, /other：.*失败 1 次/);                  // rankings name everyone with their failures
+  assert.match(ctx, /全站历史[^]*other：[^\n]*\n   分模型：gemini-3-flash 1 次/);   // all-time: each user's split by model
   assert.ok(!/<@\d+>/.test(ctx));
   assert.match(chatContext('999'), /还没登录过/);
 });

@@ -55,15 +55,16 @@ export function chatContext(discordId: string): string {
   parts.push(leaderboard(dayStart(), now(), '今日榜（0 点到现在）'));
   parts.push(leaderboard(now() - 86400e3, now(), '过去 24 小时'));
   parts.push(allTimeLine());
-  parts.push(rankings('今天', dayStart()), rankings('过去 24 小时', now() - 86400e3), rankings('全站历史', 0));
+  parts.push(rankings('今天', dayStart()), rankings('过去 24 小时', now() - 86400e3), rankings('全站历史（含每人分模型）', 0, true));
   const ob = otherBot();
   if (ob) parts.push(ob);
   return parts.join('\n\n').replace(/<@\d+>/g, (m) => { const r = one('SELECT name FROM users WHERE discord_id = ?', m.slice(2, -1)); return r ? r.name : '某人'; });
 }
 
 const TOK = 'COALESCE(u.total_tok, COALESCE(u.in_tok,0) + COALESCE(u.out_tok,0) + COALESCE(u.reasoning_tok,0))';
-/** Per-user table (tokens, requests, failures with the main reason) and per-model use, for one period. */
-function rankings(label: string, since: number): string {
+/** Per-user table (tokens, requests, failures with the main reason) and per-model use, for one period;
+ *  byModel adds each user's own split by model. */
+function rankings(label: string, since: number, byModel = false): string {
   const rows = all(`SELECT u.user_id, us.name, COUNT(*) AS n, SUM(u.result != 'ok' AND u.status != 499) AS bad, SUM(${TOK}) AS tok,
       SUM(u.pool = 'shared') AS shared FROM usage u JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND u.path != '/discord/chat' GROUP BY u.user_id ORDER BY tok DESC LIMIT 25`, since);
   if (!rows.length) return `【${label}】没有请求`;
@@ -72,9 +73,17 @@ function rankings(label: string, since: number): string {
     const w = one(`SELECT reason, result, status, COUNT(*) AS c FROM usage WHERE user_id = ? AND ts >= ? AND result != 'ok' AND status != 499 GROUP BY COALESCE(reason, result || status) ORDER BY c DESC LIMIT 1`, uid, since);
     return w ? { r: w.reason || `${RES[w.result] || w.result}（HTTP ${w.status}，没记录原文）` } : null;
   };
+  const per = new Map<number, string[]>();
+  if (byModel) for (const m of all(`SELECT u.user_id, u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat'
+      GROUP BY u.user_id, u.model ORDER BY u.user_id, tok DESC`, since)) {
+    const l = per.get(m.user_id) || [];
+    if (l.length < 8) l.push(`${m.model || '?'} ${m.n} 次 ${tk(m.tok)}`);
+    per.set(m.user_id, l);
+  }
   const lines = rows.map((r: any, i: number) => {
     const bad = Number(r.bad || 0), w = bad ? why(r.user_id) : null;
-    return `${i + 1}. ${r.name}：${tk(r.tok)} Token，${r.n} 次请求（大锅饭 ${r.shared}），失败 ${bad} 次${bad ? `（失败率 ${Math.round(bad / Number(r.n) * 100)}%，主要是 ${String(w?.r || '').slice(0, 60)}）` : ''}`;
+    return `${i + 1}. ${r.name}：${tk(r.tok)} Token，${r.n} 次请求（大锅饭 ${r.shared}），失败 ${bad} 次${bad ? `（失败率 ${Math.round(bad / Number(r.n) * 100)}%，主要是 ${String(w?.r || '').slice(0, 60)}）` : ''}` +
+      (per.get(r.user_id) ? `\n   分模型：${per.get(r.user_id)!.join('；')}` : '');
   });
   const models = all(`SELECT u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' GROUP BY u.model ORDER BY tok DESC LIMIT 8`, since)
     .map((m: any) => `${m.model || '?'} ${m.n} 次 ${tk(m.tok)}`).join('；');
