@@ -53,8 +53,8 @@ function mdhm(ts){const d=new Date(ts);return `${pad(d.getMonth()+1)}-${pad(d.ge
 function ago(ts){if(!ts)return '—';const s=Math.max(0,(Date.now()-ts)/1000);if(s<60)return '刚刚';if(s<3600)return Math.floor(s/60)+' 分钟前';if(s<86400)return Math.floor(s/3600)+' 小时前';return Math.floor(s/86400)+' 天前';}
 function until(iso){if(!iso)return '—';const s=(Date.parse(iso)-Date.now())/1000;if(!(s>0))return '0m';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;}
 function tierName(t){if(!t)return '';const x=t.toLowerCase();return x.includes('ultra')?'Ultra':x.includes('pro')?'Pro':x.includes('free')||x.includes('standard')?'Free':t;}
-const GEM='<svg class="gem" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3h11l4.5 6-10 12L2 9z" fill="currentColor" opacity=".35"/><path d="M6.5 3h11l4.5 6-10 12L2 9zM2 9h20M9 3l3 6 3-6M12 21 9 9m6 0-3 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
-function tierTag(t,extra=''){if(!t)return '';const k=t.toLowerCase();return `<span class="tier ${esc(k)}">${k==='ultra'?GEM:''}${esc(t)}${extra}</span>`;}
+const ULTRA_GEM='<svg class="gem" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3h11l4.5 6-10 12L2 9z" fill="currentColor" opacity=".35"/><path d="M6.5 3h11l4.5 6-10 12L2 9zM2 9h20M9 3l3 6 3-6M12 21 9 9m6 0-3 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+function tierTag(t,extra=''){if(!t)return '';const k=t.toLowerCase();return `<span class="tier ${esc(k)}">${k==='ultra'?ULTRA_GEM:''}${esc(t)}${extra}</span>`;}
 function fmtTok(n){return tk(n);}
 const RESULT={ok:['good','成功'],quota:['warn','额度不足'],no_account:['warn','无可用账号'],no_model:['warn','模型不支持'],upstream:['bad','上游错误'],blocked:['bad','已拦截'],rate_limited:['warn','限流'],daily_limit:['warn','次数用完'],input_limit:['warn','输入过限'],client:['warn','请求错误']};
 const ROT=[['cache','缓存优先','同一会话尽量留在同一个号上，号短暂不可用时临时借用别的号，恢复后回来'],['balance','平衡轮换','同一会话固定一个号，号不可用就换一个并固定下来'],['performance','性能优先','每次请求都换最久没用的号，不固定']];
