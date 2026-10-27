@@ -53,6 +53,8 @@ function mdhm(ts){const d=new Date(ts);return `${pad(d.getMonth()+1)}-${pad(d.ge
 function ago(ts){if(!ts)return '—';const s=Math.max(0,(Date.now()-ts)/1000);if(s<60)return '刚刚';if(s<3600)return Math.floor(s/60)+' 分钟前';if(s<86400)return Math.floor(s/3600)+' 小时前';return Math.floor(s/86400)+' 天前';}
 function until(iso){if(!iso)return '—';const s=(Date.parse(iso)-Date.now())/1000;if(!(s>0))return '0m';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;}
 function tierName(t){if(!t)return '';const x=t.toLowerCase();return x.includes('ultra')?'Ultra':x.includes('pro')?'Pro':x.includes('free')||x.includes('standard')?'Free':t;}
+const GEM='<svg class="gem" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3h11l4.5 6-10 12L2 9z" fill="currentColor" opacity=".35"/><path d="M6.5 3h11l4.5 6-10 12L2 9zM2 9h20M9 3l3 6 3-6M12 21 9 9m6 0-3 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+function tierTag(t,extra=''){if(!t)return '';const k=t.toLowerCase();return `<span class="tier ${esc(k)}">${k==='ultra'?GEM:''}${esc(t)}${extra}</span>`;}
 function fmtTok(n){return tk(n);}
 const RESULT={ok:['good','成功'],quota:['warn','额度不足'],no_account:['warn','无可用账号'],no_model:['warn','模型不支持'],upstream:['bad','上游错误'],blocked:['bad','已拦截'],rate_limited:['warn','限流'],daily_limit:['warn','次数用完'],input_limit:['warn','输入过限'],client:['warn','请求错误']};
 const ROT=[['cache','缓存优先','同一会话尽量留在同一个号上，号短暂不可用时临时借用别的号，恢复后回来'],['balance','平衡轮换','同一会话固定一个号，号不可用就换一个并固定下来'],['performance','性能优先','每次请求都换最久没用的号，不固定']];
@@ -223,7 +225,7 @@ function accCard(a){
     <div class="ac-top">
       <div class="ar-main">
         <div class="ar-name"><span class="sdot ${p?'bad':k||'idle'}"></span><strong title="${esc(a.email)}">${esc(a.email||a.id)}</strong></div>
-        <div class="ar-meta">${tier?`<span class="tier ${tier.toLowerCase()}">${esc(tier)}</span>`:''}${a.shared?'<span class="ar-tag">大锅饭</span>':''}${a.name?`<span class="ar-note">${esc(a.name)}</span>`:''}</div>
+        <div class="ar-meta">${tierTag(tier)}${a.shared?'<span class="ar-tag">大锅饭</span>':''}${a.name?`<span class="ar-note">${esc(a.name)}</span>`:''}</div>
       </div>
       ${p?'':stateChip(a)}
     </div>
@@ -276,7 +278,7 @@ function accRow(a){
   return `<div class="arow ${a.active?'':'off'}">
     <div class="ar-main">
       <div class="ar-name"><span class="sdot ${p?'bad':k||'idle'}" title="${esc(p?p.label:t)}"></span><strong title="${esc(a.email)}">${esc(a.email||a.id)}</strong></div>
-      <div class="ar-meta">${tier?`<span class="tier ${tier.toLowerCase()}">${esc(tier)}</span>`:''}${a.shared?`<span class="ar-tag" title="自用保留 ${reserveText(a.reserve??D.rules?.reserve??30)}">大锅饭${a.reserve!=null?' · 留 '+reserveText(a.reserve):''}</span>`:''}${a.name?`<span class="ar-note">${esc(a.name)}</span>`:''}<span class="ar-today">Today <b class="mono">${fmtK(a.tokens?.today)}</b></span></div>
+      <div class="ar-meta">${tierTag(tier)}${a.shared?`<span class="ar-tag" title="自用保留 ${reserveText(a.reserve??D.rules?.reserve??30)}">大锅饭${a.reserve!=null?' · 留 '+reserveText(a.reserve):''}</span>`:''}${a.name?`<span class="ar-note">${esc(a.name)}</span>`:''}<span class="ar-today">Today <b class="mono">${fmtK(a.tokens?.today)}</b></span></div>
       ${p?`<div class="ar-prob">${ic('alert')}${esc(p.label)}</div>`:k&&k!=='good'?`<div class="ar-prob ${k}">${esc(t)}</div>`:''}
     </div>
     <div class="ar-pills">${qPills(a)}</div>
@@ -334,7 +336,7 @@ function resSummary(R){
   if(!R)return `<small class="faint">资源数据暂时读不到</small>`;
   const c=R.counts,usable=c.ok+c.cooldown;
   const chips=[`<span class="chip good"><span class="dot"></span>正常 ${c.ok}</span>`,c.cooldown?`<span class="chip warn"><span class="dot"></span>冷却 ${c.cooldown}</span>`:'',c.problem?`<span class="chip bad"><span class="dot"></span>出问题 ${c.problem}</span>`:'',c.off?`<span class="chip">停用 ${c.off}</span>`:'',
-    c.ultra?`<span class="tier ultra">Ultra ×${c.ultra}</span>`:'',c.pro?`<span class="tier pro">Pro ×${c.pro}</span>`:'',c.free?`<span class="tier">Free ×${c.free}</span>`:''].join('');
+    c.ultra?tierTag('Ultra',' ×'+c.ultra):'',c.pro?`<span class="tier pro">Pro ×${c.pro}</span>`:'',c.free?`<span class="tier">Free ×${c.free}</span>`:''].join('');
   const fams=RES_F.map(([k,lab,icon])=>{const F=R.fam[k];if(!F||!F.accounts&&!F.off)return '';
     return `<div class="res-f ${F.open?'':'shut'}"><div class="res-h">${icon()}<b>${lab}</b>${F.open?'':'<span class="chip">大锅饭未开放</span>'}</div>
       <div class="res-n"><b class="mono">${F.full.toFixed(1)}</b><span>个满额号 · ${k==='argon'?`${F.accounts} 个号已开通${F.off?` · ${F.off} 个未开通`:''}`:`${F.accounts} 个号有这项额度`}</span></div>
@@ -370,7 +372,7 @@ function resTable(R){
   const ST={ok:['good','正常'],cooldown:['warn','冷却'],problem:['bad','出问题'],off:['idle','停用']};
   return `<div class="tbl res-t"><div class="tr th"><span>账号</span><span>状态</span><span>Gemini</span><span>Claude</span><span>Argon</span><span class="num-r">保留</span><span class="num-r">今日</span></div>
     ${L.map(a=>{const t=tierName(a.tier),[k,lab]=ST[a.state];return `<div class="tr ${a.state==='off'?'off':''}">
-      <span class="u-cell"><span class="avatar sm" title="${esc(a.owner)}">${esc((a.owner||'?')[0])}</span><span class="u-n"><span class="u-t"><strong class="mono" title="${esc(a.email)}">${esc(a.email)}</strong>${t?`<span class="tier ${t.toLowerCase()}">${t}</span>`:''}</span><span class="sub">${esc(a.owner)}${a.quotaAt?' · '+ago(a.quotaAt):''}</span></span></span>
+      <span class="u-cell"><span class="avatar sm" title="${esc(a.owner)}">${esc((a.owner||'?')[0])}</span><span class="u-n"><span class="u-t"><strong class="mono" title="${esc(a.email)}">${esc(a.email)}</strong>${tierTag(t)}</span><span class="sub">${esc(a.owner)}${a.quotaAt?' · '+ago(a.quotaAt):''}</span></span></span>
       <span class="u-st ${k==='bad'?'bad':''}" title="${esc(a.problem||'')}"><span class="sdot ${k}"></span>${esc(a.problem||lab)}</span>
       ${resCell(a.wins.gemini,a.reserve)}${resCell(a.wins.claude,a.reserve)}${a.argon==='off'?'<span class="rc faint" title="这个号没有开通 Gemini 4 Argon">未开通</span>':resCell(a.wins.argon,a.reserve)}
       <span class="num-r mono faint">${a.reserve?a.reserve+'%':'—'}</span>
