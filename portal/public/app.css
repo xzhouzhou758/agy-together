@@ -637,6 +637,7 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .acb{display:flex;gap:8px;margin-top:8px}
 .acb .input{flex:1;min-width:0}
 .acb .btn{border-radius:12px}
+.tip-shade{z-index:55}
 .atip{margin-top:16px;padding:14px 16px;border-radius:14px;background:var(--fill)}
 .atip b{display:flex;align-items:center;gap:8px;font-size:14.5px;font-weight:600}
 .atip b .i{width:17px;height:17px;color:var(--accent)}

@@ -3,6 +3,8 @@
 
 /* ============ 图标（内联 SVG，参考 Lucide，ISC 许可） ============ */
 const ICONS={
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+  moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   home:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
   key:'<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   pot:'<path d="M2 12h20"/><path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/><path d="m4 8 16-4"/><path d="m8.86 6.78-.45-1.81a2 2 0 0 1 1.45-2.43l1.94-.48a2 2 0 0 1 2.43 1.46l.45 1.8"/>',
@@ -519,7 +521,6 @@ function inputLimitCard(){
     <small class="faint">按请求内容估算（中文约 1 字 1 Token，英文约 4 字母 1 Token，图片不算），和实际会有一两成误差。</small></section>`;
 }
 function pageProfile(){
-  const t=themePref();
   return head('个人中心')+
   `<section class="card glass"><div class="row"><div class="hstack" style="gap:14px"><span class="avatar lg">${esc((me.name||'?')[0])}</span><div><h2 style="font-size:20px">${esc(me.name)}</h2><small>@${esc(me.handle)}</small></div></div><span class="chip good">${ic('check')}${String(me.discordId).startsWith('local:')?'账号密码登录':'Discord 已登录'}</span></div></section>
   <section class="card glass"><div class="card-head"><h2>我的权限</h2><span class="chip">${me.role==='admin'?'管理员':'普通用户'}</span></div>
@@ -528,7 +529,6 @@ function pageProfile(){
     <div class="rule"><h3>使用大锅饭</h3><div class="val"><span class="chip good">已开启</span></div></div>
   </section>
   ${inputLimitCard()}
-  <section class="card glass"><div class="row"><h2>外观</h2><div class="seg" role="radiogroup" aria-label="外观">${[['auto','跟随系统'],['light','浅色'],['dark','深色']].map(([v,l])=>`<label><input type="radio" name="theme" value="${v}" ${t===v?'checked':''}><span>${l}</span></label>`).join('')}</div></div></section>
   <section class="card glass"><div class="row"><h2>退出</h2><button class="btn" data-act="logout">${ic('logout')}退出登录</button></div></section>`;
 }
 
@@ -870,7 +870,7 @@ function render(){
     <div class="content"><div class="wrap">
       <header class="top glass">
         <div class="top-left"><div class="brand">${logoImg('width:36px;height:36px;border-radius:11px;font-size:17px')}</div>${me.role==='admin'?'<span class="chip warn">管理员</span>':''}</div>
-        <div class="top-right"><button class="btn sm ghost icon bell ${ANN.unread?'on':''}" data-act="anns" aria-label="公告${ANN.unread?`（${ANN.unread} 条未读）`:''}" title="公告">${ic('bell')}</button><button class="btn sm ghost icon" data-act="reload" aria-label="刷新">${ic('refresh')}</button></div>
+        <div class="top-right"><button class="btn sm ghost icon bell ${ANN.unread?'on':''}" data-act="anns" aria-label="公告${ANN.unread?`（${ANN.unread} 条未读）`:''}" title="公告">${ic('bell')}</button><button class="btn sm ghost icon" data-act="reload" aria-label="刷新">${ic('refresh')}</button>${themeBtn()}</div>
       </header>
       <main id="main" tabindex="-1">${main}</main>
       <footer class="credit">Made with 🦴 by 聪明绝顶二狗子</footer>
@@ -905,10 +905,13 @@ async function load(p=page){
 }
 async function reload(){try{await LOADERS[page]();loadState='idle';}catch(e){loadState='error';}render();}
 
+const isDark=()=>document.documentElement.dataset.theme==='dark';
+const themeBtn=()=>`<button class="btn sm ghost icon" id="themebtn" data-act="theme" aria-label="${isDark()?'切到浅色':'切到深色'}" title="${isDark()?'切到浅色':'切到深色'}">${ic(isDark()?'sun':'moon')}</button>`;
 function applyTheme(){
   const t=themePref();
   const dark=t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.dataset.theme=dark?'dark':'light';
+  $('#themebtn')?.replaceWith(document.createRange().createContextualFragment(themeBtn()));
 }
 
 /* ============ 弹窗 ============ */
@@ -920,7 +923,7 @@ function openDialog(title,sub,body,foot,wide=false){
   const first=$('#layer [autofocus]')||$('#layer .dialog input:not([disabled]),#layer .dialog select')||$('#layer .dialog-foot .btn.primary')||$('#layer [data-act=close]');
   first?.focus();
 }
-function closeDialog(){$('#layer').innerHTML='';flow=null;mdlFor=null;if(lastFocus&&document.contains(lastFocus))lastFocus.focus();lastFocus=null;}
+function closeDialog(){$('#addtip')?.remove();$('#layer').innerHTML='';flow=null;mdlFor=null;if(lastFocus&&document.contains(lastFocus))lastFocus.focus();lastFocus=null;}
 const dialogOpen=()=>!!$('#layer .dialog');
 
 function toast(text,err=false){
@@ -933,14 +936,18 @@ function copy(text){(navigator.clipboard?.writeText(text)||Promise.reject()).the
 const resultBox=(k,t,p)=>`<div class="result ${k}">${ic(k==='ok'?'check':'alert')}<div><b>${esc(t)}</b>${p?`<p>${esc(p)}</p>`:''}</div></div>`;
 const loadingBox=t=>`<div class="result" style="background:var(--fill)"><span class="spin"></span><div><b>${t}</b></div></div>`;
 const UPERR={invalid:'不是 Antigravity 凭证',duplicate:'账号已存在',invalid_token:'Refresh Token 无效或已失效',failed:'导入失败'};
+// 叠在添加框上面的提示，关掉后回到添加框
 function addTipDialog(){
-  flow={};
-  openDialog('添加前先看一下','',
-    `<div class="atip"><b>${ic('key')}有 Refresh Token 的话，优先用它导入</b><p>不用每次走浏览器登录，能减少 IP 来回变化带来的封号风险。</p></div>
+  flow={};addDialog(1);
+  document.body.insertAdjacentHTML('beforeend',`<div class="shade tip-shade" id="addtip" data-tipshade><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="tip-t">
+    <div class="dialog-head"><div><h2 id="tip-t">添加前先看一下</h2></div><button class="btn icon ghost" data-act="tipclose" aria-label="关闭">${ic('x')}</button></div>
+    <div class="atip"><b>${ic('key')}有 Refresh Token 的话，优先用它导入</b><p>不用每次走浏览器登录，能减少 IP 来回变化带来的封号风险。</p></div>
     <div class="atip"><b>${ic('info')}用 OAuth 授权的号，建议先养几天</b><p>新号（尤其是买来的号）别一上来就高强度用：</p>
-      <ol><li>导入后先用一两条，然后把它停用；</li><li>之后每隔 24 小时启用一下，再用一两条；</li><li>满 7 天后再放开用。</li></ol></div>`,
-    `<button class="btn wide-btn" data-act="addtip:oauth">OAuth 授权</button><button class="btn primary wide-btn" data-act="addtip:rt">${ic('key')}用 Refresh Token 导入</button>`);
+      <ol><li>导入后先用一两条，然后把它停用；</li><li>之后每隔 24 小时启用一下，再用一两条；</li><li>满 7 天后再放开用。</li></ol></div>
+    <div class="dialog-foot"><button class="btn primary wide-btn" data-act="tipclose">知道了</button></div></section></div>`);
+  $('#addtip [data-act=tipclose]')?.focus();
 }
+const closeTip=()=>{const t=$('#addtip');if(!t)return false;t.remove();$('#layer [autofocus]')?.focus();return true;};
 function addDialog(step=1){
   flow=flow||{};
   const f=flow,tab=ui.addTab;
@@ -1113,6 +1120,7 @@ function keepAcc(v){D.accounts=D.accounts.map(x=>x.id===v.id?{...v,requests:x.re
 const act=fn=>async(...a)=>{try{await fn(...a);}catch(e){fail(e);}};
 
 document.addEventListener('click',act(async e=>{
+  if(e.target.matches('[data-tipshade]')){closeTip();return;}
   if(e.target.matches('[data-shade]')){closeDialog();return;}
   if(tokPin&&!e.target.closest('#tokpop,.tk-i'))hideTokPop(true);
   const el=e.target.closest('[data-act]');if(!el||el.disabled)return;
@@ -1129,7 +1137,8 @@ document.addEventListener('click',act(async e=>{
       await boot();break;
     case 'logout':await api('POST','api/logout');me=null;D={};closeDialog();render();break;
     case 'add':addTipDialog();break;
-    case 'addtip':flow={};ui.addTab=arg;addDialog(1);break;
+    case 'tipclose':closeTip();break;
+    case 'theme':try{localStorage.setItem('agy-theme',isDark()?'light':'dark');}catch(err){}applyTheme();break;
     case 'reauth':flow={};ui.addTab='oauth';addDialog(1);break;
     case 'export':exportDialog();break;
     case 'rtimport':await importTokens($('#f-rt')?.value||'');break;
@@ -1347,7 +1356,6 @@ document.addEventListener('change',act(async e=>{
   else if(t.id==='f-accshare'){const w=$('#f-rsvwrap');if(w)w.hidden=!t.checked;}
   else if(t.name==='mpmode'){const l=$('#mp-list');if(l)l.classList.toggle('dis',t.value==='all');}
   else if(t.name==='accview'){try{localStorage.setItem('agy-accview',t.value);}catch(err){}render();}
-  else if(t.name==='theme'){try{localStorage.setItem('agy-theme',t.value);}catch(err){}applyTheme();}
   else if(t.name==='addTab'){ui.addTab=t.value;addDialog(1);$(`#layer input[name=addTab][value=${t.value}]`)?.focus();}
   else if(t.name==='reserve'){D.admin.rules=await api('PUT','api/admin/rules',{reserve:+t.value});toast('自用保留已更新');}
   else if(t.dataset.rule){const v=Math.max(+t.min||0,Math.min(+t.max||1e9,Math.round(+t.value||0)));t.value=v;D.admin.rules=await api('PUT','api/admin/rules',{[t.dataset.rule]:v});toast('规则已更新');}
@@ -1375,7 +1383,7 @@ document.addEventListener('drop',act(async e=>{const d=e.target.closest?.('#drop
 
 document.addEventListener('keydown',e=>{
   const dlg=$('#layer .dialog');
-  if(e.key==='Escape'){if(dlg)closeDialog();return;}
+  if(e.key==='Escape'){if(closeTip())return;if(dlg)closeDialog();return;}
   if(e.key==='Enter'&&e.target.id==='f-devname'){$('[data-act=devlogin]')?.click();return;}
   if((e.key==='Enter'||e.key===' ')&&e.target.matches?.('.tr.click')){e.preventDefault();e.target.click();return;}
   if(e.key==='Tab'&&dlg){
