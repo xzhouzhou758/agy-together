@@ -638,11 +638,13 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .acb .input{flex:1;min-width:0}
 .acb .btn{border-radius:12px}
 .tip-shade{z-index:55}
-.atip{margin-top:16px;padding:14px 16px;border-radius:14px;background:var(--fill)}
-.atip b{display:flex;align-items:center;gap:8px;font-size:14.5px;font-weight:600}
-.atip b .i{width:17px;height:17px;color:var(--accent)}
-.atip p{margin-top:6px;color:var(--dim);font-size:13.5px;line-height:1.65}
-.atip ol{margin:8px 0 0;padding-left:22px;color:var(--dim);font-size:13.5px;line-height:1.8}
+.tip-dlg{width:580px;padding:28px}
+.tip-dlg h2{font-size:21px;font-weight:700}
+.atip{margin-top:18px;padding:18px 20px;border-radius:16px;background:var(--fill)}
+.atip b{display:flex;align-items:center;gap:9px;font-size:16.5px;font-weight:700}
+.atip b .i{width:20px;height:20px;color:var(--accent)}
+.atip p{margin-top:8px;color:var(--ink);font-size:15px;font-weight:600;line-height:1.7}
+.atip ol{margin:8px 0 0;padding-left:24px;color:var(--ink);font-size:15px;font-weight:600;line-height:1.9}
 .btn.wide-btn{flex:1;padding:12px;border-radius:14px;font-size:15px;font-weight:600;background:var(--fill);border-color:transparent}
 .aexp{display:flex;align-items:center;justify-content:center;gap:4px;margin-top:12px;font-size:13px}
 .explist{display:flex;flex-direction:column;margin-top:8px;max-height:46vh;overflow:auto;border-radius:14px;background:var(--fill)}

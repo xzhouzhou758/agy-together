@@ -939,12 +939,12 @@ const UPERR={invalid:'不是 Antigravity 凭证',duplicate:'账号已存在',inv
 // 叠在添加框上面的提示，关掉后回到添加框
 function addTipDialog(){
   flow={};addDialog(1);
-  document.body.insertAdjacentHTML('beforeend',`<div class="shade tip-shade" id="addtip" data-tipshade><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="tip-t">
+  document.body.insertAdjacentHTML('beforeend',`<div class="shade tip-shade" id="addtip" data-tipshade><section class="dialog tip-dlg" role="dialog" aria-modal="true" aria-labelledby="tip-t">
     <div class="dialog-head"><div><h2 id="tip-t">添加前先看一下</h2></div><button class="btn icon ghost" data-act="tipclose" aria-label="关闭">${ic('x')}</button></div>
     <div class="atip"><b>${ic('key')}有 Refresh Token 的话，优先用它导入</b><p>不用每次走浏览器登录，能减少 IP 来回变化带来的封号风险。</p></div>
     <div class="atip"><b>${ic('info')}用 OAuth 授权的号，建议先养几天</b><p>新号（尤其是买来的号）别一上来就高强度用：</p>
       <ol><li>导入后先用一两条，然后把它停用；</li><li>之后每隔 24 小时启用一下，再用一两条；</li><li>满 7 天后再放开用。</li></ol></div>
-    <div class="dialog-foot"><button class="btn primary wide-btn" data-act="tipclose">知道了</button></div></section></div>`);
+    <div class="dialog-foot"><button class="btn primary big" data-act="tipclose">知道了</button></div></section></div>`);
   $('#addtip [data-act=tipclose]')?.focus();
 }
 const closeTip=()=>{const t=$('#addtip');if(!t)return false;t.remove();$('#layer [autofocus]')?.focus();return true;};
