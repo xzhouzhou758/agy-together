@@ -933,6 +933,14 @@ function copy(text){(navigator.clipboard?.writeText(text)||Promise.reject()).the
 const resultBox=(k,t,p)=>`<div class="result ${k}">${ic(k==='ok'?'check':'alert')}<div><b>${esc(t)}</b>${p?`<p>${esc(p)}</p>`:''}</div></div>`;
 const loadingBox=t=>`<div class="result" style="background:var(--fill)"><span class="spin"></span><div><b>${t}</b></div></div>`;
 const UPERR={invalid:'不是 Antigravity 凭证',duplicate:'账号已存在',invalid_token:'Refresh Token 无效或已失效',failed:'导入失败'};
+function addTipDialog(){
+  flow={};
+  openDialog('添加前先看一下','',
+    `<div class="atip"><b>${ic('key')}有 Refresh Token 的话，优先用它导入</b><p>不用每次走浏览器登录，能减少 IP 来回变化带来的封号风险。</p></div>
+    <div class="atip"><b>${ic('info')}用 OAuth 授权的号，建议先养几天</b><p>新号（尤其是买来的号）别一上来就高强度用：</p>
+      <ol><li>导入后先用一两条，然后把它停用；</li><li>之后每隔 24 小时启用一下，再用一两条；</li><li>满 7 天后再放开用。</li></ol></div>`,
+    `<button class="btn wide-btn" data-act="addtip:oauth">OAuth 授权</button><button class="btn primary wide-btn" data-act="addtip:rt">${ic('key')}用 Refresh Token 导入</button>`);
+}
 function addDialog(step=1){
   flow=flow||{};
   const f=flow,tab=ui.addTab;
@@ -1120,7 +1128,8 @@ document.addEventListener('click',act(async e=>{
       await api('POST','api/dev-login',{discordId:$('#f-devid').value.trim(),name:$('#f-devname').value.trim()});
       await boot();break;
     case 'logout':await api('POST','api/logout');me=null;D={};closeDialog();render();break;
-    case 'add':flow={};addDialog(1);break;
+    case 'add':addTipDialog();break;
+    case 'addtip':flow={};ui.addTab=arg;addDialog(1);break;
     case 'reauth':flow={};ui.addTab='oauth';addDialog(1);break;
     case 'export':exportDialog();break;
     case 'rtimport':await importTokens($('#f-rt')?.value||'');break;
