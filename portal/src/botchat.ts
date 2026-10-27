@@ -13,7 +13,7 @@ import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
 import { leaderboard, allTimeLine, tk, myAccounts, maskEmail } from './bot.ts';
 import { dayStart, sharedModels } from './limits.ts';
-import { kbSearch, kbHits, kbDoc, kbTitles, tavernGuide } from './kb.ts';
+import { kbSearch, kbHits, kbDoc, kbTitles, kbAdd, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
 import { inspectRequest } from './reqdiag.ts';
 import { restartLog } from './restarts.ts';
@@ -221,8 +221,16 @@ const TOOLS = [
 const INSPECT = { type: 'function', function: { name: 'inspect_my_request',
   description: '读取提问人自己最近一次请求的完整内容（参数、每条消息的长度、系统提示词和最后几条消息、上游报错）来找原因。只能看提问人自己的。',
   parameters: { type: 'object', properties: { which: { type: 'integer', description: '0 = 最近一次，1 = 再往前一次…（最多 4）' }, failed_only: { type: 'boolean', description: '默认只看失败的请求' } } } } };
+// admins only: "@二狗子 记住 …" writes a note into the knowledge base
+const REMEMBER = { type: 'function', function: { name: 'remember',
+  description: '把站长让你记住的内容写进知识库（以后回答时能搜到）。只在站长明确让你记住 / 写进记忆库时调用。',
+  parameters: { type: 'object', properties: { title: { type: 'string', description: '简短标题，方便以后搜到' }, content: { type: 'string', description: '要记的内容，保留原文要点、数字、链接，不要编造' } }, required: ['title', 'content'] } } };
 const MAX_STEPS = 4;
-async function runTool(name: string, args: any, userId: number | null): Promise<string> {
+export async function runTool(name: string, args: any, userId: number | null, admin = false): Promise<string> {
+  if (name === 'remember') {
+    if (!admin) return '只有站长能让我记东西';
+    try { return `已写进知识库，文档 #${kbAdd('记忆 · ' + String(args?.title || '').trim(), String(args?.content || ''), 'discord')}`; } catch { return '内容是空的，没记'; }
+  }
   if (name === 'inspect_my_request') return userId ? inspectRequest(userId, Number(args?.which || 0), args?.failed_only !== false).catch(() => '读日志失败') : '提问人没登录过小锅饭';
   if (name === 'search_kb') {
     const h = kbHits(String(args?.query || ''), 5, 3500);
@@ -233,26 +241,28 @@ async function runTool(name: string, args: any, userId: number | null): Promise<
 }
 
 /** One answer; runs on the admins' accounts only. The model may search the knowledge base a few times first. */
-export async function answer(discordId: string, question: string, previous?: string): Promise<string> {
+export async function answer(discordId: string, question: string, previous?: string, quoted?: string): Promise<string> {
   const src = chatSource(), upId = isUp(src) ? Number(src.slice(3)) : null;
   const allow = upId == null ? all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id) : [];
   if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
   const send = (b: string) => (upId == null ? cpaPost(b, allow) : upPost(upId, b));
-  const titles = kbTitles(), asker: number | null = one('SELECT id FROM users WHERE discord_id = ?', discordId)?.id ?? null;
+  const titles = kbTitles(), me = one('SELECT id, role FROM users WHERE discord_id = ?', discordId), asker: number | null = me?.id ?? null, isAdmin = me?.role === 'admin';
   const messages: any[] = [{ role: 'system', content: chatPrompt() + '\n\n' + CONTEXT_FACTS +
     (asker ? '\n\n提问人问自己为什么报错 / 回复不对时，用 inspect_my_request 读他自己最近的请求，看参数、消息结构、预填充、哪条特别长、上游报错原文，定位到具体原因再说怎么改。回答在公开频道：可以点出是哪一部分（比如系统提示词里的某段、第几条消息），但不要大段复述他的聊天内容，引用原文最多一两句，也不要评论他写的内容本身（题材、剧情、人物）。' : '') +
+    (isAdmin ? '\n\n提问人是站长。他让你「记住」「记下来」「写进记忆库 / 知识库」时，用 remember 把要记的内容（他这条消息里的，或他回复的那条消息里的）整理成一条写进去，写完简短告诉他记了什么、标题是什么。' :
+      '\n\n有人让你记住什么、写进记忆库时，告诉他只有站长能让你记。') +
     (titles ? '\n\n酒馆相关的问题，先看下面已经附上的知识库片段；不够或对不上就自己用 search_kb 换关键词搜、用 open_doc 读全文，查清楚再答，别凭印象瞎说。数据类问题（排行、报错、额度）直接看数据，不用查知识库。\n知识库目录：\n' + titles : '') +
     '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) + '\n\n' + tavernGuide() + knowledge(question, previous) }];
   if (previous) messages.push({ role: 'assistant', content: previous });
-  messages.push({ role: 'user', content: question || '你好' });
+  messages.push({ role: 'user', content: (quoted ? `（他回复了这条消息）\n${quoted}\n\n` : '') + (question || '你好') });
   const admin = one(`SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1`)?.id ?? null;
   const upOwner = upId == null ? admin : upstreamById(upId)?.ownerId ?? admin;
   const log = (start: number, status: number, requestId: string | null, reason: string | null) => run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, owner_id, model, requested_model, path, status, result, reason, latency_ms, stream, request_id)
     VALUES(?,?,NULL,'private',?,?,?,?,'/discord/chat',?,?,?,?,0,?)`, start, admin, upId == null ? null : upAuthId(upId), upOwner, chatModel(), chatModel(), status, status < 300 ? 'ok' : status === 429 ? 'quota' : status < 500 ? 'client' : 'upstream', reason, now() - start, requestId);
   try {
     for (let step = 0; step <= MAX_STEPS; step++) {
-      const start = now(), last = step === MAX_STEPS || (!titles && !asker);
-      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: asker ? [...TOOLS, INSPECT] : TOOLS, tool_choice: 'auto' }) }));
+      const start = now(), last = step === MAX_STEPS || (!titles && !asker && !isAdmin);
+      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: [...TOOLS, ...(asker ? [INSPECT] : []), ...(isAdmin ? [REMEMBER] : [])], tool_choice: 'auto' }) }));
       const tr = parseTrace(r.trace);
       if (tr) recentAllowed.set(tr.requestId, { allowed: new Set(allow), ts: now() });
       if (r.status >= 300) { log(start, r.status, tr?.requestId || null, 'Discord 机器人回答失败'); return `我这边出错了（HTTP ${r.status}），晚点再问我 🐶`; }
@@ -264,7 +274,7 @@ export async function answer(discordId: string, question: string, previous?: str
         for (const c of calls) {
           let args: any = {};
           try { args = JSON.parse(c.function?.arguments || '{}'); } catch {}
-          messages.push({ role: 'tool', tool_call_id: c.id, content: await runTool(String(c.function?.name || ''), args, asker) });
+          messages.push({ role: 'tool', tool_call_id: c.id, content: await runTool(String(c.function?.name || ''), args, asker, isAdmin) });
         }
         continue;
       }
@@ -316,11 +326,13 @@ async function onMessage(d: any) {
   }
   const q = String(d.content || '').replace(new RegExp(`<@!?${me}>`, 'g'), '')
     .replace(/<@!?(\d+)>/g, (_x, id) => '@' + (names.get(id) || one('SELECT name FROM users WHERE discord_id = ?', id)?.name || '某人'))
-    .trim().slice(0, 1000);
-  const prev = d.referenced_message?.author?.id === me ? String(d.referenced_message.content || '') : undefined;
+    .trim().slice(0, 4000);
+  const ref = d.referenced_message, prev = ref?.author?.id === me ? String(ref.content || '') : undefined;
+  // replying to someone else's message: its text (and attachment names) go along, e.g. "@二狗子 记住这个"
+  const quoted = ref && ref.author?.id !== me ? `${ref.member?.nick || ref.author?.global_name || ref.author?.username || '某人'}：${String(ref.content || '').slice(0, 4000)}${(ref.attachments || []).map((a: any) => `\n[附件 ${a.filename} ${a.url}]`).join('')}` : undefined;
   rest('POST', `/channels/${d.channel_id}/typing`).catch(() => {});
   // "@Name" in the answer for someone the asker @-ed becomes a real Discord mention again
-  let text = await answer(String(d.author.id), q, prev);
+  let text = await answer(String(d.author.id), q, prev, quoted);
   for (const [n, id] of [...back.entries()].sort((a, b) => b[0].length - a[0].length)) text = text.split('@' + n).join(`<@${id}>`).replace(/<@(\d+)>（机器人）/g, '<@$1>');
   const pinged = [...new Set(back.values())];
   // Discord caps a message at 2000 characters: longer answers go out as a few replies, split at line breaks

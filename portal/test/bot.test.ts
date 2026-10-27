@@ -336,3 +336,16 @@ test('restart log: deploys vs crashes, machine reboots and CPA outages reach the
   assert.match(restartLog(), /正在中断中/);
   cpaProbe(true);
 });
+
+test('bot chat remember: only admins can write into the knowledge base', async () => {
+  const { one } = await import('../src/db.ts');
+  const { runTool } = await import('../src/botchat.ts');
+  assert.match(await runTool('remember', { title: 't', content: 'x' }, 1, false), /只有站长/);
+  const r = await runTool('remember', { title: '新渠道', content: '大锅饭今晚 10 点维护' }, 1, true);
+  const id = Number(/#(\d+)/.exec(r)?.[1]);
+  const doc = one('SELECT title, body, source FROM kb_docs WHERE id = ?', id);
+  assert.equal(doc.title, '记忆 · 新渠道');
+  assert.equal(doc.body, '大锅饭今晚 10 点维护');
+  assert.equal(doc.source, 'discord');
+  assert.match(await runTool('remember', { title: 'e', content: '  ' }, 1, true), /空的/);
+});
