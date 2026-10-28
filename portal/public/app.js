@@ -294,7 +294,7 @@ function accRow(a){
 }
 const accView=()=>{try{return localStorage.getItem('agy-accview')||'full'}catch(e){return 'full'}};
 function sleepBar(){
-  return `<section class="card glass sleepbar"><div class="row"><div><h2>${ic('moon')}闲置自动休眠</h2><small>小锅饭的号 1 小时没用就自动关闭，下次请求自动唤醒。大锅饭里的号不受影响。</small></div>
+  return `<section class="card glass sleepbar"><div class="row"><div><h2>${ic('moon')}闲置自动休眠</h2></div>
     <button class="switch" role="switch" aria-checked="${!!me.autoSleep}" aria-label="闲置自动休眠" data-act="autosleep"></button></div></section>`;
 }
 // 打开「闲置自动休眠」前的说明，样式同添加凭证前的提示

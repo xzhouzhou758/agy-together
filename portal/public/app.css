@@ -640,7 +640,6 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .tip-shade{z-index:55}
 .sleepbar h2{display:flex;align-items:center;gap:8px;font-size:15px}
 .sleepbar h2 .i{width:17px;height:17px;color:var(--accent)}
-.sleepbar small{display:block;margin-top:4px}
 .sleepbar .row{gap:16px}
 .chip.sleep{background:rgba(124,108,240,.12);color:#6d5ce8}
 .sdot.sleep{background:#8b7cf6}
