@@ -349,3 +349,19 @@ test('bot chat remember: only admins can write into the knowledge base', async (
   assert.equal(doc.source, 'discord');
   assert.match(await runTool('remember', { title: 'e', content: '  ' }, 1, true), /空的/);
 });
+
+test('stock watch: a watched item going from sold out to in stock posts once', async () => {
+  const { restocked } = await import('../src/stock.ts');
+  const it = (id: number, stock: number) => ({ id, name: '成品号' + id, stock, price: 16, sold: 0 });
+  let r = restocked([it(47, 0), it(32, 0), it(41, 67)], [47, 32], {});
+  assert.equal(r.msgs.length, 0);                        // unwatched 41 has stock, ignored
+  r = restocked([it(47, 5), it(32, 0)], [47, 32], r.next);
+  assert.equal(r.msgs.length, 1);
+  assert.match(r.msgs[0], /成品号47[^]*库存 \*\*5\*\*[^]*\/item\/47/);
+  assert.ok(!/<@/.test(r.msgs[0]));
+  r = restocked([it(47, 3), it(32, 0)], [47, 32], r.next);
+  assert.equal(r.msgs.length, 0);                        // still in stock: no repeat
+  r = restocked([it(47, 0)], [47, 32], r.next);
+  r = restocked([it(47, 9)], [47, 32], r.next);
+  assert.equal(r.msgs.length, 1);                        // sold out, then restocked again
+});

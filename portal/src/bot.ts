@@ -60,7 +60,7 @@ function botReady() {
   const d = site.discord(), b = site.bot();
   return d.botToken && b.channelId ? { token: d.botToken, channel: b.channelId } : null;
 }
-async function post(content: string, mention: string[] = []): Promise<boolean> {
+export async function post(content: string, mention: string[] = []): Promise<boolean> {
   const b = botReady();
   if (!b) return false;
   try {

@@ -17,6 +17,7 @@ import { kbSearch, kbHits, kbDoc, kbTitles, kbAdd, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
 import { inspectRequest } from './reqdiag.ts';
 import { restartLog } from './restarts.ts';
+import { stockForChat } from './stock.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -49,7 +50,8 @@ export const CONTEXT_FACTS = `【上下文长度常识（以这里为准，知�
 - 现在站里的主力模型（Gemini 3.x / 4 系列、Claude 4.6 / 5.x）上下文窗口基本都是百万级（约 100 万 Token）；报错里出现 131072 说明这次落到了 128K 窗口的号或通道。
 - 输入几万到二三十万 Token 都是正常的酒馆长聊天，不要说别人「太长」「太多」或建议压缩。只有这些情况才提醒：接近或超过模型窗口（报 The input token count exceeds…）、超过个人或大锅饭的输入上限被拦下、或单次输入到了五十万以上。
 - 长上下文的真实代价是更慢、更费额度，而不是「模型装不下」；要说就说这个。
-【服务器重启】有人问报错时，先对一下数据里的「服务器重启 / 中断记录」：失败的时间落在某次重启 / 中断的时间段里或前后一两分钟内，就直接告诉他多半是服务器当时在重启，重试就好，不是他设置的问题。`;
+【服务器重启】有人问报错时，先对一下数据里的「服务器重启 / 中断记录」：失败的时间落在某次重启 / 中断的时间段里或前后一两分钟内，就直接告诉他多半是服务器当时在重启，重试就好，不是他设置的问题。
+【买号】有人问「有号吗」「哪里买号」「有没有货」时，算本站相关问题：先用 check_stock 实时查一次成品号库存，再告诉他哪些有货、价格和链接；全缺货就直接说缺货。提醒一句谨慎购买、炸了不管。`;
 
 /** What the model gets to see: the asker's recent requests and the public boards. */
 export function chatContext(discordId: string): string {
@@ -215,6 +217,8 @@ function upPost(id: number, body: string): Promise<{ status: number; trace: stri
 const TOOLS = [
   { type: 'function', function: { name: 'search_kb', description: '在酒馆知识库里按关键词搜索，返回最相关的几段（带文档编号）。用词不对就换个说法再搜。',
     parameters: { type: 'object', properties: { query: { type: 'string', description: '关键词或一句话，中英文都行' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'check_stock', description: '实时查 yh-mo.xyz 发卡站上成品号（Gemini / 反重力 Pro 成品号）的库存、价格和购买链接。有人问「有号吗」「哪里买号」「有没有货」时用。',
+    parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'open_doc', description: '打开知识库里某一篇文档的全文（每次最多 6000 字，用 offset 往后翻）。',
     parameters: { type: 'object', properties: { id: { type: 'integer' }, offset: { type: 'integer' } }, required: ['id'] } } },
 ];
@@ -236,6 +240,7 @@ export async function runTool(name: string, args: any, userId: number | null, ad
     const h = kbHits(String(args?.query || ''), 5, 3500);
     return h.length ? h.map((x) => `[文档 #${x.id}] ${x.c}`).join('\n---\n') : '没搜到，换个关键词试试';
   }
+  if (name === 'check_stock') return stockForChat();
   if (name === 'open_doc') return kbDoc(Number(args?.id), Number(args?.offset || 0));
   return '没有这个工具';
 }
@@ -261,7 +266,7 @@ export async function answer(discordId: string, question: string, previous?: str
     VALUES(?,?,NULL,'private',?,?,?,?,'/discord/chat',?,?,?,?,0,?)`, start, admin, upId == null ? null : upAuthId(upId), upOwner, chatModel(), chatModel(), status, status < 300 ? 'ok' : status === 429 ? 'quota' : status < 500 ? 'client' : 'upstream', reason, now() - start, requestId);
   try {
     for (let step = 0; step <= MAX_STEPS; step++) {
-      const start = now(), last = step === MAX_STEPS || (!titles && !asker && !isAdmin);
+      const start = now(), last = step === MAX_STEPS;
       const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: [...TOOLS, ...(asker ? [INSPECT] : []), ...(isAdmin ? [REMEMBER] : [])], tool_choice: 'auto' }) }));
       const tr = parseTrace(r.trace);
       if (tr) recentAllowed.set(tr.requestId, { allowed: new Set(allow), ts: now() });
