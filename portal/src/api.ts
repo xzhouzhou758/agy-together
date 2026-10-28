@@ -19,6 +19,8 @@ import { dailyFor, sharedModels, setSharedModels, isPaid } from './limits.ts';
 import { isUp, upName, upstreamRows, upstreamById, saveUpstream, normBase, modelsOf, modelInfo, openModels, enabledUpstreams } from './upstream.ts';
 import * as site from './site.ts';
 import { accountProblem, registerCommands, botStatus, connectInteractions, testMessage, postAnnouncement } from './bot.ts';
+import { wakeFor } from './autosleep.ts';
+
 
 type Handler = (req: IncomingMessage, res: ServerResponse, p: Record<string, string>, url: URL) => Promise<unknown> | unknown;
 const routes: { method: string; re: RegExp; keys: string[]; h: Handler }[] = [];
@@ -93,6 +95,7 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
     email: cred?.email || row.email || '',
     tier: q?.tier || null,
     active: !!cred && !cred.disabled,
+    asleep: !!row.sleep_at,
     shared: !!row.shared,
     reserve: row.reserve ?? null, // NULL = the admin's default (/api/rules reserve)
     proxy: proxy ? maskProxy(proxy) : null,
@@ -160,6 +163,7 @@ route('GET', '/api/me', (req) => {
     id: u.id, name: u.name, handle: u.handle, discordId: u.discord_id, role: u.role, defaultPool: u.default_pool,
     rotation: userRotation(u.id).mode,
     inputLimit: u.input_limit ?? null,
+    autoSleep: !!u.auto_sleep,
     baseURL: (site.publicURL() || '') + '/v1',
   };
 });
@@ -167,10 +171,15 @@ route('GET', '/api/me', (req) => {
 route('PATCH', '/api/me', async (req) => {
   const u = requireUser(req);
   const b = await readJSON(req);
-  if (b.defaultPool === undefined && b.rotation === undefined && b.inputLimit === undefined) throw new HttpError(400, 'invalid_body');
+  if (b.defaultPool === undefined && b.rotation === undefined && b.inputLimit === undefined && b.autoSleep === undefined) throw new HttpError(400, 'invalid_body');
   if (b.inputLimit !== undefined) {
     if (b.inputLimit !== null && !(Number.isInteger(b.inputLimit) && b.inputLimit >= 1000 && b.inputLimit <= 10_000_000)) throw new HttpError(400, 'invalid_input_limit');
     run('UPDATE users SET input_limit = ? WHERE id = ?', b.inputLimit, u.id);
+  }
+  if (b.autoSleep !== undefined) {
+    if (typeof b.autoSleep !== 'boolean') throw new HttpError(400, 'invalid');
+    run('UPDATE users SET auto_sleep = ? WHERE id = ?', b.autoSleep ? 1 : 0, u.id);
+    if (!b.autoSleep) await wakeFor(u.id);
   }
   if (b.defaultPool !== undefined) {
     if (b.defaultPool !== 'private' && b.defaultPool !== 'shared') throw new HttpError(400, 'invalid_pool');
@@ -347,7 +356,7 @@ route('PATCH', '/api/accounts/:id', async (req, _res, p) => {
   if (b.active !== undefined) {
     if (typeof b.active !== 'boolean') throw new HttpError(400, 'invalid');
     if (b.active === cred.disabled) await cpa.setDisabled(row.auth_id, !b.active);
-    run('UPDATE accounts SET auto_disabled_at = NULL, auto_disabled_reason = NULL WHERE auth_id = ?', row.auth_id); // owner decides now; autodisable.ts lets go
+    run('UPDATE accounts SET auto_disabled_at = NULL, auto_disabled_reason = NULL, sleep_at = NULL WHERE auth_id = ?', row.auth_id); // owner decides now; autodisable.ts / autosleep.ts let go
   }
   if (b.reserve !== undefined) {
     if (b.reserve !== null && !(Number.isInteger(b.reserve) && b.reserve >= 0 && b.reserve <= 90)) throw new HttpError(400, 'invalid');
@@ -894,7 +903,7 @@ route('GET', '/api/admin/accounts', async (req) => {
     return {
       id: cred.id, email: cred.email, type: cred.type, name: cred.note,
       ownerId: r.owner_id, owner: r.owner_id ? users.get(r.owner_id) || '' : null,
-      shared: !!r.shared, proxyId: r.proxy_id, active: !cred.disabled, inflight: accountInflight(cred.id),
+      shared: !!r.shared, proxyId: r.proxy_id, active: !cred.disabled, asleep: !!r.sleep_at, inflight: accountInflight(cred.id),
       ...accState(cred),
     };
   });

@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { startBotChat } from './botchat.ts';
 import { startRestartLog, recordStop } from './restarts.ts';
+import { startStockWatch } from './stock.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +17,7 @@ import { startQuotaRefresher } from './quota.ts';
 import { initSetup, setupDone } from './site.ts';
 import { handleInteraction, startBot } from './bot.ts';
 import { startAutoDisable } from './autodisable.ts';
+import { startAutoSleep } from './autosleep.ts';
 import * as cpa from './cpa.ts';
 
 const errs = validateConfig();
@@ -101,7 +103,9 @@ server.listen(config.port, config.host, () => {
   startBot();
   startBotChat();
   startAutoDisable();
+  startAutoSleep();
   startRestartLog();
+  startStockWatch();
   cpa.refreshCreds().catch((e) => console.error('[cpa] initial credential list failed:', e.message));
   setInterval(() => {
     try { pruneSessions(); pruneUsage(); } catch (e) { console.error('[prune]', e); }

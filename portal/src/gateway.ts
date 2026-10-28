@@ -11,6 +11,8 @@ import { sessionKey, userMode, newSalt } from './routing.ts';
 import { explainUnavailable, sendGatewayError, type Why } from './reason.ts';
 import { dailyFor, secondsToMidnight, sharedModels, sharedAllows } from './limits.ts';
 import { upstreamsFor, upstreamRequest, usageSniffer, upAuthId, enabledUpstreams, openModels, type Upstream, type Tok } from './upstream.ts';
+import { wakeFor } from './autosleep.ts';
+
 
 // ---------- live counters ----------
 const keyInflight = new Map<number, number>();
@@ -288,6 +290,15 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   } catch {
     if (isGen) record(ctx, { status: 503, result: 'blocked', reason: '账号列表不可用' });
     return fail(503, 'scheduler_unavailable', '账号列表暂时不可用');
+  }
+  // 闲置自动休眠: the owner is back, wake their sleeping 小锅饭 accounts. A model list just goes on;
+  // a generation is told to retry, since the woken accounts need a moment in CPA.
+  if (pool === 'private' && !allowed.length && await wakeFor(key.user_id).catch(() => 0)) {
+    if (isGen) {
+      record(ctx, { status: 503, result: 'blocked', reason: '凭证正在启动' });
+      return fail(503, 'credential_waking', '凭证正在启动，请重试', 3);
+    }
+    allowed = await allowedFor(key.user_id, pool, model, listing).catch(() => []);
   }
   const ups: Upstream[] = pool === 'shared' && isGen ? await upstreamsFor(model).catch(() => []) : [];
   if (!allowed.length && isGen && !ups.length) {

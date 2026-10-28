@@ -103,7 +103,7 @@ function quotas(a,full=false){
   return `<div class="quotas ${full?'full':''}">${g.map(([k,f,r])=>`<div class="qrow"><span class="qfam"><i class="${QG[k]?.[1]||''}"></i>${QG[k]?.[0]||esc(k)}</span>${qcell(f,r)}</div>`).join('')}</div>`;
 }
 function accState(a){
-  if(a.state==='off')return ['','已停用'];
+  if(a.state==='off')return a.asleep?['sleep','休眠中','闲置超过 1 小时自动关闭，下次请求会自动唤醒']:['','已停用'];
   if(a.state==='cooldown')return ['warn','冷却中',[a.reason,a.retryAt?`${until(a.retryAt)} 后重试`:''].filter(Boolean).join(' · ')];
   if(a.state==='error')return ['bad','异常',a.reason||''];
   return ['good','正常'];
@@ -293,10 +293,30 @@ function accRow(a){
   </div>`;
 }
 const accView=()=>{try{return localStorage.getItem('agy-accview')||'full'}catch(e){return 'full'}};
+function sleepBar(){
+  return `<section class="card glass sleepbar"><div class="row"><div><h2>${ic('moon')}闲置自动休眠</h2><small>小锅饭的号 1 小时没用就自动关闭，下次请求自动唤醒。大锅饭里的号不受影响。</small></div>
+    <button class="switch" role="switch" aria-checked="${!!me.autoSleep}" aria-label="闲置自动休眠" data-act="autosleep"></button></div></section>`;
+}
+// 打开「闲置自动休眠」前的说明，样式同添加凭证前的提示
+function sleepTipDialog(){
+  document.body.insertAdjacentHTML('beforeend',`<div class="shade tip-shade" id="addtip" data-tipshade><section class="dialog tip-dlg" role="dialog" aria-modal="true" aria-labelledby="tip-t">
+    <div class="dialog-head"><div><h2 id="tip-t">开启闲置自动休眠</h2></div><button class="btn icon ghost" data-act="tipclose" aria-label="关闭">${ic('x')}</button></div>
+    <div class="atip"><b>${ic('moon')}怎么运作</b><ol><li>小锅饭的号超过 1 小时没被用，就自动关闭，显示「休眠中」；</li><li>你再发请求时，第一条会返回「凭证正在启动，请重试」，同时把号打开；</li><li>重新发一次就正常了。</li></ol></div>
+    <div class="atip"><b>${ic('shield')}为什么要开</b><p>号闲着的时候不再被查额度、不会被拿去发请求，减少闲置期间和 Google 的往来，降低封号风险。</p></div>
+    <div class="atip"><b>${ic('info')}注意</b><p>只管没放进大锅饭的号。你自己手动停用的号不会被唤醒。关掉这个开关，休眠中的号会马上全部唤醒。</p></div>
+    <div class="dialog-foot"><button class="btn" data-act="tipclose">取消</button><button class="btn primary big" data-act="sleepon">开启</button></div></section></div>`);
+  $('#addtip [data-act=sleepon]')?.focus();
+}
+async function setAutoSleep(on){
+  await api('PATCH','api/me',{autoSleep:on});me.autoSleep=on;
+  if(!on)D.accounts=await api('GET','api/accounts');
+  render();toast(on?'已开启闲置自动休眠':'已关闭，休眠中的号已唤醒');
+}
 function pageAccounts(){
   const acc=D.accounts,v=accView();
   const seg=acc.length?`<div class="seg" role="radiogroup" aria-label="显示方式"><label><input type="radio" name="accview" value="full" ${v!=='compact'?'checked':''}><span>详细</span></label><label><input type="radio" name="accview" value="compact" ${v==='compact'?'checked':''}><span>简略</span></label></div>`:'';
   return head('我的凭证',`${seg}${acc.length?`<button class="btn" data-act="export">${ic('download')}导出</button>`:''}<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)+
+    (acc.length?sleepBar():'')+
     (acc.length?(v==='compact'?`<section class="card glass arows">${acc.map(accRow).join('')}</section>`:`<div class="acards">${acc.map(accCard).join('')}</div>`)
       :`<section class="card glass">${empty('key','还没有凭证',`<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)}</section>`);
 }
@@ -1138,6 +1158,8 @@ document.addEventListener('click',act(async e=>{
     case 'logout':await api('POST','api/logout');me=null;D={};closeDialog();render();break;
     case 'add':addTipDialog();break;
     case 'tipclose':closeTip();break;
+    case 'autosleep':if(me.autoSleep)await setAutoSleep(false);else sleepTipDialog();break;
+    case 'sleepon':closeTip();await setAutoSleep(true);break;
     case 'theme':try{localStorage.setItem('agy-theme',isDark()?'light':'dark');}catch(err){}applyTheme();break;
     case 'reauth':flow={};ui.addTab='oauth';addDialog(1);break;
     case 'export':exportDialog();break;

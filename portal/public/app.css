@@ -638,6 +638,12 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .acb .input{flex:1;min-width:0}
 .acb .btn{border-radius:12px}
 .tip-shade{z-index:55}
+.sleepbar h2{display:flex;align-items:center;gap:8px;font-size:15px}
+.sleepbar h2 .i{width:17px;height:17px;color:var(--accent)}
+.sleepbar small{display:block;margin-top:4px}
+.sleepbar .row{gap:16px}
+.chip.sleep{background:rgba(124,108,240,.12);color:#6d5ce8}
+.sdot.sleep{background:#8b7cf6}
 .tip-dlg{width:580px;padding:28px}
 .tip-dlg h2{font-size:21px;font-weight:700}
 .atip{margin-top:18px;padding:18px 20px;border-radius:16px;background:var(--fill)}

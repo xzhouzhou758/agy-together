@@ -143,6 +143,7 @@ addCol('usage', 'in_est', 'INTEGER');          // estimated input tokens of the 
 db.exec(`CREATE TABLE IF NOT EXISTS bot_user_alerts (user_id INTEGER PRIMARY KEY, err_streak INTEGER, err_at INTEGER, big_at INTEGER)`);
 // Accounts the portal disabled itself after an upstream 403 (re-enabled automatically once they work again).
 addCol('accounts', 'auto_disabled_at', 'INTEGER');
+addCol('accounts', 'sleep_at', 'INTEGER'); // put to sleep by autosleep.ts (闲置自动休眠)
 addCol('accounts', 'auto_disabled_reason', 'TEXT');
 // Discord bot: one row per account with an open problem (see bot.ts).
 db.exec(`CREATE TABLE IF NOT EXISTS bot_alerts (
@@ -170,6 +171,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS kb_docs (id INTEGER PRIMARY KEY, title TEXT 
 // 大锅饭 daily request limit: NULL = rule default, -1 = unlimited, >= 0 = fixed per day.
 addCol('users', 'daily_limit', 'INTEGER');
 addCol('users', 'input_limit', 'INTEGER');
+addCol('users', 'auto_sleep', 'INTEGER'); // 1 = 闲置自动休眠 for this user's 小锅饭 accounts
 addCol('users', 'bot_quiet', 'INTEGER'); // 1 = the Discord bot never @-mentions this user (/免打扰) // 输入上限 in estimated tokens, NULL = off
 // Per-account self-use reserve chosen by the owner when sharing (NULL = the admin's default rule).
 addCol('accounts', 'reserve', 'INTEGER');
