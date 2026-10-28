@@ -304,7 +304,7 @@ function sleepTipDialog(){
     <div class="atip"><b>${ic('moon')}怎么运作</b><ol><li>小锅饭的号超过 1 小时没被用，就自动关闭，显示「休眠中」；</li><li>你再发请求时，第一条会返回「凭证正在启动，请重试」，同时把号打开；</li><li>重新发一次就正常了。</li></ol></div>
     <div class="atip"><b>${ic('shield')}为什么要开</b><p>号闲着的时候不再被查额度、不会被拿去发请求，减少闲置期间和 Google 的往来，降低封号风险。</p></div>
     <div class="atip"><b>${ic('info')}注意</b><p>只管没放进大锅饭的号。你自己手动停用的号不会被唤醒。关掉这个开关，休眠中的号会马上全部唤醒。</p></div>
-    <div class="dialog-foot"><button class="btn" data-act="tipclose">取消</button><button class="btn primary big" data-act="sleepon">开启</button></div></section></div>`);
+    <div class="dialog-foot pair"><button class="btn big" data-act="tipclose">取消</button><button class="btn primary big" data-act="sleepon">开启</button></div></section></div>`);
   $('#addtip [data-act=sleepon]')?.focus();
 }
 async function setAutoSleep(on){

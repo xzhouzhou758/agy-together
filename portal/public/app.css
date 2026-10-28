@@ -627,6 +627,8 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .btn.big,.btn.big-out{display:flex;width:100%;padding:13px 16px;border-radius:14px;font-size:15px;font-weight:600}
 .btn.big-out{margin-top:10px;background:transparent}
 .btn.big:disabled{opacity:.7}
+.dialog-foot.pair{flex-wrap:nowrap}
+.dialog-foot.pair .btn{flex:1;width:auto;justify-content:center}
 .alink{display:flex;align-items:center;gap:10px;width:100%;padding:11px 14px;border-radius:13px;border:1.5px dashed var(--hair);background:transparent;color:var(--ink);cursor:pointer;text-align:left;font:inherit}
 .alink:hover{border-color:var(--accent)}
 .alink .i{width:16px;height:16px;flex:none;color:var(--dim)}
