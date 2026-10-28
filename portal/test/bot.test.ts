@@ -365,3 +365,17 @@ test('stock watch: a watched item going from sold out to in stock posts once', a
   r = restocked([it(47, 9)], [47, 32], r.next);
   assert.equal(r.msgs.length, 1);                        // sold out, then restocked again
 });
+
+test('bot chat images: image attachments become data URLs, others and oversized ones are skipped', async () => {
+  const { fetchImages } = await import('../src/botchat.ts');
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(Buffer.from('PNGDATA'))) as any;
+  try {
+    const out = await fetchImages([
+      { url: 'https://cdn/a.png', content_type: 'image/png', size: 7 },
+      { url: 'https://cdn/b.txt', content_type: 'text/plain', size: 7 },
+      { url: 'https://cdn/c.jpg', content_type: 'image/jpeg', size: 50 << 20 },
+    ]);
+    assert.deepEqual(out, ['data:image/png;base64,' + Buffer.from('PNGDATA').toString('base64')]);
+  } finally { globalThis.fetch = real; }
+});

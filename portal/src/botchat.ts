@@ -246,7 +246,21 @@ export async function runTool(name: string, args: any, userId: number | null, ad
 }
 
 /** One answer; runs on the admins' accounts only. The model may search the knowledge base a few times first. */
-export async function answer(discordId: string, question: string, previous?: string, quoted?: string): Promise<string> {
+const MAX_IMAGES = 3, MAX_IMAGE_BYTES = 4 << 20;
+/** Image attachments (the message's own and the one it replies to) → data URLs the model can look at. */
+export async function fetchImages(atts: any[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const a of atts.filter((x) => /^image\/(png|jpe?g|webp|gif)/.test(String(x?.content_type || '')) && Number(x.size || 0) <= MAX_IMAGE_BYTES).slice(0, MAX_IMAGES)) {
+    try {
+      const r = await fetch(String(a.url), { signal: AbortSignal.timeout(15000) });
+      const b = Buffer.from(await r.arrayBuffer());
+      if (r.ok && b.length <= MAX_IMAGE_BYTES) out.push(`data:${String(a.content_type).split(';')[0]};base64,${b.toString('base64')}`);
+    } catch {}
+  }
+  return out;
+}
+
+export async function answer(discordId: string, question: string, previous?: string, quoted?: string, images: string[] = []): Promise<string> {
   const src = chatSource(), upId = isUp(src) ? Number(src.slice(3)) : null;
   const allow = upId == null ? all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id) : [];
   if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
@@ -259,7 +273,9 @@ export async function answer(discordId: string, question: string, previous?: str
     (titles ? '\n\n酒馆相关的问题，先看下面已经附上的知识库片段；不够或对不上就自己用 search_kb 换关键词搜、用 open_doc 读全文，查清楚再答，别凭印象瞎说。数据类问题（排行、报错、额度）直接看数据，不用查知识库。\n知识库目录：\n' + titles : '') +
     '\n\n===== 数据（用户名都是站内昵称，可以直接说）=====\n' + chatContext(discordId) + '\n\n' + await siteContext(discordId) + '\n\n' + tavernGuide() + knowledge(question, previous) }];
   if (previous) messages.push({ role: 'assistant', content: previous });
-  messages.push({ role: 'user', content: (quoted ? `（他回复了这条消息）\n${quoted}\n\n` : '') + (question || '你好') });
+  const said = (quoted ? `（他回复了这条消息）\n${quoted}\n\n` : '') + (question || (images.length ? '看看这张图' : '你好'));
+  // screenshots: an error message, a SillyTavern settings page… the model reads them like text
+  messages.push({ role: 'user', content: images.length ? [{ type: 'text', text: said + `\n\n（附了 ${images.length} 张图，按图里的内容回答；报错截图就照报错对照和数据来分析）` }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] : said });
   const admin = one(`SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1`)?.id ?? null;
   const upOwner = upId == null ? admin : upstreamById(upId)?.ownerId ?? admin;
   const log = (start: number, status: number, requestId: string | null, reason: string | null) => run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, owner_id, model, requested_model, path, status, result, reason, latency_ms, stream, request_id)
@@ -337,7 +353,8 @@ async function onMessage(d: any) {
   const quoted = ref && ref.author?.id !== me ? `${ref.member?.nick || ref.author?.global_name || ref.author?.username || '某人'}：${String(ref.content || '').slice(0, 4000)}${(ref.attachments || []).map((a: any) => `\n[附件 ${a.filename} ${a.url}]`).join('')}` : undefined;
   rest('POST', `/channels/${d.channel_id}/typing`).catch(() => {});
   // "@Name" in the answer for someone the asker @-ed becomes a real Discord mention again
-  let text = await answer(String(d.author.id), q, prev, quoted);
+  const images = await fetchImages([...(d.attachments || []), ...(ref?.attachments || [])]);
+  let text = await answer(String(d.author.id), q, prev, quoted, images);
   for (const [n, id] of [...back.entries()].sort((a, b) => b[0].length - a[0].length)) text = text.split('@' + n).join(`<@${id}>`).replace(/<@(\d+)>（机器人）/g, '<@$1>');
   const pinged = [...new Set(back.values())];
   // Discord caps a message at 2000 characters: longer answers go out as a few replies, split at line breaks
