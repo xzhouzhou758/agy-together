@@ -379,3 +379,24 @@ test('bot chat images: image attachments become data URLs, others and oversized 
     assert.deepEqual(out, ['data:image/png;base64,' + Buffer.from('PNGDATA').toString('base64')]);
   } finally { globalThis.fetch = real; }
 });
+
+test('stock subscriptions: "补货的时候@我" adds the asker, stop removes them, restock posts ping them', async () => {
+  const { setSetting } = await import('../src/db.ts');
+  const { subscribe, subscribers, stockTick } = await import('../src/stock.ts');
+  assert.match(subscribe('55555666667', true), /已订阅/);
+  subscribe('55555666667', true);
+  assert.deepEqual(subscribers(), ['55555666667']);
+  assert.match(subscribe('nope', true), /没认出/);
+  setSetting('bot_channel_id', 'C1'); setSetting('discord_bot_token', 'bot-token'); setSetting('stock_watch', '47'); setSetting('stock_last', '{"47":0}');
+  const real = globalThis.fetch, posts: any[] = [];
+  globalThis.fetch = (async (url: string, init: any) => {
+    if (String(url).includes('yh-mo')) return new Response(JSON.stringify({ code: 200, data: [{ id: 47, name: '成品号', stock: 3, price: 16 }] }));
+    posts.push(JSON.parse(init.body)); return new Response('{}');
+  }) as any;
+  try { await stockTick(); } finally { globalThis.fetch = real; }
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].content, /补货了[^]*\n<@55555666667>$/);
+  assert.deepEqual(posts[0].allowed_mentions.users, ['55555666667']);
+  assert.match(subscribe('55555666667', false), /已取消/);
+  assert.match(subscribe('55555666667', false), /本来就没/);
+});

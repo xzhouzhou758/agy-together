@@ -1,7 +1,7 @@
 // Stock watch on an outside card shop (yh-mo.xyz, an acg-faka store): its public commodity list carries each
 // item's stock. Watched items post to the bot channel (no mentions) when they go from sold out to in stock;
 // the bot chat can also look up the shop's 成品号 when someone asks whether there are accounts for sale.
-import { getSetting, setSetting } from './db.ts';
+import { db, all, run, now, getSetting, setSetting } from './db.ts';
 import { post } from './bot.ts';
 
 const SHOP = 'https://yh-mo.xyz';
@@ -9,6 +9,14 @@ const EVERY = 5 * 60e3, FAIL_TELL = 6;    // 6 failed polls in a row (30 min) �
 export type Item = { id: number; name: string; stock: number; price: number; sold: number };
 /** Watched item ids, setting stock_watch (comma-separated), default 47 and 32. */
 export const watched = () => (getSetting('stock_watch') ?? '47,32').split(',').map((s) => Number(s.trim())).filter((n) => n > 0);
+// people who asked the bot "补货的时候@我": mentioned in every restock post until they say stop
+db.exec(`CREATE TABLE IF NOT EXISTS stock_subs (discord_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)`);
+export function subscribe(discordId: string, on: boolean): string {
+  if (!/^\d{5,25}$/.test(discordId)) return '没认出提问人的 Discord 账号';
+  if (on) { run('INSERT OR IGNORE INTO stock_subs(discord_id, created_at) VALUES(?, ?)', discordId, now()); return '已订阅：以后监控的成品号补货时会 @他（想停就说「补货别 @我了」）'; }
+  return Number(run('DELETE FROM stock_subs WHERE discord_id = ?', discordId).changes) ? '已取消订阅，补货不再 @他' : '他本来就没订阅';
+}
+export const subscribers = (): string[] => all('SELECT discord_id FROM stock_subs ORDER BY created_at').map((r: any) => String(r.discord_id));
 export const itemURL = (id: number) => `${SHOP}/item/${id}`;
 
 export async function fetchItems(): Promise<Item[]> {
@@ -41,7 +49,9 @@ export async function stockTick(): Promise<void> {
   try { last = JSON.parse(getSetting('stock_last') || '{}'); } catch {}
   const first = !getSetting('stock_last');
   const { msgs, next } = restocked(items, watched(), last);
-  for (const m of first ? [] : msgs) await post(m);   // the very first poll only learns the current stock
+  const subs = subscribers().slice(0, 100);           // Discord lets one message ping at most 100 users
+  const tail = subs.length ? '\n' + subs.map((id) => `<@${id}>`).join(' ') : '';
+  for (const m of first ? [] : msgs) await post((m + tail).length <= 2000 ? m + tail : m, subs);   // the very first poll only learns the current stock
   setSetting('stock_last', JSON.stringify(next));
 }
 

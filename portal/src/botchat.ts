@@ -17,7 +17,7 @@ import { kbSearch, kbHits, kbDoc, kbTitles, kbAdd, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
 import { inspectRequest } from './reqdiag.ts';
 import { restartLog } from './restarts.ts';
-import { stockForChat } from './stock.ts';
+import { stockForChat, subscribe } from './stock.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -51,7 +51,7 @@ export const CONTEXT_FACTS = `【上下文长度常识（以这里为准，知�
 - 输入几万到二三十万 Token 都是正常的酒馆长聊天，不要说别人「太长」「太多」或建议压缩。只有这些情况才提醒：接近或超过模型窗口（报 The input token count exceeds…）、超过个人或大锅饭的输入上限被拦下、或单次输入到了五十万以上。
 - 长上下文的真实代价是更慢、更费额度，而不是「模型装不下」；要说就说这个。
 【服务器重启】有人问报错时，先对一下数据里的「服务器重启 / 中断记录」：失败的时间落在某次重启 / 中断的时间段里或前后一两分钟内，就直接告诉他多半是服务器当时在重启，重试就好，不是他设置的问题。
-【买号】有人问「有号吗」「哪里买号」「有没有货」时，算本站相关问题：先用 check_stock 实时查一次成品号库存，再告诉他哪些有货、价格和链接；全缺货就直接说缺货。提醒一句谨慎购买、炸了不管。`;
+【买号】有人问「有号吗」「哪里买号」「有没有货」时，算本站相关问题：先用 check_stock 实时查一次成品号库存，再告诉他哪些有货、价格和链接；全缺货就直接说缺货。提醒一句谨慎购买、炸了不管。有人让你补货时 @他 / 不要再 @他，用 stock_notify 订阅或取消，再告诉他结果。`;
 
 /** What the model gets to see: the asker's recent requests and the public boards. */
 export function chatContext(discordId: string): string {
@@ -219,6 +219,8 @@ const TOOLS = [
     parameters: { type: 'object', properties: { query: { type: 'string', description: '关键词或一句话，中英文都行' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'check_stock', description: '实时查 yh-mo.xyz 发卡站上成品号（Gemini / 反重力 Pro 成品号）的库存、价格和购买链接。有人问「有号吗」「哪里买号」「有没有货」时用。',
     parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'stock_notify', description: '提问人说「补货的时候@我」「有货叫我」时订阅（on=true）；说「别@我了」「取消补货提醒」时取消（on=false）。只对提问人自己生效。',
+    parameters: { type: 'object', properties: { on: { type: 'boolean' } }, required: ['on'] } } },
   { type: 'function', function: { name: 'open_doc', description: '打开知识库里某一篇文档的全文（每次最多 6000 字，用 offset 往后翻）。',
     parameters: { type: 'object', properties: { id: { type: 'integer' }, offset: { type: 'integer' } }, required: ['id'] } } },
 ];
@@ -230,7 +232,8 @@ const REMEMBER = { type: 'function', function: { name: 'remember',
   description: '把站长让你记住的内容写进知识库（以后回答时能搜到）。只在站长明确让你记住 / 写进记忆库时调用。',
   parameters: { type: 'object', properties: { title: { type: 'string', description: '简短标题，方便以后搜到' }, content: { type: 'string', description: '要记的内容，保留原文要点、数字、链接，不要编造' } }, required: ['title', 'content'] } } };
 const MAX_STEPS = 4;
-export async function runTool(name: string, args: any, userId: number | null, admin = false): Promise<string> {
+export async function runTool(name: string, args: any, userId: number | null, admin = false, discordId = ''): Promise<string> {
+  if (name === 'stock_notify') return subscribe(discordId, args?.on !== false);
   if (name === 'remember') {
     if (!admin) return '只有站长能让我记东西';
     try { return `已写进知识库，文档 #${kbAdd('记忆 · ' + String(args?.title || '').trim(), String(args?.content || ''), 'discord')}`; } catch { return '内容是空的，没记'; }
@@ -295,7 +298,7 @@ export async function answer(discordId: string, question: string, previous?: str
         for (const c of calls) {
           let args: any = {};
           try { args = JSON.parse(c.function?.arguments || '{}'); } catch {}
-          messages.push({ role: 'tool', tool_call_id: c.id, content: await runTool(String(c.function?.name || ''), args, asker, isAdmin) });
+          messages.push({ role: 'tool', tool_call_id: c.id, content: await runTool(String(c.function?.name || ''), args, asker, isAdmin, discordId) });
         }
         continue;
       }
