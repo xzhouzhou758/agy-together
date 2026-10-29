@@ -267,13 +267,13 @@ type Shop = { name: string; url: string; note: string };
 function shopLinks(): Shop[] {
   try { return JSON.parse(getSetting('shop_links') || '[]'); } catch { return []; }
 }
-// 总开关: Discord @ 人, 买号渠道 shown to users
-const switches = () => ({ mentions: getSetting('bot_mentions') !== '0', shops: getSetting('shops_on') !== '0' });
+// 总开关: Discord @ 人, 机器人主动发消息 (off by default), 买号渠道 shown to users
+const switches = () => ({ mentions: getSetting('bot_mentions') !== '0', proactive: getSetting('bot_proactive') === '1', shops: getSetting('shops_on') !== '0' });
 route('GET', '/api/admin/switches', (req) => { requireAdmin(req); return switches(); });
 route('PUT', '/api/admin/switches', async (req) => {
   requireAdmin(req);
   const b = await readJSON(req);
-  for (const [k, key] of [['mentions', 'bot_mentions'], ['shops', 'shops_on']] as const) {
+  for (const [k, key] of [['mentions', 'bot_mentions'], ['proactive', 'bot_proactive'], ['shops', 'shops_on']] as const) {
     if (b[k] === undefined) continue;
     if (typeof b[k] !== 'boolean') throw new HttpError(400, 'invalid');
     setSetting(key, b[k] ? '1' : '0');
