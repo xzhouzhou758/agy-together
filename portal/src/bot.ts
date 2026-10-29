@@ -295,8 +295,11 @@ export async function watchUsage(): Promise<void> {
     const big = one(`SELECT COUNT(*) AS n, MAX(COALESCE(in_tok, in_est)) AS m, model FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND COALESCE(in_tok, in_est) >= ?
       AND NOT (pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%')`, u.user_id, from, to, BIG_INPUT);
     if (Number(big?.n)) await ping(`📏 ${at} 你刚才的请求输入有 **${wan(Number(big.m))} Token**${big.model ? `（${big.model}）` : ''}${times(Number(big.n))}，上下文可能爆了。\n-# 检查一下聊天记录 / 预设是不是太长；可以在「个人中心 → 输入上限」设个上限，超了直接拦下不扣额度`);
-    // the newest requests all failed (client disconnects don't count): told at 3, then again every 3 more
-    const last = all(`SELECT id, result, status, reason FROM usage WHERE user_id = ? AND ts < ? AND status != 499 ORDER BY ts DESC, id DESC LIMIT 300`, u.user_id, to);
+    // the newest requests all failed (client disconnects and 小锅饭 quota don't count): told at 3, then again every 3 more
+    // 小锅饭 running out of quota (429, then "你的账号暂时都不可用" while they cool down) is the owner's own accounts
+    // doing what they should: not counted, and it doesn't break a streak either
+    const last = all(`SELECT id, result, status, reason FROM usage WHERE user_id = ? AND ts < ? AND status != 499
+      AND NOT (pool = 'private' AND result IN ('quota', 'no_account')) ORDER BY ts DESC, id DESC LIMIT 300`, u.user_id, to);
     const streak: any[] = [];
     for (const r of last) { if (r.result === 'ok') break; streak.push(r); }
     if (streak.length < STREAK) continue;

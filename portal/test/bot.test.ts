@@ -27,7 +27,7 @@ test('problems: verify, login expired, banned; quota and cooldown are not proble
 });
 
 test('helpers', () => {
-  assert.equal(maskEmail('someone673@gmail.com'), 'daz***@gmail.com');
+  assert.equal(maskEmail('someone673@gmail.com'), 'som***@gmail.com');
   assert.equal(maskEmail('ab@x.io'), 'a**@x.io');
   assert.equal(tk(9999), '9999');
   assert.equal(tk(12345), '1.2 万');
@@ -406,4 +406,35 @@ test('stock subscriptions: "补货的时候@我" adds the asker, stop removes th
   assert.deepEqual(posts[0].allowed_mentions.users, ['55555666667']);
   assert.match(subscribe('55555666667', false), /已取消/);
   assert.match(subscribe('55555666667', false), /本来就没/);
+});
+
+test('usage watch: 小锅饭 quota / cooldown failures never make an error-streak ping', async () => {
+  const { run, one, setSetting } = await import('../src/db.ts');
+  const { watchUsage } = await import('../src/bot.ts');
+  setSetting('bot_channel_id', 'chan'); setSetting('discord_bot_token', 'bot-token');
+  run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('555666888', 'quotaed', 'quotaed', 'user', 0)");
+  const uid = one("SELECT id FROM users WHERE discord_id = '555666888'").id;
+  const add = (ago: number, pool: string, result: string, status: number) =>
+    run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms) VALUES(?,?,1,?,'gemini-3-flash','/v1/chat/completions',?,?,NULL,1)`, Date.now() - ago, uid, pool, status, result);
+  const posts: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any = {}) => {
+    if (String(url).includes('discord.com')) { const b = JSON.parse(init.body); if (b.content.includes('<@555666888>')) posts.push(b.content); return new Response('{"id":"1"}'); }
+    return real(url, init);
+  }) as typeof fetch;
+  try {
+    setSetting('bot_watch_ts', String(Date.now() - 10 * 60e3));
+    add(9 * 60e3, 'private', 'ok', 200);
+    for (let i = 0; i < 4; i++) add((8 - i) * 60e3, 'private', 'quota', 429);
+    add(3.5 * 60e3, 'private', 'no_account', 503);
+    await watchUsage();
+    assert.equal(posts.length, 0, posts.join('\n'));
+    // real errors still count, and the 小锅饭 quota rows in between don't break the streak
+    setSetting('bot_watch_ts', String(Date.now() - 3.2 * 60e3));
+    add(3 * 60e3, 'private', 'client', 400); add(2.8 * 60e3, 'private', 'quota', 429);
+    add(2.6 * 60e3, 'private', 'client', 400); add(2.4 * 60e3, 'shared', 'quota', 429);
+    await watchUsage();
+    assert.equal(posts.length, 1);
+    assert.match(posts[0], /连续 \*\*3\*\* 次/);
+  } finally { globalThis.fetch = real; }
 });
