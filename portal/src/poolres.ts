@@ -1,6 +1,6 @@
 // 大锅饭 resources: what the shared accounts have left, summed per quota family, from the stored
 // quota snapshots (no upstream calls). Admins get one row per account; everyone else the totals.
-import { all, one, now } from './db.ts';
+import { all, one, now, counted } from './db.ts';
 import * as cpa from './cpa.ts';
 import { accountProblem } from './bot.ts';
 import { storedQuota, reserveOf } from './quota.ts';
@@ -43,7 +43,7 @@ export async function poolResources(full: boolean) {
   const rows = all(`SELECT a.*, u.name AS owner FROM accounts a JOIN users u ON u.id = a.owner_id WHERE a.shared = 1 AND a.suspended = 0 AND u.active = 1`)
     .filter((r) => c.byId.has(r.auth_id));
   const tok = 'COALESCE(total_tok, COALESCE(in_tok,0) + COALESCE(out_tok,0))';
-  const today = new Map(all(`SELECT auth_id, COUNT(*) AS n, SUM(${tok}) AS t FROM usage WHERE pool = 'shared' AND ts >= ? AND auth_id IS NOT NULL GROUP BY auth_id`, dayStart())
+  const today = new Map(all(`SELECT auth_id, COUNT(*) AS n, SUM(${tok}) AS t FROM usage WHERE pool = 'shared' AND ts >= ? AND auth_id IS NOT NULL AND ${counted()} GROUP BY auth_id`, dayStart())
     .map((r) => [r.auth_id, { n: Number(r.n), t: Number(r.t || 0) }]));
 
   const fam = Object.fromEntries(FAMS.map((f) => [f, { open: famOpen(f), accounts: 0, off: 0, full: 0, h5: { sum: 0, ok: 0, n: 0, next: null as string | null }, weekly: { sum: 0, ok: 0, n: 0, next: null as string | null } }]));
@@ -102,7 +102,7 @@ function used(tok: string, where: string, since: number) {
 }
 /** 大锅饭号池: what the shared Google accounts served for 大锅饭 keys (the backup upstreams excluded). */
 function sharedUse(tok: string) {
-  const w = "pool = 'shared' AND auth_id IS NOT NULL AND auth_id NOT LIKE 'up:%'";
+  const w = `pool = 'shared' AND auth_id IS NOT NULL AND auth_id NOT LIKE 'up:%' AND ${counted()}`;
   return { today: used(tok, w, dayStart()), week: used(tok, w, now() - 7 * 86400e3), total: used(tok, w, 0),
     since: Number(one(`SELECT MIN(ts) AS t FROM usage WHERE ${w}`)?.t || 0) || null };
 }
@@ -110,7 +110,7 @@ function sharedUse(tok: string) {
 function backupUse(tok: string) {
   const q = (since: number) => used(tok, "auth_id LIKE 'up:%'", since);
   const day = dayStart();
-  const pool = Number(one(`SELECT COUNT(*) AS n FROM usage WHERE pool = 'shared' AND auth_id IS NOT NULL AND ts >= ?`, day)?.n || 0);
+  const pool = Number(one(`SELECT COUNT(*) AS n FROM usage WHERE pool = 'shared' AND auth_id IS NOT NULL AND ${counted()} AND ts >= ?`, day)?.n || 0);
   const today = q(day);
   return { today, week: q(now() - 7 * 86400e3), total: q(0), share: pool ? Math.round((today.n / pool) * 1000) / 10 : 0,
     since: Number(one(`SELECT MIN(ts) AS t FROM usage WHERE auth_id LIKE 'up:%'`)?.t || 0) || null };

@@ -7,7 +7,7 @@
 //  - a daily leaderboard is posted to the bot channel at the configured hour.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createPublicKey, verify } from 'node:crypto';
-import { one, all, run, now, getSetting, setSetting, getRules, type Row } from './db.ts';
+import { one, all, run, now, getSetting, setSetting, getRules, counted, type Row } from './db.ts';
 import { HttpError, readBody, sendJSON } from './util.ts';
 import * as cpa from './cpa.ts';
 import * as site from './site.ts';
@@ -320,7 +320,7 @@ export async function watchUsage(): Promise<void> {
 
 // ---------- leaderboard ----------
 export function leaderboard(since: number, until: number, title: string): string {
-  const w = 'u.ts >= ? AND u.ts < ?';
+  const w = `u.ts >= ? AND u.ts < ? AND ${counted('u.')}`;
   const tot = one(`SELECT COUNT(*) AS n, SUM(u.result = 'ok') AS ok, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users FROM usage u WHERE ${w}`, since, until);
   if (!Number(tot?.n)) return `${title}\n这段时间还没有人用 😴`;
   const top = (sql: string, ...a: any[]) => one(sql, since, until, ...a);
@@ -354,7 +354,7 @@ async function dailyTick(): Promise<void> {
 }
 /** 全站历史总用量 */
 export function allTimeLine(): string {
-  const t = one(`SELECT COUNT(*) AS n, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users, MIN(u.ts) AS first FROM usage u WHERE u.result = 'ok'`);
+  const t = one(`SELECT COUNT(*) AS n, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users, MIN(u.ts) AS first FROM usage u WHERE u.result = 'ok' AND ${counted('u.')}`);
   if (!Number(t?.n)) return '';
   const f = new Date(Number(t.first));
   return `📦 **全站累计**（${f.getFullYear()}.${f.getMonth() + 1}.${f.getDate()} 起）· **${Number(t.n).toLocaleString()}** 次成功请求 · **${tk(t.tok)}** Token · ${t.users} 人用过`;
