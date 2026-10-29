@@ -257,7 +257,7 @@ route('GET', '/api/overview', async (req) => {
     today: { private: Number(mine?.p || 0), shared: Number(mine?.s || 0) },
     servedToday: served.reduce((n, r) => n + Number(r.n), 0),
     pool: await poolSummary(u),
-    shops: shopLinks(),
+    shops: getSetting('shops_on') === '0' ? [] : shopLinks(),
     daily: await dailyFor(u.id),
   };
 });
@@ -267,6 +267,19 @@ type Shop = { name: string; url: string; note: string };
 function shopLinks(): Shop[] {
   try { return JSON.parse(getSetting('shop_links') || '[]'); } catch { return []; }
 }
+// 总开关: Discord @ 人, 买号渠道 shown to users
+const switches = () => ({ mentions: getSetting('bot_mentions') !== '0', shops: getSetting('shops_on') !== '0' });
+route('GET', '/api/admin/switches', (req) => { requireAdmin(req); return switches(); });
+route('PUT', '/api/admin/switches', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  for (const [k, key] of [['mentions', 'bot_mentions'], ['shops', 'shops_on']] as const) {
+    if (b[k] === undefined) continue;
+    if (typeof b[k] !== 'boolean') throw new HttpError(400, 'invalid');
+    setSetting(key, b[k] ? '1' : '0');
+  }
+  return switches();
+});
 route('GET', '/api/admin/shops', (req) => {
   requireAdmin(req);
   return shopLinks();

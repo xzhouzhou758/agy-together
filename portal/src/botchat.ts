@@ -11,7 +11,7 @@ import * as cpa from './cpa.ts';
 import { poolResources } from './poolres.ts';
 import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
-import { leaderboard, allTimeLine, tk, myAccounts, maskEmail } from './bot.ts';
+import { leaderboard, allTimeLine, tk, myAccounts, maskEmail, mentionsOn, unping } from './bot.ts';
 import { dayStart, sharedModels } from './limits.ts';
 import { kbSearch, kbHits, kbDoc, kbTitles, kbAdd, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
@@ -359,12 +359,14 @@ async function onMessage(d: any) {
   const images = await fetchImages([...(d.attachments || []), ...(ref?.attachments || [])]);
   let text = await answer(String(d.author.id), q, prev, quoted, images);
   for (const [n, id] of [...back.entries()].sort((a, b) => b[0].length - a[0].length)) text = text.split('@' + n).join(`<@${id}>`).replace(/<@(\d+)>（机器人）/g, '<@$1>');
-  const pinged = [...new Set(back.values())];
+  let pinged = [...new Set(back.values())];
+  const ping = mentionsOn();
+  if (!ping) { text = unping(text); pinged = []; }
   // Discord caps a message at 2000 characters: longer answers go out as a few replies, split at line breaks
   const parts = splitMessage(text);
   for (let i = 0; i < parts.length; i++) {
     await rest('POST', `/channels/${d.channel_id}/messages`, {
-      content: parts[i], ...(i === 0 ? { message_reference: { message_id: d.id, fail_if_not_exists: false } } : {}), allowed_mentions: { parse: [], users: pinged, replied_user: i === 0 },
+      content: parts[i], ...(i === 0 ? { message_reference: { message_id: d.id, fail_if_not_exists: false } } : {}), allowed_mentions: { parse: [], users: pinged, replied_user: ping && i === 0 },
     }).catch(() => {});
   }
 }

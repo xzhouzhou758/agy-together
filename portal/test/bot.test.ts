@@ -27,7 +27,7 @@ test('problems: verify, login expired, banned; quota and cooldown are not proble
 });
 
 test('helpers', () => {
-  assert.equal(maskEmail('someone673@gmail.com'), 'som***@gmail.com');
+  assert.equal(maskEmail('someone673@gmail.com'), 'daz***@gmail.com');
   assert.equal(maskEmail('ab@x.io'), 'a**@x.io');
   assert.equal(tk(9999), '9999');
   assert.equal(tk(12345), '1.2 万');
@@ -179,7 +179,14 @@ test('usage watch: 3 failures in a row and a 500k+ input @ the caller once, with
     add(2.5 * 60e3, 'ok', 200, null, 700000);
     await watchUsage();
     assert.ok(posts.at(-1)!.content.includes('📏'), JSON.stringify(posts.at(-1)));
-  } finally { globalThis.fetch = real; }
+    // admin switch off: still told, by name, nobody pinged
+    setSetting('bot_mentions', '0');
+    setSetting('bot_watch_ts', String(Date.now() - 2.3 * 60e3));
+    add(2 * 60e3, 'ok', 200, null, 700000);
+    await watchUsage();
+    assert.deepEqual(posts.at(-1)!.users, []);
+    assert.ok(!posts.at(-1)!.content.includes('<@') && posts.at(-1)!.content.includes('**streaky**'), JSON.stringify(posts.at(-1)));
+  } finally { globalThis.fetch = real; setSetting('bot_mentions', '1'); }
 });
 
 test('usage watch: 大锅饭 input-cap refusal @s the caller even with /免打扰', async () => {

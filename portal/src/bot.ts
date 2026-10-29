@@ -60,9 +60,13 @@ function botReady() {
   const d = site.discord(), b = site.bot();
   return d.botToken && b.channelId ? { token: d.botToken, channel: b.channelId } : null;
 }
+/** Admin switch (setting bot_mentions): off = the bot never pings anyone, every <@id> becomes the user's name. */
+export const mentionsOn = () => getSetting('bot_mentions') !== '0';
+export const unping = (s: string) => s.replace(/<@!?(\d+)>/g, (_m, id) => `**${String(one('SELECT name FROM users WHERE discord_id = ?', id)?.name || '某人')}**`);
 export async function post(content: string, mention: string[] = []): Promise<boolean> {
   const b = botReady();
   if (!b) return false;
+  if (!mentionsOn()) { content = unping(content); mention = []; }
   try {
     const r = await fetch(`${DAPI}/channels/${b.channel}/messages`, {
       method: 'POST', signal: AbortSignal.timeout(8000),
