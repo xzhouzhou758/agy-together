@@ -238,9 +238,9 @@ export function setRules(r: Rules) {
   rulesCache = r;
 }
 
-/** SQL condition for usage rows that count in statistics: the admins' own requests never do, except what the
- *  站长兜底公益池 (auth_id up:N) served. a = table alias with its dot, e.g. 'u.'. */
-export const counted = (a = '') => `(${a}user_id IS NULL OR ${a}user_id NOT IN (SELECT id FROM users WHERE role = 'admin') OR COALESCE(${a}auth_id, '') LIKE 'up:%')`;
+/** SQL condition for the bot's per-person boards: the admins never show up there by name (site totals still
+ *  include them). a = table alias with its dot, e.g. 'u.'. */
+export const notAdmin = (a = '') => `(${a}user_id IS NULL OR ${a}user_id NOT IN (SELECT id FROM users WHERE role = 'admin'))`;
 export function now() {
   return Date.now();
 }

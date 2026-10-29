@@ -6,7 +6,7 @@ import http from 'node:http';
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.ts';
-import { one, all, run, now, getSetting, getRules, counted } from './db.ts';
+import { one, all, run, now, getSetting, getRules, notAdmin } from './db.ts';
 import * as cpa from './cpa.ts';
 import { poolResources } from './poolres.ts';
 import * as site from './site.ts';
@@ -65,6 +65,7 @@ export function chatContext(discordId: string): string {
     const fmt = (r: any) => `${new Date(r.ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} ${r.pool === 'shared' ? '大锅饭' : '小锅饭'} ${r.model} → ${r.result} ${r.status}${r.reason ? ' ' + r.reason : ''}${r.inp ? ` 输入≈${r.inp}` : ''}`;
     parts.push(`提问的人：${u.name}。他最近 ${rows.length} 次请求（新的在前）：\n${rows.map(fmt).join('\n') || '（没有）'}`);
   }
+  parts.push('（各个榜单和按人排行里没有站长本人；有人问站长自己用了多少，就说站长的个人用量不公开。全站总数里含站长。）');
   parts.push(leaderboard(dayStart(), now(), '今日榜（0 点到现在）'));
   parts.push(leaderboard(now() - 86400e3, now(), '过去 24 小时'));
   parts.push(allTimeLine());
@@ -80,7 +81,7 @@ const TOK = 'COALESCE(u.total_tok, COALESCE(u.in_tok,0) + COALESCE(u.out_tok,0) 
  *  byModel adds each user's own split by model. */
 function rankings(label: string, since: number, byModel = false): string {
   const rows = all(`SELECT u.user_id, us.name, COUNT(*) AS n, SUM(u.result != 'ok' AND u.status != 499) AS bad, SUM(${TOK}) AS tok,
-      SUM(u.pool = 'shared') AS shared FROM usage u JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND u.path != '/discord/chat' AND ${counted('u.')} GROUP BY u.user_id ORDER BY tok DESC LIMIT 25`, since);
+      SUM(u.pool = 'shared') AS shared FROM usage u JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND u.path != '/discord/chat' AND ${notAdmin('u.')} GROUP BY u.user_id ORDER BY tok DESC LIMIT 25`, since);
   if (!rows.length) return `【${label}】没有请求`;
   const RES: Record<string, string> = { client: '请求错误', quota: '额度用完/限流', no_account: '没有可用的号', no_model: '模型不支持', upstream: '上游出错', blocked: '被拦截', rate_limited: '限速', daily_limit: '次数用完', input_limit: '输入过限' };
   const why = (uid: number) => {
@@ -88,7 +89,7 @@ function rankings(label: string, since: number, byModel = false): string {
     return w ? { r: w.reason || `${RES[w.result] || w.result}（HTTP ${w.status}，没记录原文）` } : null;
   };
   const per = new Map<number, string[]>();
-  if (byModel) for (const m of all(`SELECT u.user_id, u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' AND ${counted('u.')}
+  if (byModel) for (const m of all(`SELECT u.user_id, u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' AND ${notAdmin('u.')}
       GROUP BY u.user_id, u.model ORDER BY u.user_id, tok DESC`, since)) {
     const l = per.get(m.user_id) || [];
     if (l.length < 8) l.push(`${m.model || '?'} ${m.n} 次 ${tk(m.tok)}`);
@@ -99,7 +100,7 @@ function rankings(label: string, since: number, byModel = false): string {
     return `${i + 1}. ${r.name}：${tk(r.tok)} Token，${r.n} 次请求（大锅饭 ${r.shared}），失败 ${bad} 次${bad ? `（失败率 ${Math.round(bad / Number(r.n) * 100)}%，主要是 ${String(w?.r || '').slice(0, 60)}）` : ''}` +
       (per.get(r.user_id) ? `\n   分模型：${per.get(r.user_id)!.join('；')}` : '');
   });
-  const models = all(`SELECT u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' AND ${counted('u.')} GROUP BY u.model ORDER BY tok DESC LIMIT 8`, since)
+  const models = all(`SELECT u.model, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u WHERE u.ts >= ? AND u.path != '/discord/chat' GROUP BY u.model ORDER BY tok DESC LIMIT 8`, since)
     .map((m: any) => `${m.model || '?'} ${m.n} 次 ${tk(m.tok)}`).join('；');
   return `【${label}】按 Token 排序的用户（客户端断开不算失败）：\n${lines.join('\n')}\n模型：${models}`;
 }
@@ -109,7 +110,7 @@ function rankings(label: string, since: number, byModel = false): string {
 export function liveModels(): string {
   const since = now() - 14 * 86400e3;
   const rows = all(`SELECT model, COUNT(*) AS n, MAX(CASE WHEN result = 'ok' THEN COALESCE(in_tok, in_est) END) AS big FROM usage
-    WHERE ts >= ? AND path != '/discord/chat' AND ${counted()} AND model IS NOT NULL AND model != '' GROUP BY model HAVING n >= 5 ORDER BY n DESC LIMIT 20`, since);
+    WHERE ts >= ? AND path != '/discord/chat' AND model IS NOT NULL AND model != '' GROUP BY model HAVING n >= 5 ORDER BY n DESC LIMIT 20`, since);
   if (!rows.length) return '【本站最近两周在用的模型】没有数据';
   const over = new Map<string, string[]>();
   for (const r of all(`SELECT model, reason, COUNT(*) AS c FROM usage WHERE ts >= ? AND reason LIKE '%maximum number of tokens allowed%' GROUP BY model, reason`, since)) {

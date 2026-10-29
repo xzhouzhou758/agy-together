@@ -469,8 +469,7 @@ test('token stats: totals, buckets, scope and anonymity', async () => {
   const site = (await alice.req('GET', `/api/stats?scope=all&range=24h&tz=${tz}`)).data;
   assert.equal(site.scope, 'all');
   assert.equal(site.trend.length, 24);
-  assert.ok(site.totals.req > 20 && site.totals.tok > 0 && site.totals.users >= 2);
-  assert.ok(!site.byUser.some((u: any) => u.name === 'alice'), 'the admin\'s own requests stay out of site statistics');
+  assert.ok(site.totals.req > 20 && site.totals.tok > 0 && site.totals.users >= 3);
   assert.equal(site.trend.reduce((n: number, b: any) => n + b.req, 0), site.totals.req, 'every request lands in a bucket');
   assert.equal(site.models.reduce((n: number, m: any) => n + m.req, 0), site.totals.req);
   assert.ok(site.heat.length === 91 && site.heat[90] > 0, 'today is the last heat cell');

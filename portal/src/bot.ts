@@ -7,7 +7,7 @@
 //  - a daily leaderboard is posted to the bot channel at the configured hour.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createPublicKey, verify } from 'node:crypto';
-import { one, all, run, now, getSetting, setSetting, getRules, counted, type Row } from './db.ts';
+import { one, all, run, now, getSetting, setSetting, getRules, notAdmin, type Row } from './db.ts';
 import { HttpError, readBody, sendJSON } from './util.ts';
 import * as cpa from './cpa.ts';
 import * as site from './site.ts';
@@ -320,11 +320,11 @@ export async function watchUsage(): Promise<void> {
 
 // ---------- leaderboard ----------
 export function leaderboard(since: number, until: number, title: string): string {
-  const w = `u.ts >= ? AND u.ts < ? AND ${counted('u.')}`;
+  const w = 'u.ts >= ? AND u.ts < ?', wu = `${w} AND ${notAdmin('u.')}`;   // wu: boards naming a user leave the admins out
   const tot = one(`SELECT COUNT(*) AS n, SUM(u.result = 'ok') AS ok, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users FROM usage u WHERE ${w}`, since, until);
   if (!Number(tot?.n)) return `${title}\n这段时间还没有人用 😴`;
   const top = (sql: string, ...a: any[]) => one(sql, since, until, ...a);
-  const byUser = (extra: string, order = 'tok') => top(`SELECT us.name, us.discord_id, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u JOIN users us ON us.id = u.user_id WHERE ${w} ${extra} GROUP BY u.user_id ORDER BY ${order} DESC LIMIT 1`);
+  const byUser = (extra: string, order = 'tok') => top(`SELECT us.name, us.discord_id, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u JOIN users us ON us.id = u.user_id WHERE ${wu} ${extra} GROUP BY u.user_id ORDER BY ${order} DESC LIMIT 1`);
   const lines = [title, `全站 **${Number(tot.n).toLocaleString()}** 次请求 · **${tk(tot.tok)}** Token · 成功率 ${Math.round(Number(tot.ok) / Number(tot.n) * 100)}% · ${tot.users} 人在用`, ''];
   const king = byUser('');
   if (king) lines.push(`👑 **用量王** ${who(king)} · ${tk(king.tok)} Token`);
@@ -336,9 +336,9 @@ export function leaderboard(since: number, until: number, title: string): string
   if (giver) lines.push(`🙏 **大善人** ${who(giver)} · 共享的号喂饱了 ${giver.fed} 个人，${tk(giver.tok)} Token`);
   const worker = top(`SELECT u.auth_id, a.email, us.name, us.discord_id, COUNT(*) AS n FROM usage u JOIN accounts a ON a.auth_id = u.auth_id LEFT JOIN users us ON us.id = u.owner_id WHERE ${w} AND u.result = 'ok' GROUP BY u.auth_id ORDER BY n DESC LIMIT 1`);
   if (worker) lines.push(`🐂 **劳模号** ${who(worker)} 的 \`${maskEmail(worker.email)}\` · 扛了 ${Number(worker.n).toLocaleString()} 次请求`);
-  const owl = top(`SELECT us.name, us.discord_id, COUNT(*) AS n FROM usage u JOIN users us ON us.id = u.user_id WHERE ${w} AND CAST(strftime('%H', u.ts / 1000, 'unixepoch', 'localtime') AS INTEGER) < 6 GROUP BY u.user_id ORDER BY n DESC LIMIT 1`);
+  const owl = top(`SELECT us.name, us.discord_id, COUNT(*) AS n FROM usage u JOIN users us ON us.id = u.user_id WHERE ${wu} AND CAST(strftime('%H', u.ts / 1000, 'unixepoch', 'localtime') AS INTEGER) < 6 GROUP BY u.user_id ORDER BY n DESC LIMIT 1`);
   if (owl) lines.push(`🦉 **夜猫子** ${who(owl)} · 凌晨还发了 ${owl.n} 次请求`);
-  const wall = top(`SELECT us.name, us.discord_id, COUNT(*) AS n FROM usage u JOIN users us ON us.id = u.user_id WHERE ${w} AND u.result IN ('quota', 'no_account', 'rate_limited') GROUP BY u.user_id ORDER BY n DESC LIMIT 1`);
+  const wall = top(`SELECT us.name, us.discord_id, COUNT(*) AS n FROM usage u JOIN users us ON us.id = u.user_id WHERE ${wu} AND u.result IN ('quota', 'no_account', 'rate_limited') GROUP BY u.user_id ORDER BY n DESC LIMIT 1`);
   if (wall && Number(wall.n) >= 10) lines.push(`🧱 **撞墙王** ${who(wall)} · 撞了 ${wall.n} 次额度墙，号该歇歇了`);
   return lines.join('\n');
 }
@@ -354,7 +354,7 @@ async function dailyTick(): Promise<void> {
 }
 /** 全站历史总用量 */
 export function allTimeLine(): string {
-  const t = one(`SELECT COUNT(*) AS n, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users, MIN(u.ts) AS first FROM usage u WHERE u.result = 'ok' AND ${counted('u.')}`);
+  const t = one(`SELECT COUNT(*) AS n, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users, MIN(u.ts) AS first FROM usage u WHERE u.result = 'ok'`);
   if (!Number(t?.n)) return '';
   const f = new Date(Number(t.first));
   return `📦 **全站累计**（${f.getFullYear()}.${f.getMonth() + 1}.${f.getDate()} 起）· **${Number(t.n).toLocaleString()}** 次成功请求 · **${tk(t.tok)}** Token · ${t.users} 人用过`;

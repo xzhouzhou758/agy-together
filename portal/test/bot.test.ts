@@ -457,18 +457,16 @@ test('proactive switch: off by default, nothing goes to Discord except what an a
   } finally { globalThis.fetch = real; }
 });
 
-test('statistics leave out the admins\' own requests, except what the 公益站 backup served', async () => {
+test('bot boards never name the admins or show their own usage; site totals still include them', async () => {
   const { run, one } = await import('../src/db.ts');
-  const { leaderboard, allTimeLine } = await import('../src/bot.ts');
+  const { leaderboard } = await import('../src/bot.ts');
   const { chatContext } = await import('../src/botchat.ts');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('777000111', 'bossman', 'bossman', 'admin', 0)");
   const id = one("SELECT id FROM users WHERE discord_id = '777000111'").id;
-  const add = (auth: string, tok: number, model: string) => run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, model, path, status, result, total_tok, latency_ms)
-    VALUES(?,?,1,'shared',?,?,'/v1/chat/completions',200,'ok',?,1)`, Date.now() - 1000, id, auth, model, tok);
-  add('acc-own', 99_000_000, 'boss-own-model');        // his own accounts: never counted
-  add('up:1', 1234, 'boss-backup-model');              // served by the 公益站 backup: counted
-  const board = leaderboard(Date.now() - 86400e3, Date.now() + 1, 'x'), all = allTimeLine(), ctx = chatContext('nobody');
-  assert.ok(!/99(\.0)?M|9900/.test(board + all), board + all);
-  assert.ok(!ctx.includes('boss-own-model'));
-  assert.match(ctx, /bossman：[^\n]*1(\.2K|,?234) Token/);
+  run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, model, path, status, result, total_tok, latency_ms)
+    VALUES(?,?,1,'shared','acc-own','boss-model','/v1/chat/completions',200,'ok',99000000,1)`, Date.now() - 1000, id);
+  const board = leaderboard(Date.now() - 86400e3, Date.now() + 1, 'x'), ctx = chatContext('nobody');
+  assert.ok(!board.includes('bossman'), board);
+  assert.ok(!/bossman：/.test(ctx));
+  assert.match(ctx, /boss-model/);                     // the per-model site line still counts it
 });

@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { poolResources } from './poolres.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from './config.ts';
-import { one, all, run, now, getRules, setRules, getSetting, setSetting, counted, type Row } from './db.ts';
+import { one, all, run, now, getRules, setRules, getSetting, setSetting, type Row } from './db.ts';
 import { HttpError, sendJSON, readJSON, readBody, sha256, token, seal, unseal, str, clampInt, hashPassword, maskSecrets } from './util.ts';
 import { requireUser, requireAdmin, currentUser, devLogin, passwordLogin, logout, setUserActive, type User } from './auth.ts';
 import * as cpa from './cpa.ts';
@@ -787,7 +787,7 @@ route('GET', '/api/stats', async (req, _res, _p, url) => {
   const [span, step] = RANGES[range];
   const tz = clampInt(sp.get('tz') || 0, -840, 840) * 60e3;
   const t = now(), since = Math.floor((t + tz) / step) * step - tz - span + step;
-  const scope = all_ ? 'AND ' + counted() : 'AND user_id = ' + Number(u.id);
+  const scope = all_ ? '' : 'AND user_id = ' + Number(u.id);
   const w = `WHERE ts >= ? ${scope}`;
   const tot = one(`SELECT COUNT(*) AS req, SUM(result = 'ok') AS ok, SUM(COALESCE(in_tok,0)) AS i, SUM(COALESCE(out_tok,0)) AS o,
     SUM(COALESCE(reasoning_tok,0)) AS r, SUM(COALESCE(cache_tok,0)) AS c, SUM(${TOK}) AS tok,
@@ -823,7 +823,7 @@ route('GET', '/api/stats', async (req, _res, _p, url) => {
     return { name: mine ? email : '共享账号 ' + anonLabel(r.auth_id), own: r.owner === u.id, req: Number(r.req), tok: Number(r.tok || 0) };
   });
   const byUser = all_ ? all(`SELECT us.name AS name, COUNT(*) AS req, SUM(${TOK.replace(/(total_tok|in_tok|out_tok|reasoning_tok)/g, 'u.$1')}) AS tok
-    FROM usage u LEFT JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND ${counted('u.')} GROUP BY u.user_id ORDER BY tok DESC LIMIT 30`, since)
+    FROM usage u LEFT JOIN users us ON us.id = u.user_id WHERE u.ts >= ? GROUP BY u.user_id ORDER BY tok DESC LIMIT 30`, since)
     .map((r) => ({ name: r.name || '—', req: Number(r.req), tok: Number(r.tok || 0) })) : undefined;
   // Efficiency: successful requests only. Output speed counts generation time after the first token.
   const pf = one(`SELECT COUNT(*) AS n, AVG(COALESCE(cpa_ttft_ms, ttfb_ms)) AS ttft, AVG(latency_ms) AS lat,
@@ -1072,7 +1072,7 @@ route('PUT', '/api/admin/retry', async (req) => {
 route('GET', '/api/admin/usage', (req) => {
   requireAdmin(req);
   const t = one(`SELECT COUNT(*) AS total, SUM(pool='private') AS p, SUM(pool='shared') AS s, SUM(result='no_account') AS na,
-    SUM(COALESCE(total_tok,0)) AS tok FROM usage WHERE ts >= ? AND ${counted()}`, dayStart());
+    SUM(COALESCE(total_tok,0)) AS tok FROM usage WHERE ts >= ?`, dayStart());
   return {
     total: Number(t?.total || 0), private: Number(t?.p || 0), shared: Number(t?.s || 0), rejected: Number(t?.na || 0), tokens: Number(t?.tok || 0),
     breaker: breakerState(),
