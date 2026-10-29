@@ -63,7 +63,11 @@ function botReady() {
 /** Admin switch (setting bot_mentions): off = the bot never pings anyone, every <@id> becomes the user's name. */
 export const mentionsOn = () => getSetting('bot_mentions') !== '0';
 export const unping = (s: string) => s.replace(/<@!?(\d+)>/g, (_m, id) => `**${String(one('SELECT name FROM users WHERE discord_id = ?', id)?.name || '某人')}**`);
-export async function post(content: string, mention: string[] = []): Promise<boolean> {
+/** The bot speaks up on its own (account alerts, usage pings, daily report, restock posts) only when
+ *  bot_proactive = '1'; off by default. Off, those posts are dropped as if sent, so nothing piles up. */
+export const proactive = () => getSetting('bot_proactive') === '1';
+export async function post(content: string, mention: string[] = [], manual = false): Promise<boolean> {
+  if (!manual && !proactive()) return true;
   const b = botReady();
   if (!b) return false;
   if (!mentionsOn()) { content = unping(content); mention = []; }
@@ -138,10 +142,10 @@ export async function connectInteractions(): Promise<void> {
 }
 /** Post an announcement to the bot channel (no pings). */
 export async function postAnnouncement(title: string, body: string, url: string): Promise<boolean> {
-  return post(`📢 **${title}**\n${body}${url ? `\n${url}` : ''}`);
+  return post(`📢 **${title}**\n${body}${url ? `\n${url}` : ''}`, [], true);   // the admin ticked "post to Discord"
 }
 export async function testMessage(): Promise<boolean> {
-  return post('🐶 小锅饭机器人已就位：号出问题会在这里 @ 号主，每天发日报。试试 `/我的号` 和 `/今日榜`');
+  return post('🐶 小锅饭机器人已就位：号出问题会在这里 @ 号主，每天发日报。试试 `/我的号` 和 `/今日榜`', [], true);
 }
 
 export async function registerCommands(): Promise<void> {

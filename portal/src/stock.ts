@@ -2,7 +2,7 @@
 // item's stock. Watched items post to the bot channel (no mentions) when they go from sold out to in stock;
 // the bot chat can also look up the shop's 成品号 when someone asks whether there are accounts for sale.
 import { db, all, run, now, getSetting, setSetting } from './db.ts';
-import { post } from './bot.ts';
+import { post, proactive } from './bot.ts';
 
 const SHOP = 'https://yh-mo.xyz';
 const EVERY = 5 * 60e3, FAIL_TELL = 6;    // 6 failed polls in a row (30 min) → say the watch is broken, once
@@ -67,7 +67,7 @@ export async function stockForChat(): Promise<string> {
 }
 
 export function startStockWatch(): void {
-  const tick = () => stockTick().catch((e) => console.error('[stock]', (e as Error).message));
+  const tick = () => !proactive() ? undefined : stockTick().catch((e) => console.error('[stock]', (e as Error).message));
   setTimeout(tick, 30e3).unref();
   setInterval(tick, EVERY).unref();
 }

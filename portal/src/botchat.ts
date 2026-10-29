@@ -11,7 +11,7 @@ import * as cpa from './cpa.ts';
 import { poolResources } from './poolres.ts';
 import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
-import { leaderboard, allTimeLine, tk, myAccounts, maskEmail, mentionsOn, unping } from './bot.ts';
+import { leaderboard, allTimeLine, tk, myAccounts, maskEmail, mentionsOn, unping, proactive } from './bot.ts';
 import { dayStart, sharedModels } from './limits.ts';
 import { kbSearch, kbHits, kbDoc, kbTitles, kbAdd, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
@@ -51,7 +51,9 @@ export const CONTEXT_FACTS = `【上下文长度常识（以这里为准，知�
 - 输入几万到二三十万 Token 都是正常的酒馆长聊天，不要说别人「太长」「太多」或建议压缩。只有这些情况才提醒：接近或超过模型窗口（报 The input token count exceeds…）、超过个人或大锅饭的输入上限被拦下、或单次输入到了五十万以上。
 - 长上下文的真实代价是更慢、更费额度，而不是「模型装不下」；要说就说这个。
 【服务器重启】有人问报错时，先对一下数据里的「服务器重启 / 中断记录」：失败的时间落在某次重启 / 中断的时间段里或前后一两分钟内，就直接告诉他多半是服务器当时在重启，重试就好，不是他设置的问题。
-【买号】有人问「有号吗」「哪里买号」「有没有货」时，算本站相关问题：先用 check_stock 实时查一次成品号库存，再告诉他哪些有货、价格和链接；全缺货就直接说缺货。提醒一句谨慎购买、炸了不管。有人让你补货时 @他 / 不要再 @他，用 stock_notify 订阅或取消，再告诉他结果。`;
+【买号】有人问「有号吗」「哪里买号」「有没有货」时，算本站相关问题：先用 check_stock 实时查一次成品号库存，再告诉他哪些有货、价格和链接；全缺货就直接说缺货。提醒一句谨慎购买、炸了不管。`;
+const STOCK_NOTIFY_HINT = '\n有人让你补货时 @他 / 不要再 @他，用 stock_notify 订阅或取消，再告诉他结果。';
+const QUIET_HINT = '\n你现在不会在群里主动发任何消息（没有补货通知、报错提醒、日报），只在被 @ 时回答。有人让你补货时叫他、到时候提醒他什么，就说现在不主动发消息，想知道有没有货随时 @你问。';
 
 /** What the model gets to see: the asker's recent requests and the public boards. */
 export function chatContext(discordId: string): string {
@@ -269,7 +271,7 @@ export async function answer(discordId: string, question: string, previous?: str
   if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
   const send = (b: string) => (upId == null ? cpaPost(b, allow) : upPost(upId, b));
   const titles = kbTitles(), me = one('SELECT id, role FROM users WHERE discord_id = ?', discordId), asker: number | null = me?.id ?? null, isAdmin = me?.role === 'admin';
-  const messages: any[] = [{ role: 'system', content: chatPrompt() + '\n\n' + CONTEXT_FACTS +
+  const messages: any[] = [{ role: 'system', content: chatPrompt() + '\n\n' + CONTEXT_FACTS + (proactive() ? STOCK_NOTIFY_HINT : QUIET_HINT) +
     (asker ? '\n\n提问人问自己为什么报错 / 回复不对时，用 inspect_my_request 读他自己最近的请求，看参数、消息结构、预填充、哪条特别长、上游报错原文，定位到具体原因再说怎么改。回答在公开频道：可以点出是哪一部分（比如系统提示词里的某段、第几条消息），但不要大段复述他的聊天内容，引用原文最多一两句，也不要评论他写的内容本身（题材、剧情、人物）。' : '') +
     (isAdmin ? '\n\n提问人是站长。他让你「记住」「记下来」「写进记忆库 / 知识库」时，用 remember 把要记的内容（他这条消息里的，或他回复的那条消息里的）整理成一条写进去，写完简短告诉他记了什么、标题是什么。' :
       '\n\n有人让你记住什么、写进记忆库时，告诉他只有站长能让你记。') +
@@ -286,7 +288,7 @@ export async function answer(discordId: string, question: string, previous?: str
   try {
     for (let step = 0; step <= MAX_STEPS; step++) {
       const start = now(), last = step === MAX_STEPS;
-      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: [...TOOLS, ...(asker ? [INSPECT] : []), ...(isAdmin ? [REMEMBER] : [])], tool_choice: 'auto' }) }));
+      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: [...TOOLS.filter((t) => proactive() || t.function.name !== 'stock_notify'), ...(asker ? [INSPECT] : []), ...(isAdmin ? [REMEMBER] : [])], tool_choice: 'auto' }) }));
       const tr = parseTrace(r.trace);
       if (tr) recentAllowed.set(tr.requestId, { allowed: new Set(allow), ts: now() });
       if (r.status >= 300) { log(start, r.status, tr?.requestId || null, 'Discord 机器人回答失败'); return `我这边出错了（HTTP ${r.status}），晚点再问我 🐶`; }

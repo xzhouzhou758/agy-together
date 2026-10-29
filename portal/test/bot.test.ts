@@ -82,7 +82,7 @@ test('account watch: a flapping "Verify your account" pings once, turns the acco
   const { run, setSetting } = await import('../src/db.ts');
   const { checkAccounts } = await import('../src/bot.ts');
   const cpa = await import('../src/cpa.ts');
-  setSetting('bot_channel_id', 'chan');
+  setSetting('bot_channel_id', 'chan'); setSetting('bot_proactive', '1');
   setSetting('discord_bot_token', 'bot-token');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('111', 'owner', 'owner', 'user', 0)");
   run("INSERT INTO accounts(auth_id, email, owner_id, shared, created_at) VALUES('acc.json', 'flappy@gmail.com', (SELECT id FROM users WHERE discord_id = '111'), 1, 0)");
@@ -436,5 +436,23 @@ test('usage watch: 小锅饭 quota / cooldown failures never make an error-strea
     await watchUsage();
     assert.equal(posts.length, 1);
     assert.match(posts[0], /连续 \*\*3\*\* 次/);
+  } finally { globalThis.fetch = real; }
+});
+
+test('proactive switch: off by default, nothing goes to Discord except what an admin posts by hand', async () => {
+  const { setSetting } = await import('../src/db.ts');
+  const { post, postAnnouncement } = await import('../src/bot.ts');
+  setSetting('bot_channel_id', 'chan'); setSetting('discord_bot_token', 'bot-token');
+  const real = globalThis.fetch, sent: string[] = [];
+  globalThis.fetch = (async (_u: any, init: any) => { sent.push(JSON.parse(init.body).content); return new Response('{}'); }) as any;
+  try {
+    setSetting('bot_proactive', '0');
+    assert.equal(await post('🚨 alert'), true);          // dropped, but reported as done so nothing retries
+    assert.equal(sent.length, 0);
+    await postAnnouncement('公告', 'body', '');
+    assert.equal(sent.length, 1);
+    setSetting('bot_proactive', '1');
+    await post('🚨 alert');
+    assert.equal(sent.length, 2);
   } finally { globalThis.fetch = real; }
 });
