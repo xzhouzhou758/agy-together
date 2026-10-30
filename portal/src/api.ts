@@ -20,6 +20,7 @@ import { isUp, upName, upstreamRows, upstreamById, saveUpstream, normBase, model
 import * as site from './site.ts';
 import { accountProblem, registerCommands, botStatus, connectInteractions, testMessage, postAnnouncement } from './bot.ts';
 import { wakeFor } from './autosleep.ts';
+import { stockAdmin, setWatched } from './stock.ts';
 
 
 type Handler = (req: IncomingMessage, res: ServerResponse, p: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -279,6 +280,17 @@ route('PUT', '/api/admin/switches', async (req) => {
     setSetting(key, b[k] ? '1' : '0');
   }
   return switches();
+});
+// 补货监控: the shop's items (cached; refresh=1 fetches them now) and the ticked ones
+route('GET', '/api/admin/stock', async (req, _res, _p, url) => {
+  requireAdmin(req);
+  try { return await stockAdmin(url.searchParams.get('refresh') === '1'); } catch (e) { throw new HttpError(502, 'shop_unreachable: ' + (e as Error).message); }
+});
+route('PUT', '/api/admin/stock', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  if (!Array.isArray(b.watched)) throw new HttpError(400, 'invalid');
+  return { watched: setWatched(b.watched) };
 });
 route('GET', '/api/admin/shops', (req) => {
   requireAdmin(req);

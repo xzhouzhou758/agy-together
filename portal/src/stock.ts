@@ -23,7 +23,22 @@ export async function fetchItems(): Promise<Item[]> {
   const r = await fetch(SHOP + '/user/api/index/commodity', { method: 'POST', signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Mozilla/5.0' } });
   const j: any = await r.json();
   if (j?.code !== 200 || !Array.isArray(j.data)) throw new Error('bad response ' + r.status);
-  return j.data.map((c: any) => ({ id: Number(c.id), name: String(c.name || '').trim(), stock: Number(c.stock) || 0, price: Number(c.price) || 0, sold: Number(c.order_sold) || 0 }));
+  const items = j.data.map((c: any) => ({ id: Number(c.id), name: String(c.name || '').trim(), stock: Number(c.stock) || 0, price: Number(c.price) || 0, sold: Number(c.order_sold) || 0 }));
+  setSetting('stock_items', JSON.stringify({ at: now(), items }));   // the admin page lists these without calling the shop
+  return items;
+}
+
+/** For the admin page: the last item list seen (refresh = fetch it now) and which ids are watched. */
+export async function stockAdmin(refresh = false): Promise<{ at: number | null; items: Item[]; watched: number[] }> {
+  if (refresh) await fetchItems();
+  let c: any = {};
+  try { c = JSON.parse(getSetting('stock_items') || '{}'); } catch {}
+  return { at: c.at ?? null, items: Array.isArray(c.items) ? c.items : [], watched: watched() };
+}
+export function setWatched(ids: number[]): number[] {
+  const list = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 50);
+  setSetting('stock_watch', list.join(','));
+  return list;
 }
 
 /** One poll's worth of decisions: messages for items back in stock, and the new remembered stocks. */
@@ -33,7 +48,8 @@ export function restocked(items: Item[], ids: number[], last: Record<string, num
     const it = items.find((x) => x.id === id);
     if (!it) continue;
     next[id] = it.stock;
-    if (it.stock > 0 && (last[id] ?? 0) <= 0) msgs.push(`📦 **补货了**：${it.name}\n库存 **${it.stock}** · ¥${it.price} · ${itemURL(id)}`);
+    // an item ticked just now is only learned, so one already in stock isn't announced as a restock
+    if (it.stock > 0 && id in last && last[id] <= 0) msgs.push(`📦 **补货了**：${it.name}\n库存 **${it.stock}** · ¥${it.price} · ${itemURL(id)}`);
   }
   return { msgs, next };
 }

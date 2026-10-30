@@ -494,3 +494,22 @@ test('仅补货通知: only restock posts go out and ping, even with 主动发�
     assert.deepEqual(sent[2].allowed_mentions.users, []);           // @ 人 off wins
   } finally { globalThis.fetch = real; setSetting('bot_stock_only', '0'); setSetting('bot_mentions', '1'); }
 });
+
+test('stock admin: refresh caches the shop list, ticking saves the watch list, a newly ticked in-stock item is not a "restock"', async () => {
+  const { setSetting } = await import('../src/db.ts');
+  const { stockAdmin, setWatched, restocked } = await import('../src/stock.ts');
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ code: 200, data: [{ id: 48, name: '反重力', stock: 15, price: 17 }] }))) as any;
+  try {
+    const s = await stockAdmin(true);
+    assert.equal(s.items[0].id, 48);
+    assert.ok(s.at);
+  } finally { globalThis.fetch = real; }
+  assert.equal((await stockAdmin()).items[0].name, '反重力');   // cached, no fetch
+  assert.deepEqual(setWatched([48, 32, 32, -1, 'x' as any]), [48, 32]);
+  assert.deepEqual((await stockAdmin()).watched, [48, 32]);
+  const r = restocked([{ id: 48, name: 'x', stock: 15, price: 17, sold: 0 }], [48], { 32: 0 });
+  assert.equal(r.msgs.length, 0);
+  assert.equal(r.next[48], 15);
+  setSetting('stock_watch', '47,32');
+});

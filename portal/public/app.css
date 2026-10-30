@@ -1010,3 +1010,8 @@ img.logo{object-fit:cover;background:#1d1236;padding:0}
 .sw-rule{border-top:0;padding-top:4px}
 .sw-rule.sw-sub{padding-left:18px}
 .sw-rule.sw-sub h3{font-size:.92em;opacity:.85}
+.stk{padding:10px 0 4px}
+.stk-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.stk-list{display:flex;flex-direction:column;max-height:320px;overflow:auto}
+.stk-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mp-src.stk-in{background:var(--good-soft);color:var(--good)}

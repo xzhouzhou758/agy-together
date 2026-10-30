@@ -167,7 +167,7 @@ const LOADERS={
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true}))};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),stock:await api('GET','api/admin/stock').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true}))};
   },
 };
 
@@ -723,10 +723,19 @@ function botCard(B,s){
   return fold('bot','Discord 机器人',ready?dotChip('good','已启用'):dotChip('','未完成'),`
     ${swRule('@ 人','mentions',D.admin.sw?.mentions!==false)}
     ${D.admin.sw?.mentions!==false?swRule('仅补货通知','stockOnly',!!D.admin.sw?.stockOnly,'sw-sub'):''}
+    ${stockBox(D.admin.stock)}
     ${swRule('主动发消息','proactive',!!D.admin.sw?.proactive)}
     <div class="bsteps">${step(1,B.inGuild,'邀请机器人进服务器',s1)}${step(2,B.inGuild&&!!B.channelId,'选择提醒频道',s2)}${step(3,B.connected,'连接斜杠命令',s3)}${step(4,!!B.chat?.connected,'@ 机器人问答',B.chat?.connected?`<small>已上线，在频道里 @ 机器人问报错或排行（模型 <span class="mono">${esc(B.chat.model)}</span>，跑在管理员自己的号上）</small>`:B.chat?.error?`<small class="bad-t">${esc(B.chat.error)}</small><small class="faint">打开后等几分钟会自动重连</small>`:`<small class="faint">连接中…（需要在 Discord 开发者后台 Bot 页面打开 Message Content Intent）</small>`)}</div>
     ${B.inGuild&&B.channelId?`<div class="mt-l"><button class="btn sm" data-act="bottest">发一条测试消息</button></div>`:''}
     ${botChatForm(D.admin.botchat)}`,!ready,'号出问题自动 @ 号主；/我的号、/今日榜；每天发日报');
+}
+function stockBox(S){
+  if(!S)return '';
+  const w=new Set(S.watched),seen=new Set(S.items.map(x=>x.id));
+  const row=(id,name,tags)=>`<label class="mp-row"><input type="checkbox" data-act="stockck" value="${id}" ${w.has(id)?'checked':''}><span class="stk-name">#${id} ${esc(name)}</span>${tags}</label>`;
+  const rows=S.items.map(x=>row(x.id,x.name,`<span class="mp-src ${x.stock>0?'stk-in':''}">${x.stock>0?'有货 '+x.stock:'缺货'}</span><span class="mp-src">¥${x.price}</span>`))
+    .concat(S.watched.filter(id=>!seen.has(id)).map(id=>row(id,'','<span class="mp-src">已下架</span>')));
+  return `<div class="stk"><div class="stk-head"><h3>补货监控</h3><button class="btn sm" data-act="stockrefresh">${ic('refresh')}刷新</button></div><div class="stk-list">${rows.join('')}</div></div>`;
 }
 const swRule=(t,k,on,cls='')=>`<div class="rule sw-rule ${cls}"><h3>${t}</h3><button class="switch" role="switch" aria-checked="${on}" aria-label="${t}" data-act="sw:${k}"></button></div>`;
 function shopRow(s={}){return `<div class="shop-row"><input class="input sm" data-shop="name" placeholder="名称" maxlength="40" value="${esc(s.name||'')}"><input class="input sm mono" data-shop="url" placeholder="https://" value="${esc(s.url||'')}"><input class="input sm" data-shop="note" placeholder="备注" maxlength="80" value="${esc(s.note||'')}"><button class="btn sm ghost danger icon" data-act="shopdel" aria-label="删除">${ic('trash')}</button></div>`;}
@@ -1356,6 +1365,8 @@ document.addEventListener('click',act(async e=>{
     case 'botchatsave':D.admin.botchat={...D.admin.botchat,...await api('PUT','api/admin/botchat',(()=>{const v=$('#bc-model').value,i=v.indexOf('|');return {source:v.slice(0,i),model:v.slice(i+1),prompt:$('#bc-prompt').value};})())};D.admin.botchat.prompt=$('#bc-prompt').value.trim()||D.admin.botchat.defaultPrompt;toast('问答设置已保存');render();break;
     case 'botpromptreset':$('#bc-prompt').value=D.admin.botchat.defaultPrompt;toast('已填入默认提示词，点保存生效');break;
     case 'kbdel':if(!confirm('删除这篇文档？'))return;D.admin.kb=await api('DELETE','api/admin/kb/'+arg);render();toast('已删除');break;
+    case 'stockrefresh':D.admin.stock=await api('GET','api/admin/stock?refresh=1');render();toast('已刷新');break;
+    case 'stockck':{const ids=$$('.stk-list input:checked').map(x=>Number(x.value));D.admin.stock.watched=(await api('PUT','api/admin/stock',{watched:ids})).watched;toast(ids.length?`监控 ${ids.length} 件`:'没有监控的商品');break;}
     case 'bottest':await api('POST','api/admin/bot/test');toast('已发送，去频道看看');break;
     case 'savesite':{
       const b={};$$('[data-site]').forEach(x=>{if(x.type!=='password'||x.value.trim())b[x.dataset.site]=x.value.trim();});
