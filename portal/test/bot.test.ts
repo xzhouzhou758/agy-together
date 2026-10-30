@@ -470,3 +470,27 @@ test('bot boards never name the admins or show their own usage; site totals stil
   assert.ok(!/bossman：/.test(ctx));
   assert.match(ctx, /boss-model/);                     // the per-model site line still counts it
 });
+
+test('仅补货通知: only restock posts go out and ping, even with 主动发消息 off', async () => {
+  const { setSetting } = await import('../src/db.ts');
+  const { post } = await import('../src/bot.ts');
+  setSetting('bot_channel_id', 'chan'); setSetting('discord_bot_token', 'bot-token');
+  const real = globalThis.fetch, sent: any[] = [];
+  globalThis.fetch = (async (_u: any, init: any) => { sent.push(JSON.parse(init.body)); return new Response('{}'); }) as any;
+  try {
+    setSetting('bot_proactive', '0'); setSetting('bot_mentions', '1'); setSetting('bot_stock_only', '1');
+    await post('🚨 <@123456789> alert', ['123456789']);
+    assert.equal(sent.length, 0);                                   // other unprompted posts stay off
+    await post('📦 补货了\n<@123456789>', ['123456789'], false, true);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].allowed_mentions.users, ['123456789']);
+    setSetting('bot_proactive', '1');
+    await post('🚨 <@123456789> alert', ['123456789']);
+    assert.equal(sent.length, 2);
+    assert.deepEqual(sent[1].allowed_mentions.users, []);           // goes out, but nobody is pinged
+    assert.ok(!sent[1].content.includes('<@'));
+    setSetting('bot_mentions', '0');
+    await post('📦 补货了\n<@123456789>', ['123456789'], false, true);
+    assert.deepEqual(sent[2].allowed_mentions.users, []);           // @ 人 off wins
+  } finally { globalThis.fetch = real; setSetting('bot_stock_only', '0'); setSetting('bot_mentions', '1'); }
+});

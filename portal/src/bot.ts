@@ -66,11 +66,15 @@ export const unping = (s: string) => s.replace(/<@!?(\d+)>/g, (_m, id) => `**${S
 /** The bot speaks up on its own (account alerts, usage pings, daily report, restock posts) only when
  *  bot_proactive = '1'; off by default. Off, those posts are dropped as if sent, so nothing piles up. */
 export const proactive = () => getSetting('bot_proactive') === '1';
-export async function post(content: string, mention: string[] = [], manual = false): Promise<boolean> {
-  if (!manual && !proactive()) return true;
+/** Sub-switch of @ 人 (setting bot_stock_only): restock posts are the only thing that pings anyone, and they go
+ *  out even with 主动发消息 off. */
+export const stockOnly = () => getSetting('bot_stock_only') === '1';
+export const pingsOn = (stock = false) => mentionsOn() && (stock || !stockOnly());
+export async function post(content: string, mention: string[] = [], manual = false, stock = false): Promise<boolean> {
+  if (!manual && !proactive() && !(stock && stockOnly())) return true;
   const b = botReady();
   if (!b) return false;
-  if (!mentionsOn()) { content = unping(content); mention = []; }
+  if (!pingsOn(stock)) { content = unping(content); mention = []; }
   try {
     const r = await fetch(`${DAPI}/channels/${b.channel}/messages`, {
       method: 'POST', signal: AbortSignal.timeout(8000),

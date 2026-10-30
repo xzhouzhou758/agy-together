@@ -1008,3 +1008,5 @@ img.logo{object-fit:cover;background:#1d1236;padding:0}
 .kb-row{display:flex;align-items:center;gap:10px;padding:4px 6px;border-radius:8px;background:var(--fill)}
 .kb-t{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-rule{border-top:0;padding-top:4px}
+.sw-rule.sw-sub{padding-left:18px}
+.sw-rule.sw-sub h3{font-size:.92em;opacity:.85}

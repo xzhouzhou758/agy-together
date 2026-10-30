@@ -2,7 +2,7 @@
 // item's stock. Watched items post to the bot channel (no mentions) when they go from sold out to in stock;
 // the bot chat can also look up the shop's 成品号 when someone asks whether there are accounts for sale.
 import { db, all, run, now, getSetting, setSetting } from './db.ts';
-import { post, proactive } from './bot.ts';
+import { post, proactive, stockOnly } from './bot.ts';
 
 const SHOP = 'https://yh-mo.xyz';
 const EVERY = 5 * 60e3, FAIL_TELL = 6;    // 6 failed polls in a row (30 min) → say the watch is broken, once
@@ -51,7 +51,7 @@ export async function stockTick(): Promise<void> {
   const { msgs, next } = restocked(items, watched(), last);
   const subs = subscribers().slice(0, 100);           // Discord lets one message ping at most 100 users
   const tail = subs.length ? '\n' + subs.map((id) => `<@${id}>`).join(' ') : '';
-  for (const m of first ? [] : msgs) await post((m + tail).length <= 2000 ? m + tail : m, subs);   // the very first poll only learns the current stock
+  for (const m of first ? [] : msgs) await post((m + tail).length <= 2000 ? m + tail : m, subs, false, true);   // the very first poll only learns the current stock
   setSetting('stock_last', JSON.stringify(next));
 }
 
@@ -67,7 +67,7 @@ export async function stockForChat(): Promise<string> {
 }
 
 export function startStockWatch(): void {
-  const tick = () => !proactive() ? undefined : stockTick().catch((e) => console.error('[stock]', (e as Error).message));
+  const tick = () => !proactive() && !stockOnly() ? undefined : stockTick().catch((e) => console.error('[stock]', (e as Error).message));
   setTimeout(tick, 30e3).unref();
   setInterval(tick, EVERY).unref();
 }

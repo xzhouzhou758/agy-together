@@ -167,7 +167,7 @@ const LOADERS={
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,shops:true}))};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true}))};
   },
 };
 
@@ -722,12 +722,13 @@ function botCard(B,s){
     :B.tokenSet&&!B.error?`<small>自动把 Interactions Endpoint URL 填到 Discord 开发者后台，并注册命令</small><div class="mt"><button class="btn sm primary" data-act="botconnect">一键连接</button></div>`:`<small class="faint">完成第 1 步后可用</small>`;
   return fold('bot','Discord 机器人',ready?dotChip('good','已启用'):dotChip('','未完成'),`
     ${swRule('@ 人','mentions',D.admin.sw?.mentions!==false)}
+    ${D.admin.sw?.mentions!==false?swRule('仅补货通知','stockOnly',!!D.admin.sw?.stockOnly,'sw-sub'):''}
     ${swRule('主动发消息','proactive',!!D.admin.sw?.proactive)}
     <div class="bsteps">${step(1,B.inGuild,'邀请机器人进服务器',s1)}${step(2,B.inGuild&&!!B.channelId,'选择提醒频道',s2)}${step(3,B.connected,'连接斜杠命令',s3)}${step(4,!!B.chat?.connected,'@ 机器人问答',B.chat?.connected?`<small>已上线，在频道里 @ 机器人问报错或排行（模型 <span class="mono">${esc(B.chat.model)}</span>，跑在管理员自己的号上）</small>`:B.chat?.error?`<small class="bad-t">${esc(B.chat.error)}</small><small class="faint">打开后等几分钟会自动重连</small>`:`<small class="faint">连接中…（需要在 Discord 开发者后台 Bot 页面打开 Message Content Intent）</small>`)}</div>
     ${B.inGuild&&B.channelId?`<div class="mt-l"><button class="btn sm" data-act="bottest">发一条测试消息</button></div>`:''}
     ${botChatForm(D.admin.botchat)}`,!ready,'号出问题自动 @ 号主；/我的号、/今日榜；每天发日报');
 }
-const swRule=(t,k,on)=>`<div class="rule sw-rule"><h3>${t}</h3><button class="switch" role="switch" aria-checked="${on}" aria-label="${t}" data-act="sw:${k}"></button></div>`;
+const swRule=(t,k,on,cls='')=>`<div class="rule sw-rule ${cls}"><h3>${t}</h3><button class="switch" role="switch" aria-checked="${on}" aria-label="${t}" data-act="sw:${k}"></button></div>`;
 function shopRow(s={}){return `<div class="shop-row"><input class="input sm" data-shop="name" placeholder="名称" maxlength="40" value="${esc(s.name||'')}"><input class="input sm mono" data-shop="url" placeholder="https://" value="${esc(s.url||'')}"><input class="input sm" data-shop="note" placeholder="备注" maxlength="80" value="${esc(s.note||'')}"><button class="btn sm ghost danger icon" data-act="shopdel" aria-label="删除">${ic('trash')}</button></div>`;}
 
 function pageLoading(){
@@ -1334,7 +1335,7 @@ document.addEventListener('click',act(async e=>{
     case 'clearbot':await api('PUT','api/admin/site',{clearBotToken:true});toast('已清除');reload();break;
     case 'shopadd':$('#shop-edit').insertAdjacentHTML('beforeend',shopRow());$('#shop-edit .shop-row:last-child input')?.focus();break;
     case 'shopdel':el.closest('.shop-row')?.remove();break;
-    case 'sw':{const on=!(D.admin.sw?.[arg]!==false);D.admin.sw=await api('PUT','api/admin/switches',{[arg]:on});render();toast(arg==='mentions'?(on?'机器人会 @ 人':'机器人不再 @ 任何人'):arg==='proactive'?(on?'机器人会主动发提醒、日报和补货通知':'机器人只在被 @ 时说话'):(on?'买号渠道已显示':'买号渠道已隐藏'));break;}
+    case 'sw':{const on=!(D.admin.sw?.[arg]!==false);D.admin.sw=await api('PUT','api/admin/switches',{[arg]:on});render();toast(arg==='mentions'?(on?'机器人会 @ 人':'机器人不再 @ 任何人'):arg==='proactive'?(on?'机器人会主动发提醒、日报和补货通知':'机器人只在被 @ 时说话'):arg==='stockOnly'?(on?'只有补货通知会 @ 人':'恢复正常 @ 人'):(on?'买号渠道已显示':'买号渠道已隐藏'));break;}
     case 'shopsave':{
       const shops=$$('#shop-edit .shop-row').map(r=>Object.fromEntries($$('[data-shop]',r).map(i=>[i.dataset.shop,i.value.trim()]))).filter(s=>s.url||s.name);
       const r=await api('PUT','api/admin/shops',{shops});D.admin.shops=r.shops;render();toast('已保存');break;}

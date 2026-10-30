@@ -11,7 +11,7 @@ import * as cpa from './cpa.ts';
 import { poolResources } from './poolres.ts';
 import * as site from './site.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
-import { leaderboard, allTimeLine, tk, myAccounts, maskEmail, mentionsOn, unping, proactive } from './bot.ts';
+import { leaderboard, allTimeLine, tk, myAccounts, maskEmail, unping, proactive, stockOnly, pingsOn } from './bot.ts';
 import { dayStart, sharedModels } from './limits.ts';
 import { kbSearch, kbHits, kbDoc, kbTitles, kbAdd, tavernGuide } from './kb.ts';
 import { upstreamById, upstreamRequest, isUp, upAuthId } from './upstream.ts';
@@ -272,7 +272,7 @@ export async function answer(discordId: string, question: string, previous?: str
   if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
   const send = (b: string) => (upId == null ? cpaPost(b, allow) : upPost(upId, b));
   const titles = kbTitles(), me = one('SELECT id, role FROM users WHERE discord_id = ?', discordId), asker: number | null = me?.id ?? null, isAdmin = me?.role === 'admin';
-  const messages: any[] = [{ role: 'system', content: chatPrompt() + '\n\n' + CONTEXT_FACTS + (proactive() ? STOCK_NOTIFY_HINT : QUIET_HINT) +
+  const messages: any[] = [{ role: 'system', content: chatPrompt() + '\n\n' + CONTEXT_FACTS + (proactive() || stockOnly() ? STOCK_NOTIFY_HINT : QUIET_HINT) +
     (asker ? '\n\n提问人问自己为什么报错 / 回复不对时，用 inspect_my_request 读他自己最近的请求，看参数、消息结构、预填充、哪条特别长、上游报错原文，定位到具体原因再说怎么改。回答在公开频道：可以点出是哪一部分（比如系统提示词里的某段、第几条消息），但不要大段复述他的聊天内容，引用原文最多一两句，也不要评论他写的内容本身（题材、剧情、人物）。' : '') +
     (isAdmin ? '\n\n提问人是站长。他让你「记住」「记下来」「写进记忆库 / 知识库」时，用 remember 把要记的内容（他这条消息里的，或他回复的那条消息里的）整理成一条写进去，写完简短告诉他记了什么、标题是什么。' :
       '\n\n有人让你记住什么、写进记忆库时，告诉他只有站长能让你记。') +
@@ -289,7 +289,7 @@ export async function answer(discordId: string, question: string, previous?: str
   try {
     for (let step = 0; step <= MAX_STEPS; step++) {
       const start = now(), last = step === MAX_STEPS;
-      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: [...TOOLS.filter((t) => proactive() || t.function.name !== 'stock_notify'), ...(asker ? [INSPECT] : []), ...(isAdmin ? [REMEMBER] : [])], tool_choice: 'auto' }) }));
+      const r = await send(JSON.stringify({ model: chatModel(), stream: false, max_tokens: 8192, messages, ...(last ? {} : { tools: [...TOOLS.filter((t) => proactive() || stockOnly() || t.function.name !== 'stock_notify'), ...(asker ? [INSPECT] : []), ...(isAdmin ? [REMEMBER] : [])], tool_choice: 'auto' }) }));
       const tr = parseTrace(r.trace);
       if (tr) recentAllowed.set(tr.requestId, { allowed: new Set(allow), ts: now() });
       if (r.status >= 300) { log(start, r.status, tr?.requestId || null, 'Discord 机器人回答失败'); return `我这边出错了（HTTP ${r.status}），晚点再问我 🐶`; }
@@ -363,7 +363,7 @@ async function onMessage(d: any) {
   let text = await answer(String(d.author.id), q, prev, quoted, images);
   for (const [n, id] of [...back.entries()].sort((a, b) => b[0].length - a[0].length)) text = text.split('@' + n).join(`<@${id}>`).replace(/<@(\d+)>（机器人）/g, '<@$1>');
   let pinged = [...new Set(back.values())];
-  const ping = mentionsOn();
+  const ping = pingsOn();
   if (!ping) { text = unping(text); pinged = []; }
   // Discord caps a message at 2000 characters: longer answers go out as a few replies, split at line breaks
   const parts = splitMessage(text);
