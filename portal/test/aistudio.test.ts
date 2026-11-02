@@ -43,11 +43,11 @@ const cookieOf = (sapisid: string, json = false) => {
   const c = `SID=sid-${sapisid}; HSID=h; SSID=s; APISID=a; SAPISID=${sapisid}; __Secure-1PSID=p1; __Secure-3PSID=p3`;
   return json ? JSON.stringify({ cookies: c, authUser: 0, g1Tier: 'TIER1' }) : c;
 };
-async function chat(key: string, opts: { stream?: boolean; path?: string; headers?: Record<string, string>; model?: string } = {}) {
+async function chat(key: string, opts: { stream?: boolean; path?: string; headers?: Record<string, string>; model?: string; extra?: Record<string, unknown> } = {}) {
   const r = await fetch(base + (opts.path || '/v1/chat/completions'), {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    body: JSON.stringify({ model: opts.model || 'gemini-3.8-flash', stream: !!opts.stream, messages: [{ role: 'user', content: 'hi' }] }),
+    body: JSON.stringify({ model: opts.model || 'gemini-3.8-flash', stream: !!opts.stream, messages: [{ role: 'user', content: 'hi' }], ...(opts.extra || {}) }),
   });
   return { status: r.status, text: await r.text(), ct: r.headers.get('content-type') || '' };
 }
@@ -215,6 +215,20 @@ test('aistudio gateway: relay key swapped in, client auth / forwarding / X-Agy h
     assert.match(JSON.parse(x.text).error.message, /只支持 \/v1\/chat\/completions/);
   }
   assert.equal(relay.st.seen.length, cnt);
+});
+
+test('aistudio gateway: thinking level MINIMAL is lifted to low on non-Flash models; a -high suffix wins', async () => {
+  const sent = async (model: string, extra: Record<string, unknown>) => {
+    const before = relay.st.seen.length;
+    assert.equal((await chat(K.dave, { model, extra })).status, 200);
+    return relay.st.seen[before].body;
+  };
+  assert.equal((await sent('gemini-4-argon', { reasoning_effort: 'minimal' })).reasoning_effort, 'low');
+  assert.equal((await sent('gemini-4-argon', { extra_body: { reasoning_effort: 'MINIMAL' } })).extra_body.reasoning_effort, 'low');
+  assert.equal((await sent('gemini-4-argon-high', { reasoning_effort: 'minimal' })).reasoning_effort, 'high');
+  assert.equal((await sent('gemini-3.8-flash', { reasoning_effort: 'minimal' })).reasoning_effort, 'minimal');
+  assert.equal((await sent('gemini-4-argon', { reasoning_effort: 'medium' })).reasoning_effort, 'medium');
+  assert.equal((await sent('gemini-4-argon', {})).reasoning_effort, undefined);
 });
 
 test('aistudio gateway: streaming passes through unbuffered, usage from the final chunk', async () => {

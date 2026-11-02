@@ -551,8 +551,33 @@ function openAIError(res: ServerResponse, status: number, code: string, message:
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) });
   res.end(b);
 }
+// AI Studio rejects thinking level MINIMAL on non-Flash models (SillyTavern sends reasoning_effort "minimal" for 最低),
+// and the relay lets reasoning_effort override a "-high"/"-low" model suffix. Fix both before forwarding.
+export function aistudioThinkingFix(body: Buffer): Buffer {
+  let j: any;
+  try { j = JSON.parse(body.toString('utf8')); } catch { return body; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return body;
+  const m = String(j.model || '').replace(/^models\//, '');
+  const suffix = m.match(/-(high|medium|low|minimal)$/i)?.[1].toLowerCase();
+  const noMinimal = !/flash/i.test(m);
+  let changed = false;
+  const fix = (o: any, k: string) => {
+    if (!o || typeof o !== 'object' || typeof o[k] !== 'string') return;
+    let v = suffix || o[k];
+    if (noMinimal && v.trim().toLowerCase() === 'minimal') v = 'low';
+    if (v !== o[k]) { o[k] = v; changed = true; }
+  };
+  for (const o of [j, j.extra_body]) {
+    if (!o || typeof o !== 'object') continue;
+    fix(o, 'reasoning_effort'); fix(o, 'reasoningEffort'); fix(o.reasoning, 'effort');
+    for (const c of [o.thinking_config, o.thinkingConfig, o.google?.thinking_config]) { fix(c, 'thinking_level'); fix(c, 'thinkingLevel'); }
+  }
+  return changed ? Buffer.from(JSON.stringify(j)) : body;
+}
+
 function goAIStudio(req: IncomingMessage, res: ServerResponse, method: string, P: string, body: Buffer, ctx: Ctx, refuse: (w: Why, code: string) => void) {
   const chat = method === 'POST' && P === '/v1/chat/completions';
+  if (chat) body = aistudioThinkingFix(body);
   const list = method === 'GET' && (P === '/v1/models' || P === '/v1/models/');
   if (!chat && !list) return openAIError(res, 404, 'unsupported_endpoint', 'AI Studio 池只支持 /v1/chat/completions');
   if (!aistudioOn()) {
