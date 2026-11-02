@@ -196,7 +196,8 @@ test('aistudio gateway: relay key swapped in, client auth / forwarding / X-Agy h
   assert.equal(u.pool, 'aistudio');
   assert.equal(u.result, 'ok');
   assert.equal(u.status, 200);
-  assert.equal(u.auth_id, null);
+  assert.equal(u.auth_id, K.acc1, 'served account recorded');
+  assert.equal(u.owner_id, u.user_id);
   assert.equal(u.model, 'gemini-3.8-flash');
   assert.equal(u.stream, 0);
   assert.equal(u.in_tok, 5);
@@ -327,6 +328,157 @@ test('aistudio delete: owner and admin, removed from relay and portal', async ()
   assert.ok(!relay.st.accounts.has(K.acc1));
   assert.deepEqual((await dave.req('GET', '/api/aistudio')).data, []);
   assert.equal((await chat(K.dave)).status, 403);
+});
+
+// ---------- per-account share switch ----------
+const frank = new Client(), gina = new Client(), hank = new Client();
+const S: Record<string, string> = {};
+const allowSeen = (i: number) => String(relay.st.seen[i].headers['x-relay-allow'] || '').split(',').filter(Boolean).sort();
+async function allowOf(key: string) {
+  const i = relay.st.seen.length;
+  const r = await chat(key);
+  assert.equal(r.status, 200, r.text);
+  return allowSeen(i);
+}
+
+test('aistudio share: default on, owner-only toggle, three eligibility states', async () => {
+  await frank.login('300011', 'frank');
+  await gina.login('300012', 'gina');
+  await hank.login('300013', 'hank');
+  for (const [c, n] of [[frank, 'frank'], [gina, 'gina'], [hank, 'hank']] as const) S['k' + n] = (await c.req('POST', '/api/keys', { name: 'ais', pool: 'aistudio' })).data.key;
+  // none: no valid account
+  assert.equal((await chat(S.kfrank)).status, 403);
+
+  const f = await frank.req('POST', '/api/aistudio', { cookies: cookieOf('frank1') });
+  assert.equal(f.status, 200);
+  assert.equal(f.data.shared, true, 'upload defaults to shared');
+  S.f1 = f.data.id;
+  S.g1 = (await gina.req('POST', '/api/aistudio', { cookies: cookieOf('gina1') })).data.id;
+  S.h1 = (await hank.req('POST', '/api/aistudio', { cookies: cookieOf('hank1') })).data.id;
+  assert.deepEqual((await gina.req('GET', '/api/aistudio')).data.map((x: any) => x.shared), [true]);
+
+  // only the owner may toggle; bad body refused
+  assert.equal((await frank.req('POST', `/api/aistudio/${S.g1}/share`, { shared: false })).status, 404);
+  assert.equal((await admin.req('POST', `/api/aistudio/${S.g1}/share`, { shared: false })).status, 404);
+  assert.equal((await gina.req('POST', `/api/aistudio/${S.g1}/share`, { shared: 'no' })).status, 400);
+  assert.equal((await gina.req('GET', '/api/aistudio')).data[0].shared, true);
+  const off = await gina.req('POST', `/api/aistudio/${S.g1}/share`, { shared: false });
+  assert.equal(off.status, 200);
+  assert.equal(off.data.shared, false);
+  assert.equal((await gina.req('GET', '/api/aistudio')).data[0].shared, false);
+  const adm = (await admin.req('GET', '/api/admin/aistudio')).data;
+  assert.equal(adm.find((x: any) => x.id === S.g1).shared, false);
+  assert.equal(adm.find((x: any) => x.id === S.f1).shared, true);
+
+  // own: gina only shares nothing -> still served, but only by her own account
+  assert.deepEqual(await allowOf(S.kgina), [S.g1]);
+  // full: frank / hank share -> own + every shared account, never gina's private one
+  assert.deepEqual(await allowOf(S.kfrank), [S.f1, S.h1].sort());
+  assert.deepEqual(await allowOf(S.khank), [S.f1, S.h1].sort());
+
+  // gina adds a shared account -> full: her private one stays in her own list only
+  S.g2 = (await gina.req('POST', '/api/aistudio', { cookies: cookieOf('gina2') })).data.id;
+  assert.deepEqual(await allowOf(S.kgina), [S.f1, S.g1, S.g2, S.h1].sort());
+  assert.deepEqual(await allowOf(S.kfrank), [S.f1, S.g2, S.h1].sort());
+  // frank stops sharing -> own only, and his account leaves everyone else's list
+  assert.equal((await frank.req('POST', `/api/aistudio/${S.f1}/share`, { shared: false })).data.shared, false);
+  assert.deepEqual(await allowOf(S.kfrank), [S.f1]);
+  assert.deepEqual(await allowOf(S.khank), [S.g2, S.h1].sort());
+  // a dead shared account is not offered
+  relay.st.health.set('gina2', 'dead');
+  await gina.req('POST', `/api/aistudio/${S.g2}/check`);
+  assert.deepEqual(await allowOf(S.khank), [S.h1]);
+  assert.deepEqual(await allowOf(S.kgina), [S.g1]);
+  // re-upload keeps the share choice
+  assert.equal((await frank.req('POST', '/api/aistudio', { cookies: cookieOf('frank1') })).data.shared, false);
+  assert.equal((await frank.req('POST', `/api/aistudio/${S.f1}/share`, { shared: true })).data.shared, true);
+});
+
+test('aistudio share: served account recorded, others hidden from the requester', async () => {
+  const seen = new Set<string>();
+  for (let i = 0; i < 4; i++) {
+    assert.equal((await chat(S.kfrank)).status, 200);
+    const u = await lastUsage();
+    assert.ok([S.f1, S.h1].includes(u.auth_id), u.auth_id);
+    seen.add(u.auth_id);
+    if (u.auth_id === S.h1) assert.notEqual(u.owner_id, u.user_id);
+    else assert.equal(u.owner_id, u.user_id);
+  }
+  assert.equal(seen.size, 2, 'round-robin over both');
+  const t = (await frank.req('GET', '/api/traffic?pool=aistudio')).data;
+  const txt = JSON.stringify(t);
+  assert.ok(txt.includes(S.f1), 'own account shown');
+  assert.ok(!txt.includes(S.h1), 'other user account id hidden');
+  assert.ok(t.rows.some((x: any) => /^共享账号 #\d+/.test(x.account || '')));
+  assert.ok(!JSON.stringify((await frank.req('GET', '/api/usage/requests?pool=aistudio')).data).includes(S.h1));
+});
+
+test('aistudio gateway: client cookies and x-relay headers are stripped, the portal sets the allow list', async () => {
+  const i = relay.st.seen.length;
+  const r = await fetch(base + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + S.kgina, 'Content-Type': 'application/json', 'X-Relay-Allow': S.h1, 'X-Relay-Account': S.h1, 'X-Relay-Whatever': '1',
+      'X-Google-Cookies': 'SAPISID=evil', 'X-Goog-AuthUser': '3', 'X-AIStudio-G1-Tier': 'TIER9' },
+    body: JSON.stringify({ model: 'gemini-4-argon', reasoning_effort: 'minimal', cookies: 'SAPISID=evil', authUser: 3, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-relay-account'), null, 'served account never forwarded');
+  await r.text();
+  const seen = relay.st.seen[i];
+  assert.equal(seen.headers['x-relay-allow'], S.g1);
+  for (const h of ['x-relay-account', 'x-relay-whatever', 'x-google-cookies', 'x-goog-authuser', 'x-aistudio-g1-tier']) assert.equal(seen.headers[h], undefined, h);
+  assert.equal(seen.body.cookies, undefined);
+  assert.equal(seen.body.reasoning_effort, 'low', 'thinking fix still applied');
+  assert.equal(seen.body.model, 'gemini-4-argon');
+  assert.equal(relay.st.served.at(-1), S.g1);
+});
+
+test('aistudio gateway: a response without / with a foreign X-Relay-Account is refused, nothing forwarded', async () => {
+  const before = (await admin.req('GET', '/api/admin/usage')).data.breaker.tripped;
+  try {
+    for (const mode of ['omit', 'foreign'] as const) {
+      relay.st.misbehave = mode;
+      for (const stream of [false, true]) {
+        const r = await chat(S.kgina, { stream });
+        assert.equal(r.status, 502, mode + stream);
+        assert.ok(!/aistudio|hello/.test(r.text), 'no relay body forwarded');
+        assert.match(JSON.parse(r.text).error.message, /AI Studio 中转/);
+        await sleep(30);
+        const u = await lastUsage();
+        assert.equal(u.status, 502);
+        assert.equal(u.result, 'blocked');
+        assert.equal(u.auth_id, null);
+        assert.equal(u.reason, mode === 'omit' ? '中转响应没有标明所用的号，已拦截' : '中转用了名单外的号，已拦截');
+      }
+    }
+  } finally {
+    relay.st.misbehave = null;
+  }
+  assert.match(logs, /\[aistudio\] relay response refused/);
+  assert.equal((await admin.req('GET', '/api/admin/usage')).data.breaker.tripped, before, 'breaker untouched');
+  assert.equal((await chat(S.kgina)).status, 200);
+  // /v1/models needs no account header
+  relay.st.misbehave = 'omit';
+  try {
+    assert.equal((await fetch(base + '/v1/models', { headers: { Authorization: 'Bearer ' + S.kgina } })).status, 200);
+  } finally {
+    relay.st.misbehave = null;
+  }
+});
+
+test('aistudio gateway: relay 503 (no allowed account) is forwarded as is', async () => {
+  const keep = relay.st.accounts.get(S.g1)!;
+  relay.st.accounts.delete(S.g1);
+  try {
+    const r = await chat(S.kgina);
+    assert.equal(r.status, 503);
+    assert.match(JSON.parse(r.text).error.message, /no allowed account available/);
+    const u = await lastUsage();
+    assert.equal(u.status, 503);
+    assert.equal(u.result, 'upstream');
+  } finally {
+    relay.st.accounts.set(S.g1, keep);
+  }
 });
 
 test('小锅饭 / 大锅饭 keys are unaffected: still go to CPA, never to the relay', async () => {

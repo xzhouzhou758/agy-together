@@ -13,7 +13,7 @@ import { explainUnavailable, sendGatewayError, type Why } from './reason.ts';
 import { dailyFor, secondsToMidnight, sharedModels, sharedAllows } from './limits.ts';
 import { upstreamsFor, upstreamRequest, usageSniffer, upAuthId, enabledUpstreams, openModels, type Upstream, type Tok } from './upstream.ts';
 import { wakeFor } from './autosleep.ts';
-import { aistudioOn, eligible as aistudioEligible, NOT_ELIGIBLE } from './aistudio.ts';
+import { aistudioOn, allowFor as aistudioAllowFor, NOT_ELIGIBLE } from './aistudio.ts';
 
 
 // ---------- live counters ----------
@@ -557,6 +557,10 @@ export function aistudioThinkingFix(body: Buffer): Buffer {
   let j: any;
   try { j = JSON.parse(body.toString('utf8')); } catch { return body; }
   if (!j || typeof j !== 'object' || Array.isArray(j)) return body;
+  return thinkingFix(j) ? Buffer.from(JSON.stringify(j)) : body;
+}
+/** Mutates j; true when something changed. */
+function thinkingFix(j: any): boolean {
   const m = String(j.model || '').replace(/^models\//, '');
   const suffix = m.match(/-(high|medium|low|minimal)$/i)?.[1].toLowerCase();
   const noMinimal = !/flash/i.test(m);
@@ -572,19 +576,32 @@ export function aistudioThinkingFix(body: Buffer): Buffer {
     fix(o, 'reasoning_effort'); fix(o, 'reasoningEffort'); fix(o.reasoning, 'effort');
     for (const c of [o.thinking_config, o.thinkingConfig, o.google?.thinking_config]) { fix(c, 'thinking_level'); fix(c, 'thinkingLevel'); }
   }
+  return changed;
+}
+/** Chat body for the relay: the thinking fixes above, and no client-supplied cookies (the portal picks the accounts). */
+export function aistudioBody(body: Buffer): Buffer {
+  let j: any;
+  try { j = JSON.parse(body.toString('utf8')); } catch { return body; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return body;
+  let changed = thinkingFix(j);
+  if ('cookies' in j) { delete j.cookies; changed = true; }
   return changed ? Buffer.from(JSON.stringify(j)) : body;
 }
+// client headers that would pick or impersonate relay accounts
+const AIS_DROP = (k: string) => k.startsWith('x-relay-') || k === 'x-google-cookies' || k === 'x-goog-authuser' || k === 'x-aistudio-g1-tier';
 
 function goAIStudio(req: IncomingMessage, res: ServerResponse, method: string, P: string, body: Buffer, ctx: Ctx, refuse: (w: Why, code: string) => void) {
   const chat = method === 'POST' && P === '/v1/chat/completions';
-  if (chat) body = aistudioThinkingFix(body);
+  if (chat) body = aistudioBody(body);
   const list = method === 'GET' && (P === '/v1/models' || P === '/v1/models/');
   if (!chat && !list) return openAIError(res, 404, 'unsupported_endpoint', 'AI Studio 池只支持 /v1/chat/completions');
   if (!aistudioOn()) {
     if (chat) record(ctx, { status: 503, result: 'blocked', reason: 'AI Studio 池未开启' });
     return openAIError(res, 503, 'aistudio_disabled', 'AI Studio 池未开启');
   }
-  if (!aistudioEligible(ctx.userId)) {
+  // the accounts this request may be served by: own valid ones, plus every valid shared one for a sharer
+  const { access, owners } = aistudioAllowFor(ctx.userId);
+  if (access === 'none' || !owners.size) {
     if (chat) record(ctx, { status: 403, result: 'no_account', reason: NOT_ELIGIBLE });
     return openAIError(res, 403, 'no_available_account', NOT_ELIGIBLE);
   }
@@ -593,6 +610,8 @@ function goAIStudio(req: IncomingMessage, res: ServerResponse, method: string, P
     if (w) return refuse(w, 'input_limit_exceeded');
   }
   const headers = forwardHeaders(req.headers);
+  for (const k of Object.keys(headers)) if (AIS_DROP(k)) delete headers[k];
+  headers['x-relay-allow'] = [...owners.keys()].join(',');
   headers['authorization'] = 'Bearer ' + config.aistudioRelayKey;
   if (body.length) headers['content-length'] = String(body.length);
   const t = new URL(config.aistudioRelayURL);
@@ -602,10 +621,11 @@ function goAIStudio(req: IncomingMessage, res: ServerResponse, method: string, P
   const sn = usageSniffer();
   const errBuf: Buffer[] = [];
   let errSize = 0;
+  let served: string | null = null; // relay account that served it (verified against the allow list)
   const finish = (status: number, result: string, reason?: string | null) => {
     if (finished) return;
     finished = true;
-    if (chat) record(ctx, { status, result, reason, x: { authId: null, ownerId: null, tok: sn.done() } });
+    if (chat) record(ctx, { status, result, reason, x: { authId: served, ownerId: served ? owners.get(served) ?? null : null, tok: sn.done() } });
   };
   res.on('close', () => {
     if (!res.writableFinished) {
@@ -622,8 +642,22 @@ function goAIStudio(req: IncomingMessage, res: ServerResponse, method: string, P
   up.on('response', (ur) => {
     const status = ur.statusCode || 502;
     const tHead = now() - ctx.start;
+    // ---- a successful generation must name an allowed account before a single byte reaches the client ----
+    if (chat && status >= 200 && status < 300) {
+      const h = ur.headers['x-relay-account'];
+      const id = (Array.isArray(h) ? h.join(',') : h || '').trim();
+      if (!id || !owners.has(id)) {
+        console.warn('[aistudio] relay response refused', JSON.stringify({ account: id || null, keyId: ctx.keyId, userId: ctx.userId, status }));
+        openAIError(res, 502, 'upstream_error', 'AI Studio 中转返回异常，请重试');
+        finish(502, 'blocked', id ? '中转用了名单外的号，已拦截' : '中转响应没有标明所用的号，已拦截');
+        ur.destroy();
+        up.destroy();
+        return;
+      }
+      served = id;
+    }
     const out: Record<string, string | string[]> = {};
-    for (const [k, v] of Object.entries(ur.headers)) if (v !== undefined && !RESP_DROP.has(k.toLowerCase())) out[k] = v;
+    for (const [k, v] of Object.entries(ur.headers)) if (v !== undefined && !RESP_DROP.has(k.toLowerCase()) && !k.toLowerCase().startsWith('x-relay-')) out[k] = v;
     res.writeHead(status, out);
     ur.once('data', () => { ctx.ttfb ??= now() - ctx.start; });
     ur.on('data', (c: Buffer) => {

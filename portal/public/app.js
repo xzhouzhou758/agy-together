@@ -451,6 +451,7 @@ function pageAistudio(){
       <span>${a.tier?`<span class="chip">${esc(a.tier)}</span>`:''}</span>
       <span>${aisState(a)}</span>
       <span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span>
+      <span class="switch-field sm"><small>共享</small><button class="switch" role="switch" aria-checked="${!!a.shared}" aria-label="共享 ${esc(a.id)}" data-act="aisshare:${esc(a.id)}"></button></span>
       <span class="num-r hstack" style="justify-content:flex-end">${a.status==='valid'?`<button class="btn sm" data-act="aischeck:${esc(a.id)}">重新检测</button>`:''}<button class="btn sm ghost danger" data-act="aisdel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span>
     </div>`).join('')}</div>`:empty('spark','还没有号');
   return head('AI Studio')+
@@ -470,7 +471,7 @@ function pageAistudio(){
 function aisAdmin(L){
   if(!cfg.aistudio)return '';
   return fold('aisadmin','AI Studio 号',cnt(L.length),`
-    ${L.length?`<div class="tbl ais-admin">${L.map(a=>`<div class="tr"><span class="mono">${esc(a.id)}</span><span>${esc(a.owner||'—')}</span><span>${aisState(a)}</span><span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span><span class="num-r"><button class="btn sm ghost danger" data-act="aisadel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>`:''}
+    ${L.length?`<div class="tbl ais-admin">${L.map(a=>`<div class="tr"><span class="mono">${esc(a.id)}</span><span>${esc(a.owner||'—')}</span><span>${aisState(a)}</span><span>${a.shared?'<span class="chip">共享</span>':'<span class="chip">私有</span>'}</span><span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span><span class="num-r"><button class="btn sm ghost danger" data-act="aisadel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>`:''}
     <div class="mt"><button class="btn sm" data-act="aisall">${ic('refresh')}全部检测</button></div>`,false);
 }
 
@@ -1310,6 +1311,8 @@ document.addEventListener('click',act(async e=>{
       keepAcc(v);closeDialog();render();toast(v.shared?`“${accName(v)}”已放进大锅饭`:`已撤回“${accName(v)}”的共享`);break;}
     case 'aisup':{const v=$('#f-ais').value.trim();if(!v)break;el.disabled=true;
       try{await api('POST','api/aistudio',{cookies:v});$('#f-ais').value='';toast('已添加');await reload();}finally{el.disabled=false;}break;}
+    case 'aisshare':{const x=(D.ais||[]).find(y=>y.id===arg);if(!x)break;el.disabled=true;
+      try{const v=await api('POST','api/aistudio/'+encodeURIComponent(arg)+'/share',{shared:!x.shared});Object.assign(x,v);render();toast(v.shared?'已共享':'已取消共享');}finally{el.disabled=false;}break;}
     case 'aischeck':{el.disabled=true;try{const r=await api('POST','api/aistudio/'+encodeURIComponent(arg)+'/check');
       toast(r.state==='alive'?'有效':r.state==='dead'?'已失效':'暂时无法检测，请稍后再试',r.state!=='alive');await reload();}finally{el.disabled=false;}break;}
     case 'aisdel':case 'aisadel':

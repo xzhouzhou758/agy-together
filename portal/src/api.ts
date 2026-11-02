@@ -112,6 +112,7 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
 /** Anonymous label for an account in another user's shared-pool records. */
 function anonLabel(authId: string): string {
   if (isUp(authId)) return upName(authId);
+  if (aistudio.isAIS(authId)) return aistudio.aisAnon(authId);
   const r = one('SELECT rowid AS n FROM accounts WHERE auth_id = ?', authId);
   return '#' + String(r?.n || 0).padStart(2, '0');
 }
@@ -680,7 +681,14 @@ route('POST', '/api/aistudio', async (req) => {
   aiOn();
   const b = await readJSON(req, 256 * 1024);
   if (typeof b.cookies !== 'string') throw new HttpError(400, 'aistudio_cookie', '请粘贴 Cookie');
-  return aistudio.upload(u.id, b.cookies);
+  return aistudio.upload(u.id, b.cookies, b.shared !== false);
+});
+route('POST', '/api/aistudio/:id/share', async (req, _res, p) => {
+  const u = requireUser(req);
+  aiOn();
+  const b = await readJSON(req, 4096);
+  if (typeof b.shared !== 'boolean') throw new HttpError(400, 'invalid_request');
+  return aistudio.setShared(u.id, p.id, b.shared);
 });
 route('POST', '/api/aistudio/:id/check', async (req, _res, p) => aistudio.recheck(requireUser(req).id, p.id));
 route('DELETE', '/api/aistudio/:id', async (req, _res, p) => aistudio.remove(requireUser(req).id, p.id));
@@ -701,7 +709,7 @@ route('GET', '/api/usage/requests', async (req, _res, _p, url) => {
     let account: string | null = null;
     if (r.auth_id) {
       // Own accounts by note; anyone else's account only as an anonymous number. Never an email.
-      account = r.owner_id === u.id ? c.byId.get(r.auth_id)?.note || '' : anonLabel(r.auth_id);
+      account = r.owner_id === u.id ? (aistudio.isAIS(r.auth_id) ? r.auth_id : c.byId.get(r.auth_id)?.note || '') : anonLabel(r.auth_id);
     }
     return { ts: r.ts, model: r.model, pool: r.pool, account, own: r.owner_id === u.id, result: r.result, status: r.status, latency: r.latency_ms, tokens: r.total_tok };
   });
@@ -744,7 +752,7 @@ async function traffic(u: User, url: URL) {
   const acc = (sp.get('account') || '').trim();
   if (acc) {
     // a non-admin may only filter by an account they own
-    if (!admin && !one('SELECT 1 FROM accounts WHERE auth_id = ? AND owner_id = ?', acc, u.id)) where.push('0');
+    if (!admin && !one('SELECT 1 FROM accounts WHERE auth_id = ? AND owner_id = ?', acc, u.id) && !one('SELECT 1 FROM aistudio_accounts WHERE account_id = ? AND owner_id = ?', acc, u.id)) where.push('0');
     else { where.push('u.auth_id = ?'); args.push(acc); }
   }
   const pool = sp.get('pool');
@@ -766,7 +774,7 @@ async function traffic(u: User, url: URL) {
     LEFT JOIN api_keys k ON k.id = u.key_id LEFT JOIN users us ON us.id = u.user_id
     ${w} ORDER BY u.ts DESC, u.id DESC LIMIT ? OFFSET ?`, ...args, size, (page - 1) * size);
   const c = await cpa.creds(30000);
-  const email = (id: string) => (isUp(id) ? upName(id) : c.byId.get(id)?.email || one('SELECT email FROM accounts WHERE auth_id = ?', id)?.email || '');
+  const email = (id: string) => (isUp(id) ? upName(id) : aistudio.isAIS(id) ? id : c.byId.get(id)?.email || one('SELECT email FROM accounts WHERE auth_id = ?', id)?.email || '');
   const list = rows.map((r) => {
     let account: string | null = null, accountId: string | null = null;
     if (r.auth_id) {

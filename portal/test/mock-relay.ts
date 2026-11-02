@@ -13,6 +13,21 @@ export function startMockRelay(opts: { apiKey: string }) {
     removed: [] as string[],
     seen: [] as { path: string; headers: http.IncomingHttpHeaders; body: any }[], // generation-endpoint calls
     holdMs: 0,                          // delay between stream chunks
+    served: [] as (string | null)[],    // account picked per chat call
+    misbehave: null as null | 'omit' | 'foreign', // omit X-Relay-Account / report an account outside X-Relay-Allow
+  };
+  let rr = 0;
+  // X-Relay-Allow: round-robin among the listed accounts the relay holds; without the header, among all
+  const pick = (req: http.IncomingMessage): { id: string | null; allow: Set<string> | null } => {
+    const raw = req.headers['x-relay-allow'];
+    const allow = raw === undefined ? null : new Set(String(raw).split(',').map((x) => x.trim()).filter(Boolean));
+    const ready = [...st.accounts.keys()].filter((id) => !allow || allow.has(id));
+    return { id: ready.length ? ready[rr++ % ready.length] : null, allow };
+  };
+  const accountHeader = (id: string | null, allow: Set<string> | null): Record<string, string> => {
+    if (st.misbehave === 'omit') return {};
+    if (st.misbehave === 'foreign') return { 'X-Relay-Account': [...st.accounts.keys()].find((x) => !allow?.has(x)) || 'acc_ffffffffffffffff' };
+    return id ? { 'X-Relay-Account': id } : {};
   };
   const sapisidOf = new Map<string, string>(); // account id -> SAPISID
   const json = (res: http.ServerResponse, code: number, body: unknown) => {
@@ -73,8 +88,12 @@ export function startMockRelay(opts: { apiKey: string }) {
     if (req.method === 'POST' && p === '/v1/chat/completions') {
       st.seen.push({ path: p, headers: req.headers, body });
       const model = String(body.model || 'gemini-3.8-flash');
+      const { id, allow } = pick(req);
+      st.served.push(id);
+      if (allow && !id) return json(res, 503, { error: { message: 'no allowed account available', type: 'relay_error', code: 503 } });
+      const acc = accountHeader(id, allow);
       if (body.stream) {
-        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no', ...acc });
         const chunk = (delta: any, extra: any = {}) => res.write(`data: ${JSON.stringify({ id: 'chatcmpl-1', object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, finish_reason: extra.finish || null }], ...(extra.usage ? { usage: extra.usage } : {}) })}\n\n`);
         chunk({ role: 'assistant', content: '' });
         for (const w of ['hello', ' from', ' aistudio']) { await sleep(st.holdMs); chunk({ content: w }); }
@@ -82,6 +101,7 @@ export function startMockRelay(opts: { apiKey: string }) {
         res.write('data: [DONE]\n\n');
         return res.end();
       }
+      for (const [k, v] of Object.entries(acc)) res.setHeader(k, v);
       return json(res, 200, { id: 'chatcmpl-1', object: 'chat.completion', model, choices: [{ index: 0, message: { role: 'assistant', content: 'hello from aistudio' }, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } });
     }
     return json(res, 404, { error: { message: `Route not found: ${req.method} ${p}` } });

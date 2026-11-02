@@ -80,7 +80,8 @@ export async function inspectRequest(userId: number, which = 0, failedOnly = tru
   const when = new Date(r.ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   const head = `${when} ${r.pool === 'shared' ? '大锅饭' : r.pool === 'aistudio' ? 'AI Studio' : '小锅饭'} ${r.model} → ${r.result} ${r.status}${r.reason ? `（${r.reason}）` : ''}`;
   if (!r.request_id) {
-    const why = String(r.auth_id || '').startsWith('up:') ? '这次走的是兜底上游，CPA 没有它的日志'
+    const why = r.pool === 'aistudio' && r.auth_id ? '这次走的是 AI Studio 中转，CPA 没有它的日志'
+      : String(r.auth_id || '').startsWith('up:') ? '这次走的是兜底上游，CPA 没有它的日志'
       : '这次在门户就被拦下了，没发到上游，所以没有请求日志';
     return `${head}\n${why}${r.in_est ? `；当时输入估算约 ${r.in_est} Token` : ''}`;
   }

@@ -134,7 +134,15 @@ CPA 的 429 和「无可用号」类错误会先被网关读完（错误体很�
 - **侧栏「AI Studio」**（`AISTUDIO_RELAY_KEY` 非空时才出现）：粘贴油猴脚本导出的 Cookie（JSON / Cookie 串 / cURL 都行）→ 提交；「我的号」列表显示账号 ID（中转按 Cookie 算出的哈希，不是机密）、等级、有效 / 失效、上次检测时间、重新检测、删除；「怎么获取 Cookie」教程默认折叠。
 - **上传**：门户调中转 `/api/accounts/add` 再 `/api/accounts/test`。有效 → 记为这个用户的号；无效 → 立刻从中转删掉，提示无效，不保留；同一个账号 ID 已属于别人 → 拒绝（「这个号已经被别人上传过」）；自己重复上传 → 刷新 Cookie 并重新检测。检测结果说不清（证明服务器 / 网络 / 5xx）时提示稍后再试。**门户数据库不存 Cookie**，只存账号 ID、主人、等级、状态、上次检测时间、简短错误、创建时间（表 `aistudio_accounts`）。
 - **复检**：每 `AISTUDIO_RECHECK_MINUTES` 分钟逐个（不并发）检测有效号。确定失效 → 标「失效」并从中转删除；证明服务器故障、网络错误、超时、5xx → 不改状态。失效的号仍留在主人列表里（提示重新上传），但已不在中转。复检时还会补删之前没删成功的号，并删掉中转里门户不认识或不认为有效的号。管理员后台「AI Studio 号」可看全部号、删除任意号、立即全部检测。
-- **资格**：名下至少有 1 个有效号才能用 AI Studio 池；否则 AI Studio 密钥返回 403「你在 AI Studio 池里没有有效的号，上传一个有效 Cookie 后即可使用」。每个请求现查，重新上传有效号立即恢复。
-- **密钥**：新建 / 修改密钥时多一个「AI Studio」池。网关把这类密钥**直接**转给中转（不经 CPA、不写 `X-Agy-Allow`、不做 trace 核对、不受熔断影响）：`GET /v1/models`、`POST /v1/chat/completions`（流式原样透传，不缓冲）；其它路径一律 404（OpenAI 错误格式）。客户端的凭证 / 转发类请求头照常删掉，换成中转的 Key。记账：每个请求一行（pool = `aistudio`，账号为空），非流式和流式最后一块里有 `usage` 时记 token；不存内容。暂无池级限速；用户自己的「输入上限」照常生效。
-- **接口**：`GET/POST /api/aistudio`、`POST /api/aistudio/:id/check`、`DELETE /api/aistudio/:id`；管理员 `GET /api/admin/aistudio`、`DELETE /api/admin/aistudio/:id`、`POST /api/admin/aistudio/recheck`。`/api/config` 多一个 `aistudio` 布尔值。
-- **数据库**：新表 `aistudio_accounts`；`api_keys.pool` 的 CHECK 约束加上 `'aistudio'`（旧库启动时按原列原样重建一次 `api_keys` 表，在一个事务里完成）。
+- **共享开关**：「我的号」每行一个「共享」开关，默认开（上传默认共享；老数据库里已有的号也都算共享，行为和以前一样；自己重复上传不改开关）。只有主人能改（`POST /api/aistudio/:id/share {shared: bool}`，别人的号 404）。管理员后台「AI Studio 号」只读显示 共享 / 私有。
+- **资格和可用号**（每个请求现查一次数据库）：
+  - 名下没有有效号 → 403「你在 AI Studio 池里没有有效的号，上传一个有效 Cookie 后即可使用」；重新上传有效号立即恢复。
+  - 名下有有效号、但全部关了共享 → 只能用自己的号。
+  - 名下至少 1 个有效且共享的号 → 自己的全部有效号（共享不共享都算）＋所有人的有效共享号（号主账号被停用的除外）。
+  - 关了共享的号只服务主人自己。中转在允许名单里普通轮询，不优先自己的号。
+- **中转补丁**：生产中转部署时要打 `relay-allow.patch`（aistudio-pg-bridge `2-relay-client-gateway`）。门户在每个请求上发 `X-Relay-Allow: acc_a,acc_b,...`，中转只在这些号里选（含失败切换），一个都不可用时回 503 `no allowed account available`（门户原样转给客户端）；带这个头时中转忽略客户端给的 Cookie。中转在响应头 `X-Relay-Account` 里写实际服务的号（流式和非流式都在响应头里，先于正文）。**不打补丁的中转会忽略名单、也不回 `X-Relay-Account`，门户会把所有成功的聊天请求拦成 502**——所以门户和中转要一起上线。
+- **密钥**：新建 / 修改密钥时多一个「AI Studio」池。网关把这类密钥**直接**转给中转（不经 CPA、不写 `X-Agy-Allow`、不做 CPA trace 核对、不受熔断影响）：`GET /v1/models`、`POST /v1/chat/completions`（流式原样透传，不缓冲）；其它路径一律 404（OpenAI 错误格式）。客户端的凭证 / 转发类请求头照常删掉，换成中转的 Key；另外删掉客户端发来的所有 `x-relay-*`、`x-google-cookies`、`x-goog-authuser`、`x-aistudio-g1-tier`，请求体顶层的 `cookies` 字段也删掉，再由门户写 `X-Relay-Allow`。
+- **核对**：聊天请求中转回 2xx 时，门户先看 `X-Relay-Account`，缺失或不在这次的允许名单里 → 一个字节都不转给客户端，断开中转连接，给客户端 502，记一行 `blocked`（「中转响应没有标明所用的号，已拦截」/「中转用了名单外的号，已拦截」），日志打 `[aistudio] relay response refused`；**不触发** CPA 熔断。非 2xx（如 503 / 400）照常转发。`X-Relay-Account` 永远不转给客户端。`/v1/models` 不核对。
+- **记账**：每个请求一行（pool = `aistudio`），`auth_id` = 实际服务的号（`acc_…`）、`owner_id` = 号主；非流式和流式最后一块里有 `usage` 时记 token；不存内容。流量日志 / 统计里自己的号显示账号 ID，别人的号只显示「共享账号 #NN」（和大锅饭一样）。暂无池级限速；用户自己的「输入上限」照常生效。
+- **接口**：`GET/POST /api/aistudio`、`POST /api/aistudio/:id/check`、`POST /api/aistudio/:id/share`、`DELETE /api/aistudio/:id`；管理员 `GET /api/admin/aistudio`、`DELETE /api/admin/aistudio/:id`、`POST /api/admin/aistudio/recheck`。`/api/config` 多一个 `aistudio` 布尔值。
+- **数据库**：新表 `aistudio_accounts`（启动时补列 `shared INTEGER NOT NULL DEFAULT 1`，已有行即共享）；`api_keys.pool` 的 CHECK 约束加上 `'aistudio'`（旧库启动时按原列原样重建一次 `api_keys` 表，在一个事务里完成）。

@@ -10,9 +10,35 @@ export const aistudioOn = () => !!config.aistudioRelayKey;
 export const NOT_ELIGIBLE = '你在 AI Studio 池里没有有效的号，上传一个有效 Cookie 后即可使用';
 const MAX_PER_USER = 20;
 
-/** May this user call the AI Studio pool right now (owns at least one valid account)? */
-export function eligible(userId: number): boolean {
-  return !!one(`SELECT 1 FROM aistudio_accounts WHERE owner_id = ? AND status = 'valid' LIMIT 1`, userId);
+/** Relay account ids look like acc_ + 16 hex (computeAccountId in the relay's dashboard.js). */
+export const isAIS = (id: string | null | undefined) => !!id && /^acc_[0-9a-f]{16}$/.test(id);
+
+/** What this user may use in the AI Studio pool right now:
+ *  none = no valid account of their own (refused); own = every valid account they own is private, so only
+ *  those; full = they share at least one valid account, so their own plus everyone's valid shared accounts. */
+export type Access = 'none' | 'own' | 'full';
+export function access(userId: number): Access {
+  const r = one(`SELECT COUNT(*) AS n, MAX(shared) AS s FROM aistudio_accounts WHERE owner_id = ? AND status = 'valid'`, userId);
+  if (!r || !Number(r.n)) return 'none';
+  return Number(r.s) ? 'full' : 'own';
+}
+
+/** Accounts one request may be served by (sent to the relay as X-Relay-Allow), with their owners.
+ *  Own valid accounts (shared or not) plus, for a sharer, every valid shared account of an active user. */
+export function allowFor(userId: number): { access: Access; owners: Map<string, number> } {
+  const a = access(userId);
+  const owners = new Map<string, number>();
+  if (a === 'none') return { access: a, owners };
+  const rows = all(`SELECT a.account_id, a.owner_id FROM aistudio_accounts a JOIN users u ON u.id = a.owner_id
+    WHERE a.status = 'valid' AND (a.owner_id = ? OR (? = 1 AND a.shared = 1 AND u.active = 1)) ORDER BY a.account_id`, userId, a === 'full' ? 1 : 0);
+  for (const r of rows) owners.set(String(r.account_id), Number(r.owner_id));
+  return { access: a, owners };
+}
+
+/** Anonymous number for another user's account in someone's records. */
+export function aisAnon(accountId: string): string {
+  const r = one('SELECT rowid AS n FROM aistudio_accounts WHERE account_id = ?', accountId);
+  return '#' + String(r?.n || 0).padStart(2, '0');
 }
 
 // ---------- relay calls ----------
@@ -68,7 +94,7 @@ function serial<T>(fn: () => Promise<T>): Promise<T> {
 
 // ---------- views ----------
 export function view(r: Row) {
-  return { id: r.account_id, tier: r.tier || null, label: r.label || null, status: r.status, checkedAt: r.last_checked_at || null, error: r.last_error || null, created: r.created_at };
+  return { id: r.account_id, tier: r.tier || null, label: r.label || null, status: r.status, shared: !!r.shared, checkedAt: r.last_checked_at || null, error: r.last_error || null, created: r.created_at };
 }
 export function listFor(userId: number) {
   return all('SELECT * FROM aistudio_accounts WHERE owner_id = ? ORDER BY created_at', userId).map(view);
@@ -85,7 +111,7 @@ function markDead(accountId: string, error: string | undefined, inRelay: boolean
 }
 
 // ---------- upload ----------
-export async function upload(userId: number, cookies: string) {
+export async function upload(userId: number, cookies: string, shared = true) {
   if (!aistudioOn()) throw new HttpError(404, 'not_found');
   const text = cookies.trim();
   if (!text) throw new HttpError(400, 'aistudio_cookie', '请粘贴 Cookie');
@@ -116,10 +142,11 @@ export async function upload(userId: number, cookies: string) {
     }
     const v = await testAccount(id);
     if (v.state === 'alive') {
-      run(`INSERT INTO aistudio_accounts(account_id, owner_id, tier, status, in_relay, last_checked_at, last_error, created_at, updated_at)
-           VALUES(?,?,?,'valid',1,?,NULL,?,?)
+      // a re-upload keeps the owner's share choice
+      run(`INSERT INTO aistudio_accounts(account_id, owner_id, tier, status, in_relay, last_checked_at, last_error, created_at, updated_at, shared)
+           VALUES(?,?,?,'valid',1,?,NULL,?,?,?)
            ON CONFLICT(account_id) DO UPDATE SET tier = excluded.tier, status = 'valid', in_relay = 1, last_checked_at = excluded.last_checked_at, last_error = NULL, updated_at = excluded.updated_at`,
-        id, userId, tier, now(), now(), now());
+        id, userId, tier, now(), now(), now(), shared ? 1 : 0);
       return view(one('SELECT * FROM aistudio_accounts WHERE account_id = ?', id)!);
     }
     if (v.state === 'unknown' && existing?.status === 'valid') {
@@ -132,6 +159,16 @@ export async function upload(userId: number, cookies: string) {
     if (v.state === 'unknown') throw new HttpError(503, 'aistudio_check_failed', '暂时无法检测这个号，请稍后再试');
     throw new HttpError(400, 'aistudio_dead', '这个号无效' + (v.error ? '：' + v.error.slice(0, 160) : ''));
   });
+}
+
+// ---------- share ----------
+/** Owner only: may other users' requests be served by this account? */
+export function setShared(userId: number, accountId: string, shared: boolean) {
+  if (!aistudioOn()) throw new HttpError(404, 'not_found');
+  const row = one('SELECT * FROM aistudio_accounts WHERE account_id = ?', accountId);
+  if (!row || row.owner_id !== userId) throw new HttpError(404, 'not_found');
+  run('UPDATE aistudio_accounts SET shared = ?, updated_at = ? WHERE account_id = ?', shared ? 1 : 0, now(), accountId);
+  return view(one('SELECT * FROM aistudio_accounts WHERE account_id = ?', accountId)!);
 }
 
 // ---------- re-check ----------

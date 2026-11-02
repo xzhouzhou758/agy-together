@@ -223,9 +223,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS aistudio_accounts (
   last_checked_at INTEGER,
   last_error TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  shared INTEGER NOT NULL DEFAULT 1
 )`);
 db.exec('CREATE INDEX IF NOT EXISTS aistudio_owner ON aistudio_accounts(owner_id, status)');
+// shared = 1: other eligible users may be served by this account; 0: only its owner. Existing rows stay shared.
+addCol('aistudio_accounts', 'shared', 'INTEGER NOT NULL DEFAULT 1');
 
 export type Row = Record<string, any>;
 
