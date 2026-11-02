@@ -78,7 +78,7 @@ export async function inspectRequest(userId: number, which = 0, failedOnly = tru
   const r = rows[Math.max(0, Math.min(rows.length - 1, Math.floor(which) || 0))];
   if (!r) return failedOnly ? '他最近没有失败的请求' : '他最近没有请求';
   const when = new Date(r.ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-  const head = `${when} ${r.pool === 'shared' ? '大锅饭' : '小锅饭'} ${r.model} → ${r.result} ${r.status}${r.reason ? `（${r.reason}）` : ''}`;
+  const head = `${when} ${r.pool === 'shared' ? '大锅饭' : r.pool === 'aistudio' ? 'AI Studio' : '小锅饭'} ${r.model} → ${r.result} ${r.status}${r.reason ? `（${r.reason}）` : ''}`;
   if (!r.request_id) {
     const why = String(r.auth_id || '').startsWith('up:') ? '这次走的是兜底上游，CPA 没有它的日志'
       : '这次在门户就被拦下了，没发到上游，所以没有请求日志';

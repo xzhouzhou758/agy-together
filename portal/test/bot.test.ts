@@ -140,7 +140,7 @@ test('usage watch: 3 failures in a row and a 500k+ input @ the caller once, with
   const { watchUsage } = await import('../src/bot.ts');
   setSetting('bot_channel_id', 'chan'); setSetting('discord_bot_token', 'bot-token');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('555666777', 'streaky', 'streaky', 'user', 0)");
-  const uid = one("SELECT id FROM users WHERE discord_id = '555666777'").id;
+  const uid = one("SELECT id FROM users WHERE discord_id = '555666777'")!.id;
   const add = (ago: number, result: string, status: number, reason: string | null, inTok: number | null = null, inEst: number | null = null) =>
     run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms, in_tok, in_est) VALUES(?,?,1,'shared','gemini-3-flash','/v1/chat/completions',?,?,?,1,?,?)`,
       Date.now() - ago, uid, status, result, reason, inTok, inEst);
@@ -193,7 +193,7 @@ test('usage watch: 大锅饭 input-cap refusal @s the caller even with /免打�
   const { run, one, setSetting } = await import('../src/db.ts');
   const { watchUsage } = await import('../src/bot.ts');
   run("INSERT INTO users(discord_id, name, handle, role, created_at, bot_quiet) VALUES('888999000', 'capped', 'capped', 'user', 0, 1)");
-  const uid = one("SELECT id FROM users WHERE discord_id = '888999000'").id;
+  const uid = one("SELECT id FROM users WHERE discord_id = '888999000'")!.id;
   run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms, in_est) VALUES(?,?,1,'shared','m','/v1/chat/completions',400,'input_limit','输入过限：这次输入约 62 万 Token，超过了大锅饭的输入上限 50 万。',1,620000)`, Date.now() - 3 * 60e3, uid);
   setSetting('bot_watch_ts', String(Date.now() - 5 * 60e3));
   const posts: { content: string; users: string[] }[] = [];
@@ -216,7 +216,7 @@ test('bot chat context: own request list, everyone in the rankings, names instea
   const { chatContext } = await import('../src/botchat.ts');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('121212121', 'asker', 'asker', 'user', 0)");
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('343434343', 'other', 'other', 'user', 0)");
-  const a = one("SELECT id FROM users WHERE discord_id = '121212121'").id, o = one("SELECT id FROM users WHERE discord_id = '343434343'").id;
+  const a = one("SELECT id FROM users WHERE discord_id = '121212121'")!.id, o = one("SELECT id FROM users WHERE discord_id = '343434343'")!.id;
   const add = (uid: number, reason: string) => run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms) VALUES(?,?,1,'shared','gemini-3-flash','/v1/chat/completions',400,'client',?,1)`, Date.now(), uid, reason);
   add(a, 'MINE-预填充'); add(o, 'OTHER-SECRET');
   const ctx = chatContext('121212121');
@@ -255,7 +255,7 @@ test('bot chat site context: rules, the asker\'s own accounts with masked emails
   const { siteContext } = await import('../src/botchat.ts');
   const cpa = await import('../src/cpa.ts');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('565656565', 'owner2', 'owner2', 'user', 0)");
-  const uid = one("SELECT id FROM users WHERE discord_id = '565656565'").id;
+  const uid = one("SELECT id FROM users WHERE discord_id = '565656565'")!.id;
   run("INSERT INTO accounts(auth_id, email, owner_id, shared, created_at) VALUES('own2.json', 'longname@gmail.com', ?, 0, 0)", uid);
   run("INSERT INTO announcements(title, body, created_at, updated_at) VALUES('输入上限上线', '个人中心可以设', ?, ?)", now(), now());
   const real = globalThis.fetch;
@@ -350,7 +350,7 @@ test('bot chat remember: only admins can write into the knowledge base', async (
   assert.match(await runTool('remember', { title: 't', content: 'x' }, 1, false), /只有站长/);
   const r = await runTool('remember', { title: '新渠道', content: '大锅饭今晚 10 点维护' }, 1, true);
   const id = Number(/#(\d+)/.exec(r)?.[1]);
-  const doc = one('SELECT title, body, source FROM kb_docs WHERE id = ?', id);
+  const doc = one('SELECT title, body, source FROM kb_docs WHERE id = ?', id)!;
   assert.equal(doc.title, '记忆 · 新渠道');
   assert.equal(doc.body, '大锅饭今晚 10 点维护');
   assert.equal(doc.source, 'discord');
@@ -413,7 +413,7 @@ test('usage watch: 小锅饭 quota / cooldown failures never make an error-strea
   const { watchUsage } = await import('../src/bot.ts');
   setSetting('bot_channel_id', 'chan'); setSetting('discord_bot_token', 'bot-token');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('555666888', 'quotaed', 'quotaed', 'user', 0)");
-  const uid = one("SELECT id FROM users WHERE discord_id = '555666888'").id;
+  const uid = one("SELECT id FROM users WHERE discord_id = '555666888'")!.id;
   const add = (ago: number, pool: string, result: string, status: number) =>
     run(`INSERT INTO usage(ts, user_id, key_id, pool, model, path, status, result, reason, latency_ms) VALUES(?,?,1,?,'gemini-3-flash','/v1/chat/completions',?,?,NULL,1)`, Date.now() - ago, uid, pool, status, result);
   const posts: string[] = [];
@@ -462,7 +462,7 @@ test('bot boards never name the admins or show their own usage; site totals stil
   const { leaderboard } = await import('../src/bot.ts');
   const { chatContext } = await import('../src/botchat.ts');
   run("INSERT INTO users(discord_id, name, handle, role, created_at) VALUES('777000111', 'bossman', 'bossman', 'admin', 0)");
-  const id = one("SELECT id FROM users WHERE discord_id = '777000111'").id;
+  const id = one("SELECT id FROM users WHERE discord_id = '777000111'")!.id;
   run(`INSERT INTO usage(ts, user_id, key_id, pool, auth_id, model, path, status, result, total_tok, latency_ms)
     VALUES(?,?,1,'shared','acc-own','boss-model','/v1/chat/completions',200,'ok',99000000,1)`, Date.now() - 1000, id);
   const board = leaderboard(Date.now() - 86400e3, Date.now() + 1, 'x'), ctx = chatContext('nobody');

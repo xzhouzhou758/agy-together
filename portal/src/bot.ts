@@ -297,17 +297,17 @@ export async function watchUsage(): Promise<void> {
     const ping = (text: string) => post(text, realId(u.discord_id) ? [u.discord_id] : []);
     const times = (n: number) => (n > 1 ? `（这一分钟 ${n} 次）` : '');
     // refused by the 大锅饭 input cap
-    const cap = one(`SELECT COUNT(*) AS n, MAX(in_est) AS m FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%'`, u.user_id, from, to);
+    const cap = one(`SELECT COUNT(*) AS n, MAX(in_est) AS m FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%'`, u.user_id, from, to)!;
     if (Number(cap?.n)) await ping(`🛑 ${at} 你在大锅饭里的请求输入有 **${wan(Number(cap.m))} Token**，超过了大锅饭的输入上限 **${wan(getRules().sharedInput)}**，已被拦下${times(Number(cap.n))}。\n-# 检查一下聊天记录 / 预设是不是太长，或改用小锅饭`);
     // any other request with a huge input
     const big = one(`SELECT COUNT(*) AS n, MAX(COALESCE(in_tok, in_est)) AS m, model FROM usage WHERE user_id = ? AND ts >= ? AND ts < ? AND COALESCE(in_tok, in_est) >= ?
-      AND NOT (pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%')`, u.user_id, from, to, BIG_INPUT);
+      AND NOT (pool = 'shared' AND result = 'input_limit' AND reason LIKE '%大锅饭的输入上限%')`, u.user_id, from, to, BIG_INPUT)!;
     if (Number(big?.n)) await ping(`📏 ${at} 你刚才的请求输入有 **${wan(Number(big.m))} Token**${big.model ? `（${big.model}）` : ''}${times(Number(big.n))}，上下文可能爆了。\n-# 检查一下聊天记录 / 预设是不是太长；可以在「个人中心 → 输入上限」设个上限，超了直接拦下不扣额度`);
     // the newest requests all failed (client disconnects and 小锅饭 quota don't count): told at 3, then again every 3 more
     // 小锅饭 running out of quota (429, then "你的账号暂时都不可用" while they cool down) is the owner's own accounts
     // doing what they should: not counted, and it doesn't break a streak either
     const last = all(`SELECT id, result, status, reason FROM usage WHERE user_id = ? AND ts < ? AND status != 499
-      AND NOT (pool = 'private' AND result IN ('quota', 'no_account')) ORDER BY ts DESC, id DESC LIMIT 300`, u.user_id, to);
+      AND NOT (pool IN ('private', 'aistudio') AND result IN ('quota', 'no_account')) ORDER BY ts DESC, id DESC LIMIT 300`, u.user_id, to);
     const streak: any[] = [];
     for (const r of last) { if (r.result === 'ok') break; streak.push(r); }
     if (streak.length < STREAK) continue;
@@ -325,7 +325,7 @@ export async function watchUsage(): Promise<void> {
 // ---------- leaderboard ----------
 export function leaderboard(since: number, until: number, title: string): string {
   const w = 'u.ts >= ? AND u.ts < ?', wu = `${w} AND ${notAdmin('u.')}`;   // wu: boards naming a user leave the admins out
-  const tot = one(`SELECT COUNT(*) AS n, SUM(u.result = 'ok') AS ok, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users FROM usage u WHERE ${w}`, since, until);
+  const tot = one(`SELECT COUNT(*) AS n, SUM(u.result = 'ok') AS ok, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users FROM usage u WHERE ${w}`, since, until)!;
   if (!Number(tot?.n)) return `${title}\n这段时间还没有人用 😴`;
   const top = (sql: string, ...a: any[]) => one(sql, since, until, ...a);
   const byUser = (extra: string, order = 'tok') => top(`SELECT us.name, us.discord_id, COUNT(*) AS n, SUM(${TOK}) AS tok FROM usage u JOIN users us ON us.id = u.user_id WHERE ${wu} ${extra} GROUP BY u.user_id ORDER BY ${order} DESC LIMIT 1`);
@@ -358,7 +358,7 @@ async function dailyTick(): Promise<void> {
 }
 /** 全站历史总用量 */
 export function allTimeLine(): string {
-  const t = one(`SELECT COUNT(*) AS n, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users, MIN(u.ts) AS first FROM usage u WHERE u.result = 'ok'`);
+  const t = one(`SELECT COUNT(*) AS n, SUM(${TOK}) AS tok, COUNT(DISTINCT u.user_id) AS users, MIN(u.ts) AS first FROM usage u WHERE u.result = 'ok'`)!;
   if (!Number(t?.n)) return '';
   const f = new Date(Number(t.first));
   return `📦 **全站累计**（${f.getFullYear()}.${f.getMonth() + 1}.${f.getDate()} 起）· **${Number(t.n).toLocaleString()}** 次成功请求 · **${tk(t.tok)}** Token · ${t.users} 人用过`;
@@ -382,7 +382,7 @@ export function myAccounts(discordId: string, c: cpa.Creds): string {
     const p = accountProblem(r, cred);
     const retry = cred.nextRetryAfter && Date.parse(cred.nextRetryAfter) > Date.now() ? cred.nextRetryAfter : null;
     const state = cred.disabled ? '⏸️ 已停用' : p ? `⚠️ ${p.label}` : retry || cred.unavailable ? '🧊 冷却中' : '✅ 正常';
-    const today = one(`SELECT COUNT(*) AS n, SUM(user_id != owner_id OR user_id IS NULL) AS others FROM usage WHERE auth_id = ? AND ts >= ?`, r.auth_id, since);
+    const today = one(`SELECT COUNT(*) AS n, SUM(user_id != owner_id OR user_id IS NULL) AS others FROM usage WHERE auth_id = ? AND ts >= ?`, r.auth_id, since)!;
     out.push(`\n**${cred.email || r.email}** ${r.shared ? '· 🍲 大锅饭' : '· 🔒 小锅饭'}\n${state}${p ? ` — ${p.hint}` : ''}`);
     const q = storedQuota(r);
     if (q?.windows?.length) {

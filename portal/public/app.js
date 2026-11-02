@@ -37,6 +37,7 @@ const ICONS={
   info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   play:'<path d="M6 4l14 8-14 8z"/>',
+  spark:'<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z"/><path d="M19 3v4M17 5h4"/>',
   pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
 };
 const DISCORD='<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.32 4.37a19.8 19.8 0 0 0-4.89-1.52.07.07 0 0 0-.08.04c-.21.38-.44.87-.6 1.25a18.3 18.3 0 0 0-5.49 0 12.6 12.6 0 0 0-.62-1.25.08.08 0 0 0-.08-.04 19.7 19.7 0 0 0-4.88 1.52.07.07 0 0 0-.03.03C.53 9.05-.32 13.58.1 18.06a.08.08 0 0 0 .03.05 19.9 19.9 0 0 0 5.99 3.03.08.08 0 0 0 .09-.03c.46-.63.87-1.3 1.22-1.99a.08.08 0 0 0-.04-.1 13.1 13.1 0 0 1-1.87-.9.08.08 0 0 1-.01-.12l.37-.3a.07.07 0 0 1 .08-.01c3.93 1.8 8.18 1.8 12.06 0a.07.07 0 0 1 .08 0l.37.3a.08.08 0 0 1 0 .13c-.6.35-1.22.65-1.88.9a.08.08 0 0 0-.04.1c.36.7.77 1.36 1.23 1.99a.08.08 0 0 0 .08.03 19.8 19.8 0 0 0 6-3.03.08.08 0 0 0 .03-.05c.5-5.18-.84-9.68-3.55-13.66a.06.06 0 0 0-.03-.03ZM8.02 15.33c-1.18 0-2.16-1.08-2.16-2.42 0-1.33.96-2.42 2.16-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.96 2.42-2.16 2.42Zm7.97 0c-1.18 0-2.15-1.08-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.94 2.42-2.16 2.42Z"/></svg>';
@@ -46,8 +47,8 @@ const ic=n=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]||'
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const POOL={private:'小锅饭',shared:'大锅饭'};
-const poolTag=p=>`<span class="pool ${p}">${ic(p==='private'?'lock':'users')}${POOL[p]}</span>`;
+const POOL={private:'小锅饭',shared:'大锅饭',aistudio:'AI Studio'};
+const poolTag=p=>`<span class="pool ${p}">${ic(p==='private'?'lock':p==='aistudio'?'spark':'users')}${POOL[p]}</span>`;
 const level=q=>q>=40?'':q>=15?'mid':'low';
 const pad=n=>String(n).padStart(2,'0');
 function hms(ts){const d=new Date(ts);return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;}
@@ -80,7 +81,7 @@ async function api(method,path,body,raw){
   const r=await fetch(path,opt);
   let d=null;try{d=await r.json();}catch(e){}
   if(r.status===401&&path!=='api/me'){me=null;render();}
-  if(!r.ok){const e=new Error(d?.error||('http_'+r.status));e.code=d?.error;e.status=r.status;throw e;}
+  if(!r.ok){const e=new Error(d?.error||('http_'+r.status));e.code=d?.error;e.detail=d?.message;e.status=r.status;throw e;}
   return d;
 }
 const fail=e=>toast(errText(e),true);
@@ -88,6 +89,7 @@ function errText(e){
   const m={duplicate:'账号已存在',proxy_in_use:'出口已被占用',invalid_proxy:'代理地址无效',too_soon:'刷新太频繁',too_many_keys:'密钥数量已达上限',
     callback_rejected:'回调地址无效',state_mismatch:'回调地址与授权链接不匹配',invalid_callback:'回调地址无效',too_many_pending:'进行中的授权太多',
     cpa_unreachable:'后端暂时不可用',invalid_zip:'ZIP 无法读取',empty_zip:'ZIP 里没有 JSON',csrf:'请求被拒绝',forbidden:'没有权限',invalid_url:'链接需以 http:// 或 https:// 开头',invalid_shops:'链接太多',invalid_channel_id:'频道 ID 应为数字',invalid_public_key:'Public Key 应为 64 位十六进制',invalid_daily_hour:'日报时间无效',bad_token:'Bot Token 无效',endpoint_rejected:'Discord 没有接受这个地址，确认站点地址能从外网打开',no_public_url:'先在「Discord 登录」里填站点地址',bot_post_failed:'发送失败：确认机器人能在这个频道发言',discord_api:'Discord 暂时无法连接'};
+  if(String(e?.code||'').startsWith('aistudio_')&&e.detail)return e.detail;
   return m[e?.code]||m[e?.message]||ERR[e?.code]||ERR[e?.message]||'操作失败';
 }
 
@@ -129,9 +131,10 @@ const stateChip=a=>{const [k,t,r]=accState(a);return `<span class="chip ${k}"${r
 function head(title,actions=''){return `<div class="head"><div><h1>${title}</h1></div>${actions?`<div class="hstack">${actions}</div>`:''}</div>`;}
 function empty(icon,title,action=''){return `<div class="empty"><div class="bubble">${ic(icon)}</div><h2>${title}</h2>${action}</div>`;}
 function poolPicker(name,selected){
-  return `<div class="pools" role="radiogroup" aria-label="账号池">
+  return `<div class="pools ${cfg.aistudio?'three':''}" role="radiogroup" aria-label="账号池">
     <label class="pool-opt"><input type="radio" name="${name}" value="private" ${selected==='private'?'checked':''}><span class="box"><b>${ic('lock')} 小锅饭</b><small>只用自己的账号</small></span></label>
     <label class="pool-opt"><input type="radio" name="${name}" value="shared" ${selected==='shared'?'checked':''}><span class="box"><b>${ic('users')} 大锅饭</b><small>用朋友共享的账号</small></span></label>
+    ${cfg.aistudio&&!name.startsWith('default')?`<label class="pool-opt"><input type="radio" name="${name}" value="aistudio" ${selected==='aistudio'?'checked':''}><span class="box"><b>${ic('spark')} AI Studio</b></span></label>`:''}
   </div>`;
 }
 const reserveText=v=>v?v+'%':'不保留';
@@ -143,6 +146,7 @@ const PAGES=[
   ['home','home','概览','概览'],
   ['accounts','key','我的凭证','凭证'],
   ['pool','pot','大锅饭 / 小锅饭','锅饭'],
+  ['aistudio','spark','AI Studio','Studio'],
   ['keys','terminal','API 密钥','密钥'],
   ['logs','activity','流量日志','日志'],
   ['stats','chart','Token 统计','统计'],
@@ -150,13 +154,14 @@ const PAGES=[
   ['users','users','用户管理','用户'],
   ['admin','shield','管理员后台','管理'],
 ];
-const navPages=()=>PAGES.filter(p=>(p[0]!=='admin'&&p[0]!=='users')||me?.role==='admin');
+const navPages=()=>PAGES.filter(p=>p[0]==='aistudio'?!!cfg.aistudio:(p[0]!=='admin'&&p[0]!=='users')||me?.role==='admin');
 
 const LOADERS={
   home:async()=>{D.ov=await api('GET','api/overview');},
   accounts:async()=>{[D.accounts,D.rules]=await Promise.all([api('GET','api/accounts'),api('GET','api/rules')]);},
   pool:async()=>{[D.pool,D.rules,D.res]=await Promise.all([api('GET','api/pool/summary'),api('GET','api/rules'),api('GET','api/pool/resources').catch(()=>null)]);},
   keys:async()=>{D.keys=await api('GET','api/keys');},
+  aistudio:async()=>{D.ais=await api('GET','api/aistudio');},
   logs:async()=>{
     if(ui.logView==='mine')D.traffic=await api('GET','api/traffic?'+trafficQS());
     else D.contrib=await api('GET','api/usage/contributions');
@@ -167,7 +172,7 @@ const LOADERS={
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),stock:await api('GET','api/admin/stock').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true}))};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,ais:cfg.aistudio?await api('GET','api/admin/aistudio').catch(()=>[]):[],bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),stock:await api('GET','api/admin/stock').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true}))};
   },
 };
 
@@ -426,6 +431,7 @@ function pageKeys(){
       <div class="seg" role="radiogroup" aria-label="${esc(k.name)} 使用的账号池">
         <label><input type="radio" name="kp-${k.id}" value="private" data-key="${k.id}" ${k.pool==='private'?'checked':''}><span>小锅饭</span></label>
         <label><input type="radio" name="kp-${k.id}" value="shared" data-key="${k.id}" ${k.pool==='shared'?'checked':''}><span>大锅饭</span></label>
+        ${cfg.aistudio||k.pool==='aistudio'?`<label><input type="radio" name="kp-${k.id}" value="aistudio" data-key="${k.id}" ${k.pool==='aistudio'?'checked':''}><span>AI Studio</span></label>`:''}
       </div>
       <div class="hstack"><button class="btn sm ghost" data-act="copykey:${k.id}" ${k.key?'':'disabled'}>${ic('copy')}复制</button><button class="btn sm" data-act="connect:${k.id}">接入</button><button class="btn sm ghost danger" data-act="revoke:${k.id}" aria-label="撤销 ${esc(k.name)}">${ic('trash')}</button></div>
     </div>`).join(''):empty('terminal','还没有密钥',`<button class="btn primary" data-act="newkey">${ic('plus')}创建密钥</button>`);
@@ -435,11 +441,44 @@ function pageKeys(){
   <section class="card glass"><div class="card-head"><h2>我的密钥</h2></div>${list}</section>`;
 }
 
+/* AI Studio */
+const AIS_SCRIPT='https://github.com/Lianues/aistudio-pg-bridge/raw/main/1-tampermonkey-cookie-grabber/aistudio-cookie-grabber.user.js';
+const aisState=a=>a.status==='valid'?dotChip('good','有效'):`<span class="chip bad"${a.error?` title="${esc(a.error)}"`:''}><span class="dot"></span>失效</span>`;
+function pageAistudio(){
+  const L=D.ais||[];
+  const list=L.length?`<div class="tbl ais">${L.map(a=>`<div class="tr">
+      <span class="mono">${esc(a.id)}</span>
+      <span>${a.tier?`<span class="chip">${esc(a.tier)}</span>`:''}</span>
+      <span>${aisState(a)}</span>
+      <span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span>
+      <span class="num-r hstack" style="justify-content:flex-end">${a.status==='valid'?`<button class="btn sm" data-act="aischeck:${esc(a.id)}">重新检测</button>`:''}<button class="btn sm ghost danger" data-act="aisdel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span>
+    </div>`).join('')}</div>`:empty('spark','还没有号');
+  return head('AI Studio')+
+  `<section class="card glass"><div class="card-head"><h2>上传 Cookie</h2></div>
+    <textarea class="input mono" id="f-ais" rows="5" autocomplete="off" spellcheck="false" aria-label="Cookie"></textarea>
+    <div class="mt"><button class="btn primary" data-act="aisup">${ic('upload')}提交</button></div></section>
+  <section class="card glass"><div class="card-head"><h2>我的号</h2></div>${list}</section>
+  ${fold('aishow','怎么获取 Cookie','',`<ol class="ais-steps">
+    <li>安装 Tampermonkey 或 脚本猫（暴力猴不行，读不到关键 Cookie）</li>
+    <li>Tampermonkey 设置 → 配置模式切到「高级」→ 安全 → 「脚本 Cookie 访问权限」改为 All</li>
+    <li>Chrome 138+：在扩展详情页打开「允许用户脚本」</li>
+    <li>安装脚本：<a href="${AIS_SCRIPT}" target="_blank" rel="noopener">aistudio-cookie-grabber.user.js</a></li>
+    <li>打开 <a href="https://aistudio.google.com/" target="_blank" rel="noopener">https://aistudio.google.com/</a> ，点右下角「📋 复制 WAA Cookie 到剪切板」</li>
+    <li>回到这里粘贴提交</li>
+  </ol>`,false)}`;
+}
+function aisAdmin(L){
+  if(!cfg.aistudio)return '';
+  return fold('aisadmin','AI Studio 号',cnt(L.length),`
+    ${L.length?`<div class="tbl ais-admin">${L.map(a=>`<div class="tr"><span class="mono">${esc(a.id)}</span><span>${esc(a.owner||'—')}</span><span>${aisState(a)}</span><span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span><span class="num-r"><button class="btn sm ghost danger" data-act="aisadel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>`:''}
+    <div class="mt"><button class="btn sm" data-act="aisall">${ic('refresh')}全部检测</button></div>`,false);
+}
+
 /* 流量日志 */
 function trafficQS(){const t=ui.tr,p=new URLSearchParams({page:t.page,size:t.size});
   if(t.q)p.set('q',t.q);if(t.account)p.set('account',t.account);if(t.user)p.set('user',t.user);if(t.family)p.set('family',t.family);if(t.pool)p.set('pool',t.pool);if(t.err)p.set('errorsOnly','1');return p.toString();}
 const CHIPS=[['all','全部'],['f:claude','claude'],['f:gemini','gemini'],['f:flash','flash'],['f:pro','pro'],['f:image','绘图'],['err','仅错误'],['p:private','小锅饭'],['p:shared','大锅饭']];
-function trChips(){const t=ui.tr;return CHIPS.map(([k,l])=>{
+function trChips(){const t=ui.tr;return CHIPS.concat(cfg.aistudio?[['p:aistudio','AI Studio']]:[]).map(([k,l])=>{
   const on=k==='all'?!t.family&&!t.pool&&!t.err:k==='err'?t.err:k.startsWith('f:')?t.family===k.slice(2):t.pool===k.slice(2);
   return `<button type="button" class="fchip ${k.startsWith('p:')?k.slice(2):''}" aria-pressed="${on}" data-act="trchip:${k}">${l}</button>`;}).join('');}
 function trTotals(){const T=D.traffic;return `<span>Total <b>${T.total.toLocaleString()}</b></span><span>OK <b class="good-t">${T.ok.toLocaleString()}</b></span><span>Error <b class="bad-t">${T.error.toLocaleString()}</b></span>`;}
@@ -476,7 +515,7 @@ document.addEventListener('mouseover',e=>{const b=e.target.closest?.('.tk-i');if
 document.addEventListener('mouseout',e=>{if(e.target.closest?.('.tk-i'))hideTokPop(false);});
 addEventListener('scroll',()=>hideTokPop(true),true);
 function trRes(r){const ok=r.result==='ok';return `<span class="res-line">${stPill(r)}<span class="sbadge ${r.stream?'':'plain'}">${r.stream?'流式':'非流'}</span>${r.attempts>1?`<span class="sbadge warn" title="上游共尝试 ${r.attempts} 次">retry ×${r.attempts-1}</span>`:''}</span>${ok?'':`<span class="sub res-why" title="${esc(r.reason||'')}">${esc(r.reason||'')}</span>`}`;}
-const poolXs=p=>`<span class="pxs ${p}">${p==='shared'?'大锅饭':'小锅饭'}</span>`;
+const poolXs=p=>`<span class="pxs ${p}">${POOL[p]||'小锅饭'}</span>`;
 function trTable(){
   const T=D.traffic,adm=T.admin;
   if(!T.rows.length)return empty('activity','没有记录');
@@ -639,6 +678,7 @@ function pageAdmin(){
   ${A.retry?fold('retry','上游重试',`<span class="fold-sum">${A.retry.requestRetry} 轮 · 最多等 ${A.retry.maxRetryInterval}s</span>`,`
     <div class="rule"><div><h3>重试轮数 / 每轮最多换号</h3><p>在 CLIProxyAPI 配置里改</p></div><div class="val mono">${A.retry.requestRetry} 轮 · ${A.retry.maxRetryCredentials||'不限'} 个</div></div>
     <div class="rule"><div><h3>最大等待时长</h3><p>名单内的号都在冷却时，最多等这么久再重试；0 = 不等</p></div><div class="hstack"><input class="input" type="number" min="0" max="300" data-retry="maxWait" value="${A.retry.maxRetryInterval}" aria-label="最大等待时长"><small>秒</small></div></div>`,false):''}
+  ${aisAdmin(A.ais||[])}
   ${fold('proxies','专属出口',cnt(A.proxies.length),`
     <div class="tbl proxies">${A.proxies.map(p=>`<div class="tr"><span class="mono">${esc(p.url)}</span><span class="mono faint">${esc(A.accounts.find(a=>a.id===p.account)?.email||p.account||'—')}</span><span class="num-r"><button class="btn sm ghost danger" data-act="delproxy:${p.id}" ${p.account?'disabled':''} aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>
     <div class="hstack mt"><input class="input mono" id="f-proxy" placeholder="socks5://user:pass@host:port" autocomplete="off" spellcheck="false" style="flex:1"><button class="btn" data-act="addproxy">${ic('plus')}添加</button></div>`,false)}
@@ -890,7 +930,7 @@ function render(){
   const root=$('#root');
   if(!me){root.innerHTML=loginView();return;}
   if(!navPages().some(p=>p[0]===page))page='home';
-  const views={home:pageHome,accounts:pageAccounts,pool:pagePool,keys:pageKeys,logs:pageLogs,stats:pageStats,profile:pageProfile,users:pageUsers,admin:pageAdmin};
+  const views={home:pageHome,accounts:pageAccounts,pool:pagePool,aistudio:pageAistudio,keys:pageKeys,logs:pageLogs,stats:pageStats,profile:pageProfile,users:pageUsers,admin:pageAdmin};
   let main;
   if(loadState==='loading')main=pageLoading();
   else if(loadState==='error')main=pageError();
@@ -1268,6 +1308,15 @@ document.addEventListener('click',act(async e=>{
     case 'share':shareDialog(arg);break;
     case 'confirmshare':{const x=D.accounts.find(y=>y.id===arg);const b={shared:!x.shared};if(!x.shared)b.reserve=pickedReserve();const v=await api('PATCH','api/accounts/'+encodeURIComponent(arg),b);
       keepAcc(v);closeDialog();render();toast(v.shared?`“${accName(v)}”已放进大锅饭`:`已撤回“${accName(v)}”的共享`);break;}
+    case 'aisup':{const v=$('#f-ais').value.trim();if(!v)break;el.disabled=true;
+      try{await api('POST','api/aistudio',{cookies:v});$('#f-ais').value='';toast('已添加');await reload();}finally{el.disabled=false;}break;}
+    case 'aischeck':{el.disabled=true;try{const r=await api('POST','api/aistudio/'+encodeURIComponent(arg)+'/check');
+      toast(r.state==='alive'?'有效':r.state==='dead'?'已失效':'暂时无法检测，请稍后再试',r.state!=='alive');await reload();}finally{el.disabled=false;}break;}
+    case 'aisdel':case 'aisadel':
+      openDialog('删除',esc(arg),'',`<button class="btn" data-act="close">取消</button><button class="btn primary" style="background:var(--bad)" data-act="do${a}:${esc(arg)}">删除</button>`);break;
+    case 'doaisdel':await api('DELETE','api/aistudio/'+encodeURIComponent(arg));closeDialog();toast('已删除');reload();break;
+    case 'doaisadel':await api('DELETE','api/admin/aistudio/'+encodeURIComponent(arg));closeDialog();toast('已删除');reload();break;
+    case 'aisall':{el.disabled=true;try{const r=await api('POST','api/admin/aistudio/recheck');toast(`检测了 ${r.checked} 个，失效 ${r.dead} 个`);await reload();}finally{el.disabled=false;}break;}
     case 'newkey':newKeyDialog(arg);break;
     case 'createkey':{
       const pool=$('input[name=newKeyPool]:checked')?.value||'private';

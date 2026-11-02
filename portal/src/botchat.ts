@@ -62,7 +62,7 @@ export function chatContext(discordId: string): string {
   if (!u) parts.push('提问的人还没登录过小锅饭，查不到他的请求。');
   else {
     const rows = all(`SELECT ts, pool, model, status, result, reason, COALESCE(in_tok, in_est) AS inp FROM usage WHERE user_id = ? ORDER BY ts DESC LIMIT 15`, u.id);
-    const fmt = (r: any) => `${new Date(r.ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} ${r.pool === 'shared' ? '大锅饭' : '小锅饭'} ${r.model} → ${r.result} ${r.status}${r.reason ? ' ' + r.reason : ''}${r.inp ? ` 输入≈${r.inp}` : ''}`;
+    const fmt = (r: any) => `${new Date(r.ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} ${r.pool === 'shared' ? '大锅饭' : r.pool === 'aistudio' ? 'AI Studio' : '小锅饭'} ${r.model} → ${r.result} ${r.status}${r.reason ? ' ' + r.reason : ''}${r.inp ? ` 输入≈${r.inp}` : ''}`;
     parts.push(`提问的人：${u.name}。他最近 ${rows.length} 次请求（新的在前）：\n${rows.map(fmt).join('\n') || '（没有）'}`);
   }
   parts.push('（各个榜单和按人排行里没有站长本人；有人问站长自己用了多少，就说站长的个人用量不公开。全站总数里含站长。）');

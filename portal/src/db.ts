@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  pool TEXT NOT NULL CHECK (pool IN ('private','shared')),
+  pool TEXT NOT NULL CHECK (pool IN ('private','shared','aistudio')),
   key_hash TEXT NOT NULL UNIQUE,
   tail TEXT NOT NULL,
   created_at INTEGER NOT NULL,
@@ -189,6 +189,43 @@ addCol('upstreams', 'models_allow', 'TEXT'); // JSON array of model ids this ups
 // Per-user account rotation: stickiness mode and the salt mixed into session keys.
 addCol('users', 'rotation_mode', 'TEXT');
 addCol('users', 'session_salt', 'TEXT');
+
+// AI Studio pool: api_keys.pool may also be 'aistudio'. Older databases have CHECK (pool IN ('private','shared'))
+// baked into the table, which SQLite cannot alter: rebuild the table once with the same columns and rows.
+{
+  const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_keys'").get() as { sql: string } | undefined;
+  if (t && !t.sql.includes("'aistudio'")) {
+    const sql = t.sql.replace(/CHECK\s*\(\s*pool\s+IN\s*\(\s*'private'\s*,\s*'shared'\s*\)\s*\)/i, "CHECK (pool IN ('private','shared','aistudio'))");
+    if (sql === t.sql) throw new Error('api_keys: unexpected schema, cannot add the aistudio pool');
+    const cols = (db.prepare("SELECT name FROM pragma_table_info('api_keys')").all() as { name: string }[]).map((c) => `"${c.name}"`).join(', ');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(sql.replace(/^CREATE TABLE\s+("?)api_keys\1/i, 'CREATE TABLE api_keys_new'));
+      db.exec(`INSERT INTO api_keys_new(${cols}) SELECT ${cols} FROM api_keys`);
+      db.exec('DROP TABLE api_keys');
+      db.exec('ALTER TABLE api_keys_new RENAME TO api_keys');
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+}
+// AI Studio accounts uploaded by users. The cookies live only in the relay; the portal keeps who owns which
+// relay account id and whether it still works. status: valid | dead. in_relay = 0 once removed from the relay.
+db.exec(`CREATE TABLE IF NOT EXISTS aistudio_accounts (
+  account_id TEXT PRIMARY KEY,
+  owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tier TEXT,
+  label TEXT,
+  status TEXT NOT NULL DEFAULT 'valid',
+  in_relay INTEGER NOT NULL DEFAULT 1,
+  last_checked_at INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)`);
+db.exec('CREATE INDEX IF NOT EXISTS aistudio_owner ON aistudio_accounts(owner_id, status)');
 
 export type Row = Record<string, any>;
 

@@ -1,0 +1,17 @@
+services:
+  aistudio-relay:
+    build: .
+    image: aistudio-relay:local
+    container_name: aistudio-relay
+    network_mode: host
+    env_file: ./relay.env
+    environment:
+      RELAY_HOST: 127.0.0.1
+      RELAY_PORT: "18802"
+    volumes:
+      - ./cookies:/app/cookies
+    mem_limit: 192m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

@@ -18,6 +18,7 @@ import { initSetup, setupDone } from './site.ts';
 import { handleInteraction, startBot } from './bot.ts';
 import { startAutoDisable } from './autodisable.ts';
 import { startAutoSleep } from './autosleep.ts';
+import { startAIStudioRecheck } from './aistudio.ts';
 import * as cpa from './cpa.ts';
 
 const errs = validateConfig();
@@ -104,6 +105,7 @@ server.listen(config.port, config.host, () => {
   startBotChat();
   startAutoDisable();
   startAutoSleep();
+  startAIStudioRecheck();
   startRestartLog();
   startStockWatch();
   cpa.refreshCreds().catch((e) => console.error('[cpa] initial credential list failed:', e.message));

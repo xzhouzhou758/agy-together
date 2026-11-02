@@ -53,6 +53,11 @@ export const config = {
   roleRecheckMinutes: int('ROLE_RECHECK_MINUTES', 30),
   adminDiscordIDs: new Set(list('ADMIN_DISCORD_IDS')),
 
+  // AI Studio relay (aistudio-pg-bridge relay-client-gateway). Empty key = the AI Studio pool is off.
+  aistudioRelayURL: str('AISTUDIO_RELAY_URL', 'http://127.0.0.1:18802').replace(/\/+$/, ''),
+  aistudioRelayKey: str('AISTUDIO_RELAY_KEY'),
+  aistudioRecheckMinutes: int('AISTUDIO_RECHECK_MINUTES', 60), // 0 = off
+
   devLogin: bool('DEV_LOGIN', false),
 
   maxBodyBytes: int('MAX_BODY_MB', 50) * 1024 * 1024,

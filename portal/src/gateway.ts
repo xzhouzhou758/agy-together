@@ -1,6 +1,7 @@
 // The gateway: portal key -> allowed CPA auth IDs -> X-Agy-Allow -> CPA, streaming-safe,
 // with a post-pick check of X-CPA-TRACE-ID and a circuit breaker.
 import { estimateInput, wan } from './inputsize.ts';
+import https from 'node:https';
 import http, { type IncomingMessage, type ServerResponse, type IncomingHttpHeaders } from 'node:http';
 import { config } from './config.ts';
 import { one, all, run, now, getRules, getSetting, setSetting } from './db.ts';
@@ -12,6 +13,7 @@ import { explainUnavailable, sendGatewayError, type Why } from './reason.ts';
 import { dailyFor, secondsToMidnight, sharedModels, sharedAllows } from './limits.ts';
 import { upstreamsFor, upstreamRequest, usageSniffer, upAuthId, enabledUpstreams, openModels, type Upstream, type Tok } from './upstream.ts';
 import { wakeFor } from './autosleep.ts';
+import { aistudioOn, eligible as aistudioEligible, NOT_ELIGIBLE } from './aistudio.ts';
 
 
 // ---------- live counters ----------
@@ -92,9 +94,9 @@ function modelFrom(path: string, body: Buffer, ct: string | undefined): { model:
   return { model: model.slice(0, 120), stream, json };
 }
 
-type Ctx = { userId: number; keyId: number; pool: 'private' | 'shared'; model: string; path: string; stream: boolean; start: number; ttfb?: number | null; inEst?: number | null };
+type Ctx = { userId: number; keyId: number; pool: 'private' | 'shared' | 'aistudio'; model: string; path: string; stream: boolean; start: number; ttfb?: number | null; inEst?: number | null };
 
-type Extra = { authId: string; ownerId: number | null; tok: Tok };
+type Extra = { authId: string | null; ownerId: number | null; tok: Tok };
 function record(c: Ctx, f: { status: number; result: string; authId?: string | null; requestId?: string | null; reason?: string | null; x?: Extra }) {
   const authId = f.x ? f.x.authId : f.authId || null;
   const owner = f.x ? f.x.ownerId : authId ? one('SELECT owner_id FROM accounts WHERE auth_id = ?', authId)?.owner_id ?? null : null;
@@ -105,6 +107,17 @@ function record(c: Ctx, f: { status: number; result: string; authId?: string | n
     c.start, c.userId, c.keyId, c.pool, authId, owner, c.model, c.model || null, c.path.slice(0, 120), f.status, f.result, f.reason ? f.reason.slice(0, 200) : null,
     now() - c.start, c.stream ? 1 : 0, f.requestId || null, c.ttfb ?? null,
     has ? t!.in : null, has ? t!.out : null, has ? t!.think : null, has ? t!.cache : null, has ? t!.cacheWrite : null, has ? t!.in + t!.out : null, c.inEst ?? null);
+}
+
+/** 输入上限 (the user's own setting, every key). */
+function userInputCap(ctx: Ctx): Why | null {
+  const cap = Number(one('SELECT input_limit FROM users WHERE id = ?', ctx.userId)?.input_limit || 0);
+  const est = ctx.inEst || 0;
+  if (cap > 0 && est > cap) {
+    return { status: 400, result: 'input_limit',
+      message: `输入过限：这次输入约 ${wan(est)} Token，超过了你设置的上限 ${wan(cap)}。请检查上下文是不是爆了；确实需要的话到「个人中心」调高或关闭上限` };
+  }
+  return null;
 }
 
 /** Per-user rotation mode and session salt (the salt is created on first use). */
@@ -214,7 +227,7 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   if (!raw) return fail(401, 'invalid_api_key', '缺少 API Key');
   const key = one(`SELECT k.*, u.active AS user_active FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = ? AND k.revoked_at IS NULL`, sha256(raw));
   if (!key || !key.user_active) return fail(401, 'invalid_api_key', 'API Key 无效或已撤销');
-  const pool = key.pool as 'private' | 'shared';
+  const pool = key.pool as 'private' | 'shared' | 'aistudio';
 
   let body: Buffer;
   try {
@@ -232,6 +245,9 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     fail(w.status, code, w.message, w.retryAfter);
   };
 
+  // AI Studio keys go straight to the relay: no CPA, no allow list, no breaker
+  if (pool === 'aistudio') return goAIStudio(req, res, method, P, body, ctx, refuse);
+
   if (breaker.tripped) {
     if (isGen) record(ctx, { status: 503, result: 'blocked', reason: '网关已熔断' });
     return fail(503, 'gateway_locked', '网关因安全检查暂停服务，请联系管理员');
@@ -243,12 +259,8 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
 
   // 输入上限 (the user's own setting, every key): stop a runaway context before it reaches an account
   if (isGen && json) {
-    const cap = Number(one('SELECT input_limit FROM users WHERE id = ?', key.user_id)?.input_limit || 0);
-    const est = ctx.inEst || 0;
-    if (cap > 0 && est > cap) {
-      return refuse({ status: 400, result: 'input_limit',
-        message: `输入过限：这次输入约 ${wan(est)} Token，超过了你设置的上限 ${wan(cap)}。请检查上下文是不是爆了；确实需要的话到「个人中心」调高或关闭上限` }, 'input_limit_exceeded');
-    }
+    const w = userInputCap(ctx);
+    if (w) return refuse(w, 'input_limit_exceeded');
   }
 
   // 大锅饭 input cap (admin rule): same refusal, its own reason so the bot can @ the caller
@@ -531,3 +543,75 @@ setInterval(() => {
   const cut = now() - 300000;
   for (const [k, v] of recentAllowed) if (v.ts < cut) recentAllowed.delete(k);
 }, 60000).unref();
+
+// ---------- AI Studio pool: plain reverse proxy to the relay ----------
+function openAIError(res: ServerResponse, status: number, code: string, message: string) {
+  if (res.headersSent) return res.destroy();
+  const b = JSON.stringify({ error: { message, type: code, code } });
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(b) });
+  res.end(b);
+}
+function goAIStudio(req: IncomingMessage, res: ServerResponse, method: string, P: string, body: Buffer, ctx: Ctx, refuse: (w: Why, code: string) => void) {
+  const chat = method === 'POST' && P === '/v1/chat/completions';
+  const list = method === 'GET' && (P === '/v1/models' || P === '/v1/models/');
+  if (!chat && !list) return openAIError(res, 404, 'unsupported_endpoint', 'AI Studio 池只支持 /v1/chat/completions');
+  if (!aistudioOn()) {
+    if (chat) record(ctx, { status: 503, result: 'blocked', reason: 'AI Studio 池未开启' });
+    return openAIError(res, 503, 'aistudio_disabled', 'AI Studio 池未开启');
+  }
+  if (!aistudioEligible(ctx.userId)) {
+    if (chat) record(ctx, { status: 403, result: 'no_account', reason: NOT_ELIGIBLE });
+    return openAIError(res, 403, 'no_available_account', NOT_ELIGIBLE);
+  }
+  if (chat) {
+    const w = userInputCap(ctx);
+    if (w) return refuse(w, 'input_limit_exceeded');
+  }
+  const headers = forwardHeaders(req.headers);
+  headers['authorization'] = 'Bearer ' + config.aistudioRelayKey;
+  if (body.length) headers['content-length'] = String(body.length);
+  const t = new URL(config.aistudioRelayURL);
+  const tls = t.protocol === 'https:';
+  const up = (tls ? https : http).request({ host: t.hostname, port: t.port || (tls ? 443 : 80), method, path: t.pathname.replace(/\/+$/, '') + P, headers });
+  let finished = false;
+  const sn = usageSniffer();
+  const errBuf: Buffer[] = [];
+  let errSize = 0;
+  const finish = (status: number, result: string, reason?: string | null) => {
+    if (finished) return;
+    finished = true;
+    if (chat) record(ctx, { status, result, reason, x: { authId: null, ownerId: null, tok: sn.done() } });
+  };
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      up.destroy();
+      finish(499, 'client', '客户端断开');
+    }
+  });
+  up.on('error', () => {
+    if (finished) return;
+    if (!res.headersSent) openAIError(res, 502, 'upstream_error', 'AI Studio 中转不可达');
+    else res.destroy();
+    finish(502, 'upstream', 'AI Studio 中转不可达');
+  });
+  up.on('response', (ur) => {
+    const status = ur.statusCode || 502;
+    const tHead = now() - ctx.start;
+    const out: Record<string, string | string[]> = {};
+    for (const [k, v] of Object.entries(ur.headers)) if (v !== undefined && !RESP_DROP.has(k.toLowerCase())) out[k] = v;
+    res.writeHead(status, out);
+    ur.once('data', () => { ctx.ttfb ??= now() - ctx.start; });
+    ur.on('data', (c: Buffer) => {
+      if (status < 300) sn.feed(c);
+      else if (errSize < 65536) { errBuf.push(c); errSize += c.length; }
+    });
+    ur.pipe(res);
+    ur.on('end', () => {
+      ctx.ttfb ??= tHead;
+      if (status < 300) return finish(status, 'ok');
+      finish(status, status === 429 ? 'quota' : status < 500 ? 'client' : 'upstream', `AI Studio 返回 ${status}：${errMessage(Buffer.concat(errBuf).toString('utf8'))}`);
+    });
+    ur.on('error', () => { res.destroy(); finish(502, 'upstream', 'AI Studio 连接中断'); });
+  });
+  up.end(body);
+}

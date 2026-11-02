@@ -13,9 +13,9 @@
 
 ```
 agy-pot/
-├── src/            后端（main / api / gateway / auth / cpa / quota / usage / site / db / zip / routing / reason）
+├── src/            后端（main / api / gateway / aistudio / auth / cpa / quota / usage / site / db / zip / routing / reason）
 ├── public/         前端（index.html、app.css、app.js、theme.js、setup.html、setup.js）
-├── test/           本地测试：mock-cpa.ts + portal.test.ts + routing.test.ts（npm test）
+├── test/           本地测试：mock-cpa.ts + mock-relay.ts + portal.test.ts + aistudio.test.ts + routing.test.ts 等（npm test）
 ├── deploy/         docker-compose.yml（门户）、cpa-docker-compose.yml（CPA）、portal.env.example
 └── Dockerfile
 ```
@@ -58,6 +58,9 @@ agy-pot/
 | `SESSION_DAYS` | `14` | 登录有效期 |
 | `USAGE_RETENTION_DAYS` | `90` | 记录保留天数 |
 | `MAX_BODY_MB` | `50` | 单个请求体上限 |
+| `AISTUDIO_RELAY_URL` | `http://127.0.0.1:18802` | AI Studio 中转（aistudio-pg-bridge `2-relay-client-gateway`）地址 |
+| `AISTUDIO_RELAY_KEY` | 空 | 中转的 `RELAY_API_KEY`；**为空时整个 AI Studio 功能隐藏**（无侧栏入口、无密钥选项、网关拒绝） |
+| `AISTUDIO_RECHECK_MINUTES` | `60` | 后台按顺序逐个检测有效 AI Studio 号的间隔；0 关闭 |
 | `DEV_LOGIN` | 关 | **仅测试**：免 Discord 登录。绑定非回环地址时拒绝启动 |
 
 ## 首次初始化（/setup）
@@ -123,3 +126,15 @@ CPA 的 429 和「无可用号」类错误会先被网关读完（错误体很�
 
 
 部署见仓库根目录的 `README.md` 和 `install.sh`。
+
+## AI Studio 池（2026-11-02）
+
+第三个池，和小锅饭 / 大锅饭并列。上游是 AI Studio 中转（aistudio-pg-bridge `2-relay-client-gateway`，默认 127.0.0.1:18802），把 AI Studio 网页 Cookie 变成 OpenAI 兼容接口。中转自己会轮流用它手里的所有号、从不自己剔除坏号，所以**门户说了算**：只有门户认为有效的号留在中转里。
+
+- **侧栏「AI Studio」**（`AISTUDIO_RELAY_KEY` 非空时才出现）：粘贴油猴脚本导出的 Cookie（JSON / Cookie 串 / cURL 都行）→ 提交；「我的号」列表显示账号 ID（中转按 Cookie 算出的哈希，不是机密）、等级、有效 / 失效、上次检测时间、重新检测、删除；「怎么获取 Cookie」教程默认折叠。
+- **上传**：门户调中转 `/api/accounts/add` 再 `/api/accounts/test`。有效 → 记为这个用户的号；无效 → 立刻从中转删掉，提示无效，不保留；同一个账号 ID 已属于别人 → 拒绝（「这个号已经被别人上传过」）；自己重复上传 → 刷新 Cookie 并重新检测。检测结果说不清（证明服务器 / 网络 / 5xx）时提示稍后再试。**门户数据库不存 Cookie**，只存账号 ID、主人、等级、状态、上次检测时间、简短错误、创建时间（表 `aistudio_accounts`）。
+- **复检**：每 `AISTUDIO_RECHECK_MINUTES` 分钟逐个（不并发）检测有效号。确定失效 → 标「失效」并从中转删除；证明服务器故障、网络错误、超时、5xx → 不改状态。失效的号仍留在主人列表里（提示重新上传），但已不在中转。复检时还会补删之前没删成功的号，并删掉中转里门户不认识或不认为有效的号。管理员后台「AI Studio 号」可看全部号、删除任意号、立即全部检测。
+- **资格**：名下至少有 1 个有效号才能用 AI Studio 池；否则 AI Studio 密钥返回 403「你在 AI Studio 池里没有有效的号，上传一个有效 Cookie 后即可使用」。每个请求现查，重新上传有效号立即恢复。
+- **密钥**：新建 / 修改密钥时多一个「AI Studio」池。网关把这类密钥**直接**转给中转（不经 CPA、不写 `X-Agy-Allow`、不做 trace 核对、不受熔断影响）：`GET /v1/models`、`POST /v1/chat/completions`（流式原样透传，不缓冲）；其它路径一律 404（OpenAI 错误格式）。客户端的凭证 / 转发类请求头照常删掉，换成中转的 Key。记账：每个请求一行（pool = `aistudio`，账号为空），非流式和流式最后一块里有 `usage` 时记 token；不存内容。暂无池级限速；用户自己的「输入上限」照常生效。
+- **接口**：`GET/POST /api/aistudio`、`POST /api/aistudio/:id/check`、`DELETE /api/aistudio/:id`；管理员 `GET /api/admin/aistudio`、`DELETE /api/admin/aistudio/:id`、`POST /api/admin/aistudio/recheck`。`/api/config` 多一个 `aistudio` 布尔值。
+- **数据库**：新表 `aistudio_accounts`；`api_keys.pool` 的 CHECK 约束加上 `'aistudio'`（旧库启动时按原列原样重建一次 `api_keys` 表，在一个事务里完成）。
