@@ -482,9 +482,9 @@ function trTable(){
   if(!T.rows.length)return empty('activity','没有记录');
   const from=(T.page-1)*T.size+1,to=from+T.rows.length-1,pages=Math.max(1,Math.ceil(T.total/T.size));
   return `<div class="tbl traffic"><div class="tr th"><span>Time</span><span>Status</span><span>Model</span><span class="c-user">${adm?'User / Key':'Key'}</span><span class="c-acc">Account</span><span class="num-r">Tokens</span><span class="num-r">Latency</span></div>
-  ${T.rows.map(r=>{const time=Date.now()-r.ts>86400000?mdhm(r.ts):hms(r.ts),slow=r.latency>=30000;
+  ${T.rows.map(r=>{const d=new Date(r.ts),md=`${pad(d.getMonth()+1)}-${pad(d.getDate())}`,time=`${md} ${hms(r.ts)}`,slow=r.latency>=30000;
     return `<div class="tr ${r.result==='ok'?'':'bad-row'} ${me.role==='admin'?'click':''}" ${me.role==='admin'?`data-act="trlog:${r.id}" role="button" tabindex="0" aria-label="查看报文"`:''}>
-    <span class="mono c-time">${time}</span>
+    <span class="mono c-time">${hms(r.ts)}<span class="sub">${md}</span></span>
     <span class="c-res">${trRes(r)}</span>
     <span class="c-model">${trModel(r)}</span>
     <span class="c-user">${adm?`${esc(r.user||'—')}<span class="sub">${esc(r.key||'—')}</span>`:esc(r.key||'—')}</span>
@@ -495,7 +495,7 @@ function trTable(){
   </div>`;}).join('')}</div>
   <div class="pager tr-pager"><small class="faint">${from}–${to} / ${T.total.toLocaleString()}</small>
     <select class="select inline" data-trsize aria-label="每页条数">${[50,100].map(n=>`<option value="${n}" ${T.size===n?'selected':''}>${n} / page</option>`).join('')}</select>
-    <button class="btn sm ghost" data-act="trpg:${T.page-1}" ${T.page<=1?'disabled':''} aria-label="上一页">‹</button><span class="mono faint">${T.page} / ${pages}</span><button class="btn sm ghost" data-act="trpg:${T.page+1}" ${T.page>=pages?'disabled':''} aria-label="下一页">›</button></div>`;
+    <button class="btn sm ghost" data-act="trpg:${T.page-1}" ${T.page<=1?'disabled':''} aria-label="上一页">‹</button><span class="pg-jump mono faint"><input class="input sm mono" type="number" min="1" max="${pages}" value="${T.page}" data-trpage aria-label="跳到第几页"> / ${pages}</span><button class="btn sm ghost" data-act="trpg:${T.page+1}" ${T.page>=pages?'disabled':''} aria-label="下一页">›</button></div>`;
 }
 function pageTraffic(){
   const T=D.traffic,t=ui.tr;
@@ -1400,6 +1400,7 @@ document.addEventListener('change',act(async e=>{
   else if(t.dataset.rule){const v=Math.max(+t.min||0,Math.min(+t.max||1e9,Math.round(+t.value||0)));t.value=v;D.admin.rules=await api('PUT','api/admin/rules',{[t.dataset.rule]:v});toast('规则已更新');}
   else if(t.dataset.proxy!==undefined){await api('PATCH','api/admin/accounts/'+encodeURIComponent(t.dataset.proxy),{proxyId:t.value?+t.value:null});toast(t.value?'专属出口已绑定':'专属出口已解绑');reload();}
   else if(t.dataset.note!==undefined){const v=await api('PATCH','api/accounts/'+encodeURIComponent(t.dataset.note),{name:t.value.trim()});keepAcc(v);render();toast('备注已保存');}
+  else if(t.matches('[data-trpage]')){const n=Math.round(+t.value)||1;ui.tr.page=Math.max(1,Math.min(+t.max||1,n));await refreshTraffic();}
   else if(t.dataset.trf){ui.tr[t.dataset.trf]=t.value;ui.tr.page=1;await refreshTraffic();}
   else if(t.dataset.trsize!==undefined){ui.tr.size=+t.value;ui.tr.page=1;await refreshTraffic();}
 }));

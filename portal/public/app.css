@@ -497,6 +497,10 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .traffic .tr>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .traffic .tr .sub{font-size:10.5px;margin-top:1px}
 .traffic .c-time{color:var(--faint);font-size:11px;padding-top:2px}
+.traffic .c-time .sub{display:block}
+.pg-jump{display:inline-flex;align-items:center;gap:6px}
+.pg-jump .input{width:58px;height:28px;padding:0 6px;text-align:center;-moz-appearance:textfield}
+.pg-jump .input::-webkit-inner-spin-button,.pg-jump .input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 .traffic .res-line{display:flex;align-items:center;gap:4px}
 .traffic .res-why{color:var(--warn);white-space:nowrap}
 .traffic .bad-row .res-why{color:var(--bad)}
