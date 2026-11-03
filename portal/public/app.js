@@ -161,7 +161,7 @@ const LOADERS={
   accounts:async()=>{[D.accounts,D.rules]=await Promise.all([api('GET','api/accounts'),api('GET','api/rules')]);},
   pool:async()=>{[D.pool,D.rules,D.res]=await Promise.all([api('GET','api/pool/summary'),api('GET','api/rules'),api('GET','api/pool/resources').catch(()=>null)]);},
   keys:async()=>{D.keys=await api('GET','api/keys');},
-  aistudio:async()=>{D.ais=await api('GET','api/aistudio');},
+  aistudio:async()=>{D.ais=await api('GET','api/aistudio');D.aisAll=me?.role==='admin'?await api('GET','api/admin/aistudio').catch(()=>[]):null;},
   logs:async()=>{
     if(ui.logView==='mine')D.traffic=await api('GET','api/traffic?'+trafficQS());
     else D.contrib=await api('GET','api/usage/contributions');
@@ -459,6 +459,7 @@ function pageAistudio(){
     <textarea class="input mono" id="f-ais" rows="5" autocomplete="off" spellcheck="false" aria-label="Cookie"></textarea>
     <div class="mt"><button class="btn primary" data-act="aisup">${ic('upload')}提交</button></div></section>
   <section class="card glass"><div class="card-head"><h2>我的号</h2></div>${list}</section>
+  ${aisUsers(D.aisAll)}
   ${fold('aishow','怎么获取 Cookie','',`<ol class="ais-steps">
     <li>安装 Tampermonkey 或 脚本猫（暴力猴不行，读不到关键 Cookie）</li>
     <li>Tampermonkey 设置 → 配置模式切到「高级」→ 安全 → 「脚本 Cookie 访问权限」改为 All</li>
@@ -467,6 +468,17 @@ function pageAistudio(){
     <li>打开 <a href="https://aistudio.google.com/" target="_blank" rel="noopener">https://aistudio.google.com/</a> ，点右下角「📋 复制 WAA Cookie 到剪切板」</li>
     <li>回到这里粘贴提交</li>
   </ol>`,false)}`;
+}
+function aisUsers(L){
+  if(!L)return '';
+  const by=new Map();
+  for(const a of L){const k=a.ownerId;if(!by.has(k))by.set(k,{name:a.owner||'—',valid:0,shared:0,dead:0});const u=by.get(k);
+    if(a.status==='valid'){u.valid++;if(a.shared)u.shared++;}else u.dead++;}
+  const R=[...by.values()].sort((x,y)=>y.valid-x.valid||y.shared-x.shared||x.name.localeCompare(y.name));
+  const T=R.reduce((t,u)=>({valid:t.valid+u.valid,shared:t.shared+u.shared,dead:t.dead+u.dead}),{valid:0,shared:0,dead:0});
+  return `<section class="card glass"><div class="card-head"><h2>所有人</h2>${cnt(R.length)}</div>${R.length?`<div class="tbl ais-users"><div class="tr th"><span>用户</span><span class="num-r">有效</span><span class="num-r">共享</span><span class="num-r">失效</span></div>
+    ${R.map(u=>`<div class="tr"><span>${esc(u.name)}</span><span class="num-r">${u.valid}</span><span class="num-r">${u.shared}</span><span class="num-r faint">${u.dead}</span></div>`).join('')}
+    <div class="tr th"><span>合计</span><span class="num-r">${T.valid}</span><span class="num-r">${T.shared}</span><span class="num-r">${T.dead}</span></div></div>`:empty('users','还没有人上传')}</section>`;
 }
 function aisAdmin(L){
   if(!cfg.aistudio)return '';

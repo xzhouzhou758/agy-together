@@ -413,6 +413,7 @@ pre.code{display:block;white-space:pre-wrap;margin:0;line-height:1.6}
 .proxies .tr{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 60px}
 .ais .tr{grid-template-columns:minmax(0,1.4fr) 76px 76px 90px auto auto}
 .ais-admin .tr{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 76px 60px 90px 60px}
+.ais-users .tr{grid-template-columns:minmax(0,1fr) 64px 64px 64px}
 .ais-steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:8px;font-size:14px;line-height:1.6}
 .ais-steps a{color:var(--accent);word-break:break-all}
 @media (max-width:760px){.kv{grid-template-columns:minmax(0,1fr)}}
