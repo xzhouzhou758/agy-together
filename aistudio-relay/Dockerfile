@@ -1,6 +1,6 @@
 # AI Studio relay: Lianues/aistudio-pg-bridge 2-relay-client-gateway, pinned commit.
 FROM node:24-alpine AS src
-ARG RELAY_COMMIT=4d450682e581654dc527a089ee7b14560127bc12
+ARG RELAY_COMMIT=2821bf9d9a0731ed233dcebcaf9bb76219aefb15
 RUN apk add --no-cache git && git clone https://github.com/Lianues/aistudio-pg-bridge /src && cd /src && git checkout "$RELAY_COMMIT"
 COPY relay-allow.patch /tmp/
 RUN cd /src && git apply /tmp/relay-allow.patch
