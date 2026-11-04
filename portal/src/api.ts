@@ -22,6 +22,7 @@ import { accountProblem, registerCommands, botStatus, connectInteractions, testM
 import { wakeFor } from './autosleep.ts';
 import { stockAdmin, setWatched } from './stock.ts';
 import * as aistudio from './aistudio.ts';
+import * as browser from './browser.ts';
 
 
 type Handler = (req: IncomingMessage, res: ServerResponse, p: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -127,6 +128,7 @@ route('GET', '/api/config', (req) => ({
   logo: HAS_LOGO,
   signedIn: !!currentUser(req),
   aistudio: aistudio.aistudioOn(),
+  browserEnabled: browser.browserOn(),
 }));
 
 route('POST', '/api/login', async (req, res) => {
@@ -692,6 +694,13 @@ route('POST', '/api/aistudio/:id/share', async (req, _res, p) => {
 });
 route('POST', '/api/aistudio/:id/check', async (req, _res, p) => aistudio.recheck(requireUser(req).id, p.id));
 route('DELETE', '/api/aistudio/:id', async (req, _res, p) => aistudio.remove(requireUser(req).id, p.id));
+// ---------- shared remote browser ----------
+route('GET', '/api/browser', (req) => browser.viewFor(requireUser(req).id));
+route('POST', '/api/browser/join', async (req) => browser.join(requireUser(req).id));
+route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req).id));
+route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });
+route('POST', '/api/admin/browser/kick', async (req) => { requireAdmin(req); return browser.kick(); });
+
 route('GET', '/api/admin/aistudio', (req) => { requireAdmin(req); return aistudio.aistudioOn() ? aistudio.listAll() : []; });
 route('POST', '/api/admin/aistudio/recheck', async (req) => { requireAdmin(req); aiOn(); return aistudio.sweep(); });
 route('DELETE', '/api/admin/aistudio/:id', async (req, _res, p) => aistudio.remove(requireAdmin(req).id, p.id, true));

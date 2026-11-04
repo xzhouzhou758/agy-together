@@ -58,6 +58,12 @@ export const config = {
   aistudioRelayKey: str('AISTUDIO_RELAY_KEY'),
   aistudioRecheckMinutes: int('AISTUDIO_RECHECK_MINUTES', 60), // 0 = off
 
+  // Shared remote browser (ops/browserd.py on the host). Empty token = the feature is hidden.
+  browserdURL: str('BROWSERD_URL', 'http://127.0.0.1:8330').replace(/\/+$/, ''),
+  browserdToken: str('BROWSERD_TOKEN'),
+  browserUpstream: str('BROWSER_UPSTREAM', 'http://127.0.0.1:3010').replace(/\/+$/, ''),
+  browserSessionMinutes: int('BROWSER_SESSION_MINUTES', 15),
+
   devLogin: bool('DEV_LOGIN', false),
 
   maxBodyBytes: int('MAX_BODY_MB', 50) * 1024 * 1024,
