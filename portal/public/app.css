@@ -624,7 +624,7 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .ac-raw .mono{font-size:inherit}
 .ac-fix{margin-top:8px}
 .ac-alert .ac-fix .i{width:14px;height:14px;margin-top:0}
-.fix{display:inline-flex;align-items:center;gap:4px}
+.fix{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px}
 a.btn{text-decoration:none}
 .cdl{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink)}
 .cdl li{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:8px;align-items:baseline}

@@ -122,7 +122,7 @@ function cdList(a){
 }
 function fixBtns(a){
   if(!a.action?.url)return '';
-  return `<span class="fix"><a class="btn sm primary" href="${esc(a.action.url)}" target="_blank" rel="noopener noreferrer">${ic('ext')}${ACT[a.action.kind]||ACT.verify}</a><button class="btn sm ghost icon" data-act="copyurl:${esc(a.id)}" aria-label="复制链接" title="复制链接">${ic('copy')}</button></span>`;
+  return `<span class="fix"><a class="btn sm primary" href="${esc(a.action.url)}" target="_blank" rel="noopener noreferrer">${ic('ext')}${ACT[a.action.kind]||ACT.verify}</a>${cfg.browserEnabled&&D.accounts?.some(x=>x.id===a.id)?`<button class="btn sm" data-act="bropen:${esc(a.id)}">${ic('window')}用内置浏览器打开</button>`:''}<button class="btn sm ghost icon" data-act="copyurl:${esc(a.id)}" aria-label="复制链接" title="复制链接">${ic('copy')}</button></span>`;
 }
 function accIssue(a){
   const p=a.problem,[k,t]=accState(a),cd=cdList(a),fix=fixBtns(a);
@@ -1297,6 +1297,7 @@ document.addEventListener('click',act(async e=>{
   switch(a){
     case 'goto':go(arg);break;
     case 'brjoin':brSet(await api('POST','api/browser/join'));render();break;
+    case 'bropen':brSet(await api('POST','api/browser/open',{id:arg}));go('browser');break;
     case 'brleave':brSet(await api('POST','api/browser/leave'));render();break;
     case 'brkick':await api('POST','api/admin/browser/kick');D.admin.br=await api('GET','api/admin/browser');toast('已踢出');render();break;
     case 'close':closeDialog();break;
