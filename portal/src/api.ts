@@ -23,6 +23,7 @@ import * as site from './site.ts';
 import { accountProblem, registerCommands, botStatus, connectInteractions, testMessage, postAnnouncement } from './bot.ts';
 import { wakeFor } from './autosleep.ts';
 import { stockAdmin, setWatched } from './stock.ts';
+import * as aistudio from './aistudio.ts';
 import * as browser from './browser.ts';
 
 
@@ -111,6 +112,7 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
     quotaAt: row.quota_at || null,
     quotaErr: row.quota_err || null,
     problem: accountProblem(row, cred),
+    autoOff: row.auto_disabled_at ? { at: Number(row.auto_disabled_at), reason: String(row.auto_disabled_reason || '') } : null, // autodisable.ts: when and Google's own words
     action: actionOf(row), // Google's verify / appeal link from the last 403 (cleared once the account works)
   };
 }
@@ -118,6 +120,7 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
 /** Anonymous label for an account in another user's shared-pool records. */
 function anonLabel(authId: string): string {
   if (isUp(authId)) return upName(authId);
+  if (aistudio.isAIS(authId)) return aistudio.aisAnon(authId);
   const r = one('SELECT rowid AS n FROM accounts WHERE auth_id = ?', authId);
   return '#' + String(r?.n || 0).padStart(2, '0');
 }
@@ -131,6 +134,7 @@ route('GET', '/api/config', (req) => ({
   setup: !site.setupDone(),
   logo: HAS_LOGO,
   signedIn: !!currentUser(req),
+  aistudio: aistudio.aistudioOn(),
   browserEnabled: browser.browserOn(),
 }));
 
@@ -290,13 +294,6 @@ route('PUT', '/api/admin/switches', async (req) => {
   return switches();
 });
 // 补货监控: the shop's items (cached; refresh=1 fetches them now) and the ticked ones
-// ---------- shared remote browser ----------
-route('GET', '/api/browser', (req) => browser.viewFor(requireUser(req).id));
-route('POST', '/api/browser/join', async (req) => browser.join(requireUser(req).id));
-route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req).id));
-route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });
-route('POST', '/api/admin/browser/kick', async (req) => { requireAdmin(req); return browser.kick(); });
-
 route('GET', '/api/admin/stock', async (req, _res, _p, url) => {
   requireAdmin(req);
   try { return await stockAdmin(url.searchParams.get('refresh') === '1'); } catch (e) { throw new HttpError(502, 'shop_unreachable: ' + (e as Error).message); }
@@ -651,6 +648,7 @@ route('POST', '/api/accounts/refresh-token', async (req) => {
 function keyView(k: Row) {
   return { id: k.id, name: k.name, pool: k.pool, tail: k.tail, key: unseal(k.key_enc), created: k.created_at, lastUsed: k.last_used_at };
 }
+const keyPool = (p: unknown) => (p === 'private' || p === 'shared' || (p === 'aistudio' && aistudio.aistudioOn()) ? p : null);
 route('GET', '/api/keys', (req) => {
   const u = requireUser(req);
   return all('SELECT * FROM api_keys WHERE user_id = ? AND revoked_at IS NULL ORDER BY id', u.id).map(keyView);
@@ -658,7 +656,7 @@ route('GET', '/api/keys', (req) => {
 route('POST', '/api/keys', async (req) => {
   const u = requireUser(req);
   const b = await readJSON(req);
-  const pool = b.pool === 'shared' ? 'shared' : b.pool === 'private' ? 'private' : null;
+  const pool = keyPool(b.pool);
   if (!pool) throw new HttpError(400, 'invalid_pool');
   if ((one('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ? AND revoked_at IS NULL', u.id)?.n || 0) >= 20) throw new HttpError(400, 'too_many_keys');
   const plain = 'sk-agy-' + token(30);
@@ -673,7 +671,7 @@ route('PATCH', '/api/keys/:id', async (req, _res, p) => {
   const b = await readJSON(req);
   if (b.name !== undefined) run('UPDATE api_keys SET name = ? WHERE id = ?', str(b.name, 40) || k.name, k.id);
   if (b.pool !== undefined) {
-    if (b.pool !== 'private' && b.pool !== 'shared') throw new HttpError(400, 'invalid_pool');
+    if (!keyPool(b.pool)) throw new HttpError(400, 'invalid_pool');
     run('UPDATE api_keys SET pool = ? WHERE id = ?', b.pool, k.id);
   }
   return keyView(one('SELECT * FROM api_keys WHERE id = ?', k.id)!);
@@ -685,12 +683,42 @@ route('DELETE', '/api/keys/:id', (req, _res, p) => {
   return { ok: true };
 });
 
+// ---------- AI Studio pool ----------
+const aiOn = () => { if (!aistudio.aistudioOn()) throw new HttpError(404, 'not_found'); };
+route('GET', '/api/aistudio', (req) => { const u = requireUser(req); aiOn(); return aistudio.listFor(u.id); });
+route('POST', '/api/aistudio', async (req) => {
+  const u = requireUser(req);
+  aiOn();
+  const b = await readJSON(req, 256 * 1024);
+  if (typeof b.cookies !== 'string') throw new HttpError(400, 'aistudio_cookie', '请粘贴 Cookie');
+  return aistudio.upload(u.id, b.cookies, b.shared !== false);
+});
+route('POST', '/api/aistudio/:id/share', async (req, _res, p) => {
+  const u = requireUser(req);
+  aiOn();
+  const b = await readJSON(req, 4096);
+  if (typeof b.shared !== 'boolean') throw new HttpError(400, 'invalid_request');
+  return aistudio.setShared(u.id, p.id, b.shared);
+});
+route('POST', '/api/aistudio/:id/check', async (req, _res, p) => aistudio.recheck(requireUser(req).id, p.id));
+route('DELETE', '/api/aistudio/:id', async (req, _res, p) => aistudio.remove(requireUser(req).id, p.id));
+// ---------- shared remote browser ----------
+route('GET', '/api/browser', (req) => browser.viewFor(requireUser(req).id));
+route('POST', '/api/browser/join', async (req) => browser.join(requireUser(req).id));
+route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req).id));
+route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });
+route('POST', '/api/admin/browser/kick', async (req) => { requireAdmin(req); return browser.kick(); });
+
+route('GET', '/api/admin/aistudio', (req) => { requireAdmin(req); return aistudio.aistudioOn() ? aistudio.listAll() : []; });
+route('POST', '/api/admin/aistudio/recheck', async (req) => { requireAdmin(req); aiOn(); return aistudio.sweep(); });
+route('DELETE', '/api/admin/aistudio/:id', async (req, _res, p) => aistudio.remove(requireAdmin(req).id, p.id, true));
+
 // ---------- usage ----------
 route('GET', '/api/usage/requests', async (req, _res, _p, url) => {
   const u = requireUser(req);
   const pool = url.searchParams.get('pool');
   const limit = clampInt(url.searchParams.get('limit') || 100, 1, 500);
-  const rows = pool === 'private' || pool === 'shared'
+  const rows = pool === 'private' || pool === 'shared' || pool === 'aistudio'
     ? all('SELECT * FROM usage WHERE user_id = ? AND pool = ? ORDER BY ts DESC LIMIT ?', u.id, pool, limit)
     : all('SELECT * FROM usage WHERE user_id = ? ORDER BY ts DESC LIMIT ?', u.id, limit);
   const c = await cpa.creds(30000);
@@ -698,7 +726,7 @@ route('GET', '/api/usage/requests', async (req, _res, _p, url) => {
     let account: string | null = null;
     if (r.auth_id) {
       // Own accounts by note; anyone else's account only as an anonymous number. Never an email.
-      account = r.owner_id === u.id ? c.byId.get(r.auth_id)?.note || '' : anonLabel(r.auth_id);
+      account = r.owner_id === u.id ? (aistudio.isAIS(r.auth_id) ? r.auth_id : c.byId.get(r.auth_id)?.note || '') : anonLabel(r.auth_id);
     }
     return { ts: r.ts, model: r.model, pool: r.pool, account, own: r.owner_id === u.id, result: r.result, status: r.status, latency: r.latency_ms, tokens: r.total_tok };
   });
@@ -741,11 +769,11 @@ async function traffic(u: User, url: URL) {
   const acc = (sp.get('account') || '').trim();
   if (acc) {
     // a non-admin may only filter by an account they own
-    if (!admin && !one('SELECT 1 FROM accounts WHERE auth_id = ? AND owner_id = ?', acc, u.id)) where.push('0');
+    if (!admin && !one('SELECT 1 FROM accounts WHERE auth_id = ? AND owner_id = ?', acc, u.id) && !one('SELECT 1 FROM aistudio_accounts WHERE account_id = ? AND owner_id = ?', acc, u.id)) where.push('0');
     else { where.push('u.auth_id = ?'); args.push(acc); }
   }
   const pool = sp.get('pool');
-  if (pool === 'private' || pool === 'shared') { where.push('u.pool = ?'); args.push(pool); }
+  if (pool === 'private' || pool === 'shared' || pool === 'aistudio') { where.push('u.pool = ?'); args.push(pool); }
   if (sp.get('errorsOnly') === '1' || sp.get('errorsOnly') === 'true') where.push(`u.result != 'ok'`);
   const fam = FAMILY[sp.get('family') || ''];
   if (fam) { where.push(`(lower(u.model) LIKE ? OR lower(COALESCE(u.upstream_model, '')) LIKE ?)`); args.push(fam, fam); }
@@ -763,7 +791,7 @@ async function traffic(u: User, url: URL) {
     LEFT JOIN api_keys k ON k.id = u.key_id LEFT JOIN users us ON us.id = u.user_id
     ${w} ORDER BY u.ts DESC, u.id DESC LIMIT ? OFFSET ?`, ...args, size, (page - 1) * size);
   const c = await cpa.creds(30000);
-  const email = (id: string) => (isUp(id) ? upName(id) : c.byId.get(id)?.email || one('SELECT email FROM accounts WHERE auth_id = ?', id)?.email || '');
+  const email = (id: string) => (isUp(id) ? upName(id) : aistudio.isAIS(id) ? id : c.byId.get(id)?.email || one('SELECT email FROM accounts WHERE auth_id = ?', id)?.email || '');
   const list = rows.map((r) => {
     let account: string | null = null, accountId: string | null = null;
     if (r.auth_id) {
@@ -777,7 +805,7 @@ async function traffic(u: User, url: URL) {
       user: admin ? r.user_name || null : undefined, key: r.key_name || null,
       account, accountId, own: r.owner_id === u.id,
       in: r.in_tok, out: r.out_tok, think: r.reasoning_tok, cache: r.cache_tok, cacheWrite: r.cache_write_tok, total: r.total_tok,
-      attempts: r.attempts ?? null, upstreamStatus: r.upstream_status ?? null, reason: reasonText(r),
+      attempts: r.attempts ?? null, upstreamStatus: r.upstream_status ?? null, reason: reasonText(r as any),
       latency: r.latency_ms, ttfb: r.cpa_ttft_ms ?? r.ttfb_ms, upLatency: r.cpa_latency_ms ?? null,
     };
   });
