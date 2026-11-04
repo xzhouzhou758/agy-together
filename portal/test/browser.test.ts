@@ -10,10 +10,14 @@ import type { AddressInfo } from 'node:net';
 
 const TOKEN = 'browserd-test-token';
 const calls: string[] = [];
+const bodies: any[] = [];
 let failStarts = 0;
-const helperSrv = http.createServer((req, res) => {
+const helperSrv = http.createServer(async (req, res) => {
   if (req.headers.authorization !== 'Bearer ' + TOKEN) return res.writeHead(401).end();
   calls.push(req.method + ' ' + req.url);
+  let raw = '';
+  for await (const c of req) raw += c;
+  bodies.push(raw ? JSON.parse(raw) : null);
   if (req.url === '/start' && failStarts > 0) {
     failStarts--;
     return res.writeHead(500, { 'Content-Type': 'application/json' }).end('{"error":"boom"}');
@@ -42,8 +46,8 @@ let T = 1_000_000;
 const cookies: Record<string, string> = {};
 const ids: Record<string, number> = {};
 
-async function call(who: string, method: string, path: string) {
-  const r = await fetch(base + path, { method, headers: { cookie: cookies[who] || '', 'X-Portal-CSRF': '1' } });
+async function call(who: string, method: string, path: string, body?: unknown) {
+  const r = await fetch(base + path, { method, headers: { cookie: cookies[who] || '', 'X-Portal-CSRF': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let data: any = text;
   try { data = JSON.parse(text); } catch {}
@@ -91,7 +95,7 @@ after(() => {
   portal.close(); helperSrv.close(); upSrv.close();
   rmSync(dataDir, { recursive: true, force: true });
 });
-beforeEach(() => { br.resetBrowser(); calls.length = 0; failStarts = 0; T += 3600e3; });
+beforeEach(() => { br.resetBrowser(); calls.length = 0; bodies.length = 0; failStarts = 0; T += 3600e3; });
 
 test('join starts a session; second user queues; leave hands the slot over', async () => {
   assert.equal((await state('alice')).state, 'idle');
@@ -201,4 +205,23 @@ test('proxy: only the holder gets through, cookies stripped, upgrades too', asyn
   const closed = new Promise((r) => ok.sock.on('close', r));
   await call('alice', 'POST', '/xgf/api/browser/leave'); // ending the session cuts the stream
   await closed;
+});
+
+test('open: only the caller\'s own stored link; queued -> browser starts on it, holding -> new tab', async () => {
+  const url = 'https://forms.gle/hGzM9MEUv2azZsrb9';
+  db.run('INSERT INTO accounts (auth_id, email, owner_id, created_at, action_url, action_kind) VALUES (?,?,?,?,?,?) ON CONFLICT(auth_id) DO NOTHING', 'al.json', 'al@x', ids.alice, Date.now(), url, 'appeal');
+  assert.equal((await call('bob', 'POST', '/xgf/api/browser/open', { id: 'al.json' })).status, 404); // not bob's
+  assert.equal((await call('alice', 'POST', '/xgf/api/browser/open', { id: 'nope' })).status, 404);
+  assert.equal((await call('alice', 'POST', '/xgf/api/browser/open', { id: 'al.json' })).status, 200);
+  await br.tick();
+  assert.equal((await state('alice')).state, 'active');
+  assert.deepEqual(calls, ['POST /start']);
+  assert.deepEqual(bodies[0], { url });
+  await call('alice', 'POST', '/xgf/api/browser/open', { id: 'al.json' });
+  assert.deepEqual(calls, ['POST /start', 'POST /open']);
+  assert.deepEqual(bodies[1], { url });
+  await call('bob', 'POST', '/xgf/api/browser/join'); // a plain join starts on the default page
+  await call('alice', 'POST', '/xgf/api/browser/leave');
+  await br.tick();
+  assert.equal(bodies.at(-1), null);
 });

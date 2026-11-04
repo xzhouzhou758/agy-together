@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -147,20 +148,52 @@ def wait_ready(timeout=60):
     return False
 
 
-def start():
+# Links the portal may open (Google's verify / appeal pages). Checked again here: the portal is not trusted blindly.
+ALLOWED_HOSTS = ("google.com", "googleapis.com")
+ALLOWED_EXACT = ("goo.gl", "forms.gle")
+START_URL = "https://accounts.google.com/"
+
+
+def safe_url(u):
+    if not isinstance(u, str) or not u or len(u) > 2048 or re.search(r"[\s\"'`\\$<>;|]", u):
+        return None
+    try:
+        p = urllib.parse.urlsplit(u)
+    except ValueError:
+        return None
+    h = (p.hostname or "").lower()
+    if p.scheme != "https" or p.username or p.password or p.port not in (None, 443):
+        return None
+    if h in ALLOWED_EXACT or any(h == d or h.endswith("." + d) for d in ALLOWED_HOSTS):
+        return u
+    return None
+
+
+def start(url=None):
     remove()
     ensure_network()
     apply_firewall()
     args = ["docker", "run", "-d", "--rm", "--name", NAME,
             "--network", NET, "-p", "127.0.0.1:3010:3000",
             "--shm-size=1g", "--memory=900m", "--memory-swap=1400m", "--cpus=2", "--pids-limit=512"]
-    for k, v in SELKIES_ENV.items():
+    env = dict(SELKIES_ENV, CHROME_CLI="--lang=zh-CN " + (safe_url(url) or START_URL))
+    for k, v in env.items():
         args += ["-e", f"{k}={v}"]
     args.append(IMAGE)
     run(args, check=True)
     if not wait_ready():
         remove()
         raise RuntimeError("browser did not come up in 60s")
+
+
+def open_url(url):
+    """New tab in the running browser: a second chromium hands the URL to the running one and exits."""
+    u = safe_url(url)
+    if not u:
+        raise ValueError("url not allowed")
+    if not running():
+        raise RuntimeError("browser not running")
+    run(["docker", "exec", "-d", "-u", "abc", "-e", "HOME=/config", "-e", "DISPLAY=:1", NAME, "wrapped-chromium", u], check=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -189,17 +222,31 @@ class Handler(BaseHTTPRequestHandler):
         with lock:
             self.reply(200, {"running": running()})
 
+    def body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if not 0 < n <= 8192:
+            return {}
+        try:
+            b = json.loads(self.rfile.read(n))
+            return b if isinstance(b, dict) else {}
+        except ValueError:
+            return {}
+
     def do_POST(self):
         if not self.authed():
             return
-        if self.path not in ("/start", "/stop"):
+        if self.path not in ("/start", "/stop", "/open"):
             return self.reply(404, {"error": "not_found"})
+        body = self.body()
         with lock:
             try:
                 if self.path == "/start":
                     log("start")
-                    start()
+                    start(body.get("url"))
                     log("started")
+                elif self.path == "/open":
+                    log("open")
+                    open_url(body.get("url"))
                 else:
                     log("stop")
                     remove()

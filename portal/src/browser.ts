@@ -20,7 +20,7 @@ const ACTIVE_GONE_MS = 90000;  // the holder not polling (and no live stream) fo
 const TICK_MS = 5000;
 
 type Active = { userId: number; startedAt: number; expiresAt: number; lastSeen: number };
-type Waiting = { userId: number; joinedAt: number; lastSeen: number; cancelled?: boolean };
+type Waiting = { userId: number; joinedAt: number; lastSeen: number; cancelled?: boolean; url?: string }; // url: open this page first
 
 let clock = () => Date.now();
 /** Tests drive time by hand. */
@@ -39,10 +39,11 @@ export function resetBrowser() {
   sockets.clear();
 }
 
-async function helper(path: '/start' | '/stop', timeoutMs: number): Promise<void> {
+async function helper(path: '/start' | '/stop' | '/open', timeoutMs: number, body?: { url?: string }): Promise<void> {
   const r = await fetch(config.browserdURL + path, {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + config.browserdToken },
+    headers: { Authorization: 'Bearer ' + config.browserdToken, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!r.ok) {
@@ -66,7 +67,7 @@ async function startNext() {
   const w = queue.shift()!;
   starting = w;
   try {
-    await helper('/start', 90000);
+    await helper('/start', 90000, w.url ? { url: w.url } : undefined);
   } catch (e) {
     starting = null;
     failures++;
@@ -149,15 +150,28 @@ function need() {
   if (!browserOn()) throw new HttpError(404, 'not_found');
 }
 
-export async function join(userId: number) {
+export async function join(userId: number, url?: string) {
   need();
-  const busy = active?.userId === userId || (starting?.userId === userId && !starting.cancelled) || queue.some((q) => q.userId === userId);
+  const waiting = queue.find((q) => q.userId === userId);
+  if (waiting && url) waiting.url = url;
+  const busy = active?.userId === userId || (starting?.userId === userId && !starting.cancelled) || !!waiting;
   if (!busy) {
     const t = clock();
-    queue.push({ userId, joinedAt: t, lastSeen: t });
+    queue.push({ userId, joinedAt: t, lastSeen: t, url });
     tick();
   }
   return viewFor(userId);
+}
+
+/** Open a page (a Google verify / appeal link the caller already checked) in the user's session: a new tab when
+ * they hold the browser, else they join the queue and the browser starts on that page. */
+export async function open(userId: number, url: string) {
+  need();
+  if (active?.userId === userId) {
+    await helper('/open', 30000, { url });
+    return viewFor(userId);
+  }
+  return join(userId, url);
 }
 
 export async function leave(userId: number) {

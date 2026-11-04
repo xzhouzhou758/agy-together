@@ -705,6 +705,15 @@ route('DELETE', '/api/aistudio/:id', async (req, _res, p) => aistudio.remove(req
 // ---------- shared remote browser ----------
 route('GET', '/api/browser', (req) => browser.viewFor(requireUser(req).id));
 route('POST', '/api/browser/join', async (req) => browser.join(requireUser(req).id));
+route('POST', '/api/browser/open', async (req) => {
+  // only the stored verify / appeal link of one of the caller's own accounts: no URL comes from the client
+  const user = requireUser(req);
+  const b = await readJSON(req);
+  const row = one('SELECT action_url, action_kind FROM accounts WHERE auth_id = ? AND owner_id = ?', String(b.id || ''), user.id);
+  const a = actionOf(row);
+  if (!a) throw new HttpError(404, 'not_found');
+  return browser.open(user.id, a.url);
+});
 route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req).id));
 route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });
 route('POST', '/api/admin/browser/kick', async (req) => { requireAdmin(req); return browser.kick(); });
