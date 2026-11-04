@@ -145,6 +145,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS bot_user_alerts (user_id INTEGER PRIMARY KEY
 addCol('accounts', 'auto_disabled_at', 'INTEGER');
 addCol('accounts', 'sleep_at', 'INTEGER'); // put to sleep by autosleep.ts (闲置自动休眠)
 addCol('accounts', 'auto_disabled_reason', 'TEXT');
+// Verify / appeal link Google sent with the account's last 403 (see accaction.ts); cleared once the account works.
+addCol('accounts', 'action_url', 'TEXT');
+addCol('accounts', 'action_kind', 'TEXT'); // 'verify' | 'appeal'
+addCol('accounts', 'action_at', 'INTEGER');
 // Discord bot: one row per account with an open problem (see bot.ts).
 db.exec(`CREATE TABLE IF NOT EXISTS bot_alerts (
   auth_id TEXT PRIMARY KEY,

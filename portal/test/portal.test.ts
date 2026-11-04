@@ -641,6 +641,37 @@ test('credential cards: request strip and supported models are owner-scoped', as
   assert.deepEqual((await carol.req('GET', '/api/accounts')).data, []);
 });
 
+test('credential cards: active cooldowns per model and a translated error detail', async () => {
+  const mine = (await bob.req('GET', '/api/accounts')).data[0];
+  const c = mock.st.creds.get(mine.id)!;
+  const t = Date.now();
+  c.cooldowns = [
+    { scope: 'model', model_key: 'claude-sonnet-4-6', reason: 'quota exhausted', retry_at: new Date(t + 20 * 60e3).toISOString(), remaining_seconds: 1200, http_status: 429 },
+    { scope: 'model', model_key: 'gemini-3-flash', reason: 'transient upstream error', retry_at: new Date(t - 60e3).toISOString(), remaining_seconds: 0, http_status: 502 },
+  ];
+  const fresh = () => bob.req('PATCH', '/api/accounts/' + encodeURIComponent(mine.id), { name: mine.name || '' }); // refreshes the creds cache
+  await fresh();
+  try {
+    let a = (await bob.req('GET', '/api/accounts')).data[0];
+    assert.equal(a.state, 'active');
+    assert.deepEqual(a.cooldowns.map((x: any) => [x.scope, x.model, x.text, x.status]), [['model', 'claude-sonnet-4-6', '额度用完 (429)', 429]]);
+    assert.equal(a.action, null);
+    c.cooldowns = null;
+    c.status = 'error'; c.status_message = 'unauthorized';
+    await fresh();
+    a = (await bob.req('GET', '/api/accounts')).data[0];
+    assert.equal(a.state, 'error');
+    assert.equal(a.reason, 'unauthorized');
+    assert.equal(a.detail, '登录失效 (401)');
+    assert.deepEqual(a.cooldowns, []);
+    const adm = (await alice.req('GET', '/api/admin/accounts')).data.find((x: any) => x.id === mine.id);
+    assert.equal(adm.detail, '登录失效 (401)');
+  } finally {
+    c.cooldowns = null; c.status = undefined; c.status_message = '';
+    await fresh();
+  }
+});
+
 test('model test runs through exactly that credential and is logged; owner or admin only', async () => {
   const mine = (await bob.req('GET', '/api/accounts')).data[0];
   const path = '/api/accounts/' + encodeURIComponent(mine.id) + '/models/test';

@@ -119,3 +119,33 @@ test('sweep: re-enabled by hand outside the portal -> columns cleared, not fough
   assert.equal(c.disabled, false);
   assert.equal(row('hand.json').auto_disabled_at, null);
 });
+
+test('probe: a 403 with a verify link stores it; a probe that works clears it', async () => {
+  const url = 'https://accounts.google.com/signin/continue?sarp=1&scc=1';
+  const body = JSON.stringify({ error: { code: 403, message: 'Verify your account to continue.', status: 'PERMISSION_DENIED', details: [{ reason: 'VALIDATION_REQUIRED', metadata: { validation_url: url } }] } });
+  const old = Date.now() - 31 * 60000;
+  const c = account('link.json', { disabled: true }, { auto_disabled_at: old, auto_disabled_reason: '403' });
+  mock.st.gen.set('link.json', { status: 403, body });
+  await ad.sweep();
+  assert.equal(c.disabled, true);
+  assert.equal(row('link.json').action_url, url);
+  assert.equal(row('link.json').action_kind, 'verify');
+  assert.ok(row('link.json').action_at > 0);
+
+  const d = account('link2.json', { disabled: true }, { auto_disabled_at: old, auto_disabled_reason: '403', action_url: url, action_kind: 'verify', action_at: old });
+  mock.st.gen.set('link2.json', { status: 200, body: '{"response":{}}' });
+  await ad.sweep();
+  assert.equal(d.disabled, false);
+  assert.equal(row('link2.json').action_url, null);
+  assert.equal(row('link2.json').action_kind, null);
+});
+
+test('sweep: account re-enabled by hand drops its stored link', async () => {
+  const c = account('hand2.json', err(VERIFY));
+  await ad.sweep();
+  assert.equal(c.disabled, true);
+  db.run("UPDATE accounts SET action_url = 'https://accounts.google.com/x', action_kind = 'verify', action_at = 1 WHERE auth_id = 'hand2.json'");
+  c.disabled = false;
+  await ad.sweep();
+  assert.equal(row('hand2.json').action_url, null);
+});

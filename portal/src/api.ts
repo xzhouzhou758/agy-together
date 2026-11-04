@@ -13,6 +13,8 @@ import { refreshQuota, storedQuota, lastQuotaAt } from './quota.ts';
 import { breakerState, resetBreaker, accountInflight, userRotation } from './gateway.ts';
 import { MODES, newSalt } from './routing.ts';
 import { reasonText } from './reason.ts';
+import { errText, activeCooldowns, type CooldownView } from './accerr.ts';
+import { actionOf, clearAction } from './accaction.ts';
 import { readZip, writeZip } from './zip.ts';
 import { testModel } from './modeltest.ts';
 import { dailyFor, sharedModels, setSharedModels, isPaid } from './limits.ts';
@@ -65,14 +67,17 @@ function maskProxy(u: string): string {
   }
 }
 
-type AccState = { state: 'active' | 'cooldown' | 'error' | 'off'; reason?: string; retryAt?: string | null };
+type AccState = { state: 'active' | 'cooldown' | 'error' | 'off'; reason?: string; retryAt?: string | null; detail?: string; cooldowns: CooldownView[] };
 function accState(c: cpa.Cred | undefined): AccState {
-  if (!c) return { state: 'error', reason: 'missing' };
-  if (c.disabled) return { state: 'off' };
-  const retry = c.nextRetryAfter && Date.parse(c.nextRetryAfter) > Date.now() ? c.nextRetryAfter : null;
-  if (c.status === 'error' && !retry) return { state: 'error', reason: c.statusMessage || 'error' };
-  if (retry || c.unavailable) return { state: 'cooldown', reason: c.statusMessage || '', retryAt: retry };
-  return { state: 'active' };
+  if (!c) return { state: 'error', reason: 'missing', cooldowns: [] };
+  if (c.disabled) return { state: 'off', cooldowns: [] };
+  const cds = activeCooldowns(c.cooldowns);
+  const authCd = cds.find((x) => x.scope !== 'model');
+  const retry = c.nextRetryAfter && Date.parse(c.nextRetryAfter) > Date.now() ? c.nextRetryAfter : authCd?.retryAt || null;
+  const detail = (c.statusMessage ? errText(c.statusMessage, authCd?.status) : authCd?.text) || undefined;
+  if (c.status === 'error' && !retry) return { state: 'error', reason: c.statusMessage || 'error', detail: detail || '异常', cooldowns: cds };
+  if (retry || c.unavailable) return { state: 'cooldown', reason: c.statusMessage || '', retryAt: retry, detail, cooldowns: cds };
+  return { state: 'active', cooldowns: cds };
 }
 
 function ensureRow(authId: string, email: string): Row {
@@ -106,6 +111,7 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
     quotaAt: row.quota_at || null,
     quotaErr: row.quota_err || null,
     problem: accountProblem(row, cred),
+    action: actionOf(row), // Google's verify / appeal link from the last 403 (cleared once the account works)
   };
 }
 
@@ -391,6 +397,7 @@ route('PATCH', '/api/accounts/:id', async (req, _res, p) => {
     if (typeof b.active !== 'boolean') throw new HttpError(400, 'invalid');
     if (b.active === cred.disabled) await cpa.setDisabled(row.auth_id, !b.active);
     run('UPDATE accounts SET auto_disabled_at = NULL, auto_disabled_reason = NULL, sleep_at = NULL WHERE auth_id = ?', row.auth_id); // owner decides now; autodisable.ts / autosleep.ts let go
+    clearAction(row.auth_id); // a stale verify link would linger otherwise; the next 403 brings it back
   }
   if (b.reserve !== undefined) {
     if (b.reserve !== null && !(Number.isInteger(b.reserve) && b.reserve >= 0 && b.reserve <= 90)) throw new HttpError(400, 'invalid');
@@ -939,6 +946,7 @@ route('GET', '/api/admin/accounts', async (req) => {
       ownerId: r.owner_id, owner: r.owner_id ? users.get(r.owner_id) || '' : null,
       shared: !!r.shared, proxyId: r.proxy_id, active: !cred.disabled, asleep: !!r.sleep_at, inflight: accountInflight(cred.id),
       ...accState(cred),
+      action: actionOf(r),
     };
   });
 });
@@ -949,7 +957,10 @@ route('PATCH', '/api/admin/accounts/:id', async (req, _res, p) => {
   if (!cred) throw new HttpError(404, 'not_found');
   ensureRow(cred.id, cred.email);
   const b = await readJSON(req);
-  if (typeof b.active === 'boolean' && b.active === cred.disabled) await cpa.setDisabled(cred.id, !b.active);
+  if (typeof b.active === 'boolean' && b.active === cred.disabled) {
+    await cpa.setDisabled(cred.id, !b.active);
+    clearAction(cred.id);
+  }
   if (b.ownerId !== undefined) throw new HttpError(400, 'owner_fixed'); // an account always belongs to whoever added it
   if (b.proxyId !== undefined) {
     let url = '';
