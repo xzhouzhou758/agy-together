@@ -1019,3 +1019,10 @@ img.logo{object-fit:cover;background:#1d1236;padding:0}
 .stk-list{display:flex;flex-direction:column;max-height:320px;overflow:auto}
 .stk-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mp-src.stk-in{background:var(--good-soft);color:var(--good)}
+
+/* 共享浏览器 */
+.br-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-radius:var(--r-lg);margin-bottom:12px}
+.br-left{font-variant-numeric:tabular-nums;font-weight:600;font-size:13px}
+.br-frame{display:block;width:100%;height:calc(100dvh - 220px);min-height:420px;border:0;border-radius:var(--r-lg);background:#000;box-shadow:var(--shadow-lg)}
+.toast.act{pointer-events:auto;padding:7px 8px 7px 16px}
+@media (max-width:760px){.br-frame{height:calc(100dvh - 300px)}}

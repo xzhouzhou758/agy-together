@@ -123,3 +123,23 @@ CPA 的 429 和「无可用号」类错误会先被网关读完（错误体很�
 
 
 部署见仓库根目录的 `README.md` 和 `install.sh`。
+
+## 共享浏览器（2026-11-04）
+
+让成员用服务器的 IP 登录自己的 Google 账号，不用换 IP。服务器只够跑**一个** Chromium（linuxserver/chromium，Selkies 网页界面），所以：一个位子、先来先排队、每次 15 分钟、每次新开容器、用完销毁（`--rm`、不挂卷，登录状态不会留给下一个人）。
+
+- **宿主机助手** `ops/browserd.py`（root、systemd、只用 python3 标准库）：监听 `127.0.0.1:8330`，`Authorization: Bearer $BROWSERD_TOKEN`。`POST /start` 删旧容器 → 建网络 `agy-browser-net`（172.31.250.0/24）→ 补 iptables（`DOCKER-USER` 拦内网 / 元数据 / 本机公网 IP，`INPUT` 拦容器主动连宿主机）→ `docker run`（参数全写死，`127.0.0.1:3010`，900m 内存，非特权）→ 等界面能打开（60 秒）。`POST /stop` 删容器，`GET /status` 看是否在跑。门户容器拿不到 docker socket。
+- **安装**：
+  ```
+  cp ops/browserd.py /opt/agy-pot/browserd.py
+  cp ops/agy-browserd.service /etc/systemd/system/
+  printf 'BROWSERD_TOKEN=%s\nBROWSER_SUBFOLDER=/xgf/browser/\n' "$(openssl rand -hex 24)" > /opt/agy-pot/browserd.env && chmod 600 /opt/agy-pot/browserd.env
+  docker pull lscr.io/linuxserver/chromium:latest
+  systemctl daemon-reload && systemctl enable --now agy-browserd
+  ```
+  再把同一个 token 写进 `portal.env` 的 `BROWSERD_TOKEN`，重启门户。`BROWSER_SUBFOLDER` 必须等于 `<BASE_PATH>/browser/`。
+- **门户**（`src/browser.ts`）：状态只在内存，重启即清空（启动时调一次 `/stop`）。每个用户最多排一次；前端每 5 秒查一次状态当心跳，排队的 60 秒没心跳就出队，正在用的 90 秒没心跳（且没有打开的画面连接）就结束；到时间也结束。启动失败的人回到队首，5s/10s/20s…最多 60s 退避重试。
+- **代理**：`<base>/browser/...` 原路径转给容器（容器设置了同样的 `SUBFOLDER`），只放行当前使用者的登录 Cookie，其他人 403；转发前删 Cookie / Authorization，响应删 Set-Cookie。WebSocket（Selkies 用 `<base>/browser/api/websockets`）同样校验，会话结束时一起断开；其它路径的升级请求一律拒绝。
+- **接口**：`GET /api/browser`、`POST /api/browser/join`、`POST /api/browser/leave`；管理员 `GET /api/admin/browser`、`POST /api/admin/browser/kick`。`/api/config` 多一个 `browserEnabled`。
+- **配置**：`BROWSERD_URL`、`BROWSERD_TOKEN`（空 = 隐藏功能）、`BROWSER_UPSTREAM`、`BROWSER_SESSION_MINUTES`。
+- **反代**：openresty/nginx 给 `<BASE_PATH>/browser/` 单独一段 location，加 `proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`，读写超时放到 20 分钟以上。

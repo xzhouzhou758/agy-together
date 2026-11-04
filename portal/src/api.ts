@@ -21,6 +21,7 @@ import * as site from './site.ts';
 import { accountProblem, registerCommands, botStatus, connectInteractions, testMessage, postAnnouncement } from './bot.ts';
 import { wakeFor } from './autosleep.ts';
 import { stockAdmin, setWatched } from './stock.ts';
+import * as browser from './browser.ts';
 
 
 type Handler = (req: IncomingMessage, res: ServerResponse, p: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -124,6 +125,7 @@ route('GET', '/api/config', (req) => ({
   setup: !site.setupDone(),
   logo: HAS_LOGO,
   signedIn: !!currentUser(req),
+  browserEnabled: browser.browserOn(),
 }));
 
 route('POST', '/api/login', async (req, res) => {
@@ -282,6 +284,13 @@ route('PUT', '/api/admin/switches', async (req) => {
   return switches();
 });
 // 补货监控: the shop's items (cached; refresh=1 fetches them now) and the ticked ones
+// ---------- shared remote browser ----------
+route('GET', '/api/browser', (req) => browser.viewFor(requireUser(req).id));
+route('POST', '/api/browser/join', async (req) => browser.join(requireUser(req).id));
+route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req).id));
+route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });
+route('POST', '/api/admin/browser/kick', async (req) => { requireAdmin(req); return browser.kick(); });
+
 route('GET', '/api/admin/stock', async (req, _res, _p, url) => {
   requireAdmin(req);
   try { return await stockAdmin(url.searchParams.get('refresh') === '1'); } catch (e) { throw new HttpError(502, 'shop_unreachable: ' + (e as Error).message); }

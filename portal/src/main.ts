@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, validateConfig } from './config.ts';
 import { handleCpaPanel } from './cpapanel.ts';
+import { handleBrowser, handleBrowserUpgrade, startBrowser } from './browser.ts';
 import './db.ts';
 import { sendError, HttpError } from './util.ts';
 import { handleAPI } from './api.ts';
@@ -27,7 +28,7 @@ if (errs.length) {
 }
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
-const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 const SEC = {
   'Content-Security-Policy': CSP,
   'X-Content-Type-Options': 'nosniff',
@@ -70,6 +71,7 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/v1/') || p === '/v1' || p.startsWith('/v1beta/')) return await handleGateway(req, res, url);
     if (p.startsWith('/api/')) return await handleAPI(req, res, url);
     if (p === '/cpa' || p.startsWith('/cpa/')) return await handleCpaPanel(req, res, url);
+    if (p === '/browser' || p.startsWith('/browser/')) return await handleBrowser(req, res, url);
     if (p === '/auth/discord/login') return discordLogin(res);
     if (p === '/auth/discord/callback') return await discordCallback(req, res, url);
     if (p === '/discord/interactions') return await handleInteraction(req, res);
@@ -90,6 +92,8 @@ const server = http.createServer(async (req, res) => {
     sendError(res, e);
   }
 });
+// WebSocket upgrades: only the shared browser's stream (holder only); anything else is refused there.
+server.on('upgrade', handleBrowserUpgrade);
 server.headersTimeout = 60000;
 server.requestTimeout = 0; // long streams
 server.keepAliveTimeout = 65000;
@@ -106,6 +110,7 @@ server.listen(config.port, config.host, () => {
   startAutoSleep();
   startRestartLog();
   startStockWatch();
+  startBrowser();
   cpa.refreshCreds().catch((e) => console.error('[cpa] initial credential list failed:', e.message));
   setInterval(() => {
     try { pruneSessions(); pruneUsage(); } catch (e) { console.error('[prune]', e); }

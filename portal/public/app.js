@@ -37,6 +37,7 @@ const ICONS={
   info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   play:'<path d="M6 4l14 8-14 8z"/>',
+  window:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><path d="M6 6.5h.01M9 6.5h.01"/>',
   pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
 };
 const DISCORD='<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.32 4.37a19.8 19.8 0 0 0-4.89-1.52.07.07 0 0 0-.08.04c-.21.38-.44.87-.6 1.25a18.3 18.3 0 0 0-5.49 0 12.6 12.6 0 0 0-.62-1.25.08.08 0 0 0-.08-.04 19.7 19.7 0 0 0-4.88 1.52.07.07 0 0 0-.03.03C.53 9.05-.32 13.58.1 18.06a.08.08 0 0 0 .03.05 19.9 19.9 0 0 0 5.99 3.03.08.08 0 0 0 .09-.03c.46-.63.87-1.3 1.22-1.99a.08.08 0 0 0-.04-.1 13.1 13.1 0 0 1-1.87-.9.08.08 0 0 1-.01-.12l.37-.3a.07.07 0 0 1 .08-.01c3.93 1.8 8.18 1.8 12.06 0a.07.07 0 0 1 .08 0l.37.3a.08.08 0 0 1 0 .13c-.6.35-1.22.65-1.88.9a.08.08 0 0 0-.04.1c.36.7.77 1.36 1.23 1.99a.08.08 0 0 0 .08.03 19.8 19.8 0 0 0 6-3.03.08.08 0 0 0 .03-.05c.5-5.18-.84-9.68-3.55-13.66a.06.06 0 0 0-.03-.03ZM8.02 15.33c-1.18 0-2.16-1.08-2.16-2.42 0-1.33.96-2.42 2.16-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.96 2.42-2.16 2.42Zm7.97 0c-1.18 0-2.15-1.08-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.94 2.42-2.16 2.42Z"/></svg>';
@@ -146,11 +147,12 @@ const PAGES=[
   ['keys','terminal','API 密钥','密钥'],
   ['logs','activity','流量日志','日志'],
   ['stats','chart','Token 统计','统计'],
+  ['browser','window','浏览器','浏览器'],
   ['profile','user','个人中心','我的'],
   ['users','users','用户管理','用户'],
   ['admin','shield','管理员后台','管理'],
 ];
-const navPages=()=>PAGES.filter(p=>(p[0]!=='admin'&&p[0]!=='users')||me?.role==='admin');
+const navPages=()=>PAGES.filter(p=>p[0]==='browser'?!!cfg.browserEnabled:(p[0]!=='admin'&&p[0]!=='users')||me?.role==='admin');
 
 const LOADERS={
   home:async()=>{D.ov=await api('GET','api/overview');},
@@ -163,11 +165,12 @@ const LOADERS={
   },
   stats:async()=>{const st=ui.st;if(!st.scope)st.scope=me.role==='admin'?'all':'mine';
     D.stats=await api('GET','api/stats?'+new URLSearchParams({range:st.range,scope:st.scope,tz:-new Date().getTimezoneOffset()}));},
+  browser:async()=>{brSet(await api('GET','api/browser'));},
   profile:async()=>{},
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),stock:await api('GET','api/admin/stock').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true}))};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),stock:await api('GET','api/admin/stock').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true})),br:cfg.browserEnabled?await api('GET','api/admin/browser').catch(()=>null):null};
   },
 };
 
@@ -639,6 +642,7 @@ function pageAdmin(){
   ${A.retry?fold('retry','上游重试',`<span class="fold-sum">${A.retry.requestRetry} 轮 · 最多等 ${A.retry.maxRetryInterval}s</span>`,`
     <div class="rule"><div><h3>重试轮数 / 每轮最多换号</h3><p>在 CLIProxyAPI 配置里改</p></div><div class="val mono">${A.retry.requestRetry} 轮 · ${A.retry.maxRetryCredentials||'不限'} 个</div></div>
     <div class="rule"><div><h3>最大等待时长</h3><p>名单内的号都在冷却时，最多等这么久再重试；0 = 不等</p></div><div class="hstack"><input class="input" type="number" min="0" max="300" data-retry="maxWait" value="${A.retry.maxRetryInterval}" aria-label="最大等待时长"><small>秒</small></div></div>`,false):''}
+  ${brAdmin(A.br)}
   ${fold('proxies','专属出口',cnt(A.proxies.length),`
     <div class="tbl proxies">${A.proxies.map(p=>`<div class="tr"><span class="mono">${esc(p.url)}</span><span class="mono faint">${esc(A.accounts.find(a=>a.id===p.account)?.email||p.account||'—')}</span><span class="num-r"><button class="btn sm ghost danger" data-act="delproxy:${p.id}" ${p.account?'disabled':''} aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>
     <div class="hstack mt"><input class="input mono" id="f-proxy" placeholder="socks5://user:pass@host:port" autocomplete="off" spellcheck="false" style="flex:1"><button class="btn" data-act="addproxy">${ic('plus')}添加</button></div>`,false)}
@@ -739,6 +743,47 @@ function stockBox(S){
 }
 const swRule=(t,k,on,cls='')=>`<div class="rule sw-rule ${cls}"><h3>${t}</h3><button class="switch" role="switch" aria-checked="${on}" aria-label="${t}" data-act="sw:${k}"></button></div>`;
 function shopRow(s={}){return `<div class="shop-row"><input class="input sm" data-shop="name" placeholder="名称" maxlength="40" value="${esc(s.name||'')}"><input class="input sm mono" data-shop="url" placeholder="https://" value="${esc(s.url||'')}"><input class="input sm" data-shop="note" placeholder="备注" maxlength="80" value="${esc(s.note||'')}"><button class="btn sm ghost danger icon" data-act="shopdel" aria-label="删除">${ic('trash')}</button></div>`;}
+
+/* ============ 共享浏览器 ============ */
+let brTimer=null,brEnd=0;
+const mmss=s=>`${pad(Math.floor(s/60))}:${pad(s%60)}`;
+const brLive=()=>['queued','starting','active'].includes(D.br?.state);
+function brSet(v){
+  D.br=v;
+  if(v?.state==='active')brEnd=Date.now()+v.remainingSec*1000;
+  // 排队 / 启动 / 使用中每 5 秒查一次（心跳）；在本页看着「有人在用」时也查
+  const want=brLive()||(page==='browser'&&v?.state==='busy');
+  if(want&&!brTimer)brTimer=setInterval(brPoll,5000);
+  if(!want&&brTimer){clearInterval(brTimer);brTimer=null;}
+}
+async function brPoll(){
+  if(!me||!cfg.browserEnabled)return;
+  const prev=D.br?.state;let v;
+  try{v=await api('GET','api/browser');}catch(e){return;}
+  brSet(v);
+  if(v.state===prev){const q=$('#br-q');if(q)q.textContent=v.position;return;}
+  if(page==='browser'){if(!dialogOpen()&&loadState==='idle')render();}
+  else if(v.state==='active')toastAct('浏览器已就绪','打开','goto:browser');
+}
+setInterval(()=>{const el=$('#br-left');if(el)el.textContent=mmss(Math.max(0,Math.round((brEnd-Date.now())/1000)));},1000);
+function pageBrowser(){
+  const b=D.br||{state:'idle'};
+  if(b.state==='active')return `<div class="br-bar glass"><span class="chip accent br-left" id="br-left">${mmss(Math.max(0,Math.round((brEnd-Date.now())/1000)))}</span>
+    <div class="hstack"><a class="btn sm" href="browser/" target="_blank" rel="noopener">${ic('ext')}新窗口打开</a><button class="btn sm danger" data-act="brleave">${ic('x')}结束</button></div></div>
+    <iframe class="br-frame" src="browser/" title="浏览器" allow="clipboard-read; clipboard-write; fullscreen"></iframe>`;
+  const bubble=`<div class="bubble">${ic('window')}</div>`;
+  const body=b.state==='queued'?`${bubble}<h2>排队中 · 前面 <span id="br-q">${b.position}</span> 人</h2><button class="btn" data-act="brleave">取消</button>`
+    :b.state==='starting'?`<span class="spin"></span><h2>正在启动…</h2>`
+    :b.state==='busy'?`${bubble}<h2>有人在用</h2><button class="btn primary" data-act="brjoin">排队</button>`
+    :`${bubble}<button class="btn primary" data-act="brjoin">${ic('play')}开始使用</button>`;
+  return head('浏览器')+`<section class="card glass"><div class="empty">${body}</div></section>`;
+}
+function brAdmin(B){
+  if(!B)return '';
+  return fold('browser','浏览器',B.active?dotChip('good','使用中'):B.starting?dotChip('warn','启动中'):dotChip('','空闲'),`
+    <div class="rule"><h3>正在使用</h3><div class="hstack"><span class="val">${B.active?`${esc(B.active.name)} · <span class="mono">${mmss(B.active.remainingSec)}</span>`:B.starting?esc(B.starting):'—'}</span><button class="btn sm danger" data-act="brkick" ${B.active?'':'disabled'}>踢出</button></div></div>
+    <div class="rule"><h3>排队</h3><div class="val">${B.queue.length?B.queue.map(esc).join('、'):'—'}</div></div>`,false);
+}
 
 function pageLoading(){
   return `<div class="head"><div style="width:100%"><div class="sk" style="height:30px;width:220px"></div></div></div>
@@ -890,7 +935,7 @@ function render(){
   const root=$('#root');
   if(!me){root.innerHTML=loginView();return;}
   if(!navPages().some(p=>p[0]===page))page='home';
-  const views={home:pageHome,accounts:pageAccounts,pool:pagePool,keys:pageKeys,logs:pageLogs,stats:pageStats,profile:pageProfile,users:pageUsers,admin:pageAdmin};
+  const views={home:pageHome,accounts:pageAccounts,pool:pagePool,keys:pageKeys,logs:pageLogs,stats:pageStats,browser:pageBrowser,profile:pageProfile,users:pageUsers,admin:pageAdmin};
   let main;
   if(loadState==='loading')main=pageLoading();
   else if(loadState==='error')main=pageError();
@@ -963,6 +1008,12 @@ const dialogOpen=()=>!!$('#layer .dialog');
 function toast(text,err=false){
   const t=document.createElement('div');t.className='toast'+(err?' err':'');t.innerHTML=ic(err?'alert':'check')+esc(text);
   $('#toasts').append(t);setTimeout(()=>{t.style.transition='opacity .3s';t.style.opacity='0';setTimeout(()=>t.remove(),300);},2600);
+}
+function toastAct(text,label,action){
+  const t=document.createElement('div');t.className='toast act';t.innerHTML=`${ic('check')}${esc(text)}<button class="btn sm primary" data-act="${esc(action)}">${esc(label)}</button>`;
+  const bye=()=>{t.style.transition='opacity .3s';t.style.opacity='0';setTimeout(()=>t.remove(),300);};
+  t.querySelector('button').addEventListener('click',bye);
+  $('#toasts').append(t);setTimeout(bye,10000);
 }
 function copy(text){(navigator.clipboard?.writeText(text)||Promise.reject()).then(()=>toast('已复制'),()=>toast('当前环境不允许复制',true));}
 
@@ -1162,6 +1213,9 @@ document.addEventListener('click',act(async e=>{
   const a=i<0?el.dataset.act:el.dataset.act.slice(0,i),arg=i<0?'':el.dataset.act.slice(i+1);
   switch(a){
     case 'goto':go(arg);break;
+    case 'brjoin':brSet(await api('POST','api/browser/join'));render();break;
+    case 'brleave':brSet(await api('POST','api/browser/leave'));render();break;
+    case 'brkick':await api('POST','api/admin/browser/kick');D.admin.br=await api('GET','api/admin/browser');toast('已踢出');render();break;
     case 'close':closeDialog();break;
     case 'reload':reload();break;
     case 'retry':load(page);break;
@@ -1440,6 +1494,7 @@ async function boot(){
   try{me=await api('GET','api/me');}catch(e){me=null;}
   const q=new URLSearchParams(location.search);
   if(q.get('err')){toast(ERR[q.get('err')]||'登录失败',true);history.replaceState(null,'',location.pathname);}
+  if(me&&cfg.browserEnabled)brSet(await api('GET','api/browser').catch(()=>null));
   if(me){await loadAnn();await load('home');if(ANN.unread)annDialog();}else render();
 }
 setInterval(async()=>{if(!me||dialogOpen())return;const u=ANN.unread;await loadAnn();if(ANN.unread!==u){const b=$('.bell');if(b)b.classList.toggle('on',!!ANN.unread);}},5*60e3);
