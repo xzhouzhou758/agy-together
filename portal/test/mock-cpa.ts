@@ -2,7 +2,7 @@
 // It mimics the management endpoints the portal uses and an agy-scheduler-style picker.
 import http from 'node:http';
 
-export type MockCred = { id: string; email: string; disabled: boolean; note?: string; proxy_url?: string; index: string; project_id?: string; updated_at: string; status?: string; status_message?: string; unavailable?: boolean };
+export type MockCred = { id: string; email: string; disabled: boolean; note?: string; proxy_url?: string; index: string; project_id?: string; updated_at: string; status?: string; status_message?: string; unavailable?: boolean; cooldowns?: any[] | null; success?: number; failed?: number };
 
 export function startMockCPA(opts: { apiKey: string; mgmtKey: string }) {
   const st = {
@@ -51,7 +51,7 @@ export function startMockCPA(opts: { apiKey: string; mgmtKey: string }) {
       const sub = p.slice('/v8/management'.length);
       const b = body.length ? JSON.parse(body.toString()) : {};
       if (sub === '/credentials' && req.method === 'GET') {
-        return json(res, 200, { files: [...st.creds.values()].map((c) => ({ id: c.id, name: c.id, auth_index: c.index, type: 'antigravity', provider: 'antigravity', email: c.email, disabled: c.disabled, status: c.disabled ? 'disabled' : c.status || 'active', status_message: c.disabled ? '' : c.status_message || '', unavailable: !c.disabled && !!c.unavailable, note: c.note, project_id: c.project_id, updated_at: c.updated_at })) });
+        return json(res, 200, { files: [...st.creds.values()].map((c) => ({ id: c.id, name: c.id, auth_index: c.index, type: 'antigravity', provider: 'antigravity', email: c.email, disabled: c.disabled, status: c.disabled ? 'disabled' : c.status || 'active', status_message: c.disabled ? '' : c.status_message || '', unavailable: !c.disabled && !!c.unavailable, note: c.note, project_id: c.project_id, updated_at: c.updated_at, cooldowns: c.cooldowns ?? null, success: c.success ?? 0, failed: c.failed ?? 0 })) });
       }
       if (sub === '/credentials' && req.method === 'POST') {
         const name = url.searchParams.get('name')!;

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'agy-bot-'));
-const { accountProblem, maskEmail, tk, ownerMessage, alertPosts } = await import('../src/bot.ts');
+const { accountProblem, maskEmail, tk, ownerMessage, alertPosts, linkOf } = await import('../src/bot.ts');
 
 const cred = (o: Record<string, unknown> = {}) => ({ id: 'x', authIndex: '1', type: 'antigravity', email: 'e@x', disabled: false, status: 'active', statusMessage: '', unavailable: false, nextRetryAfter: null, projectId: '', note: '', updatedAt: '', createdAt: '', ...o }) as any;
 
@@ -512,4 +512,13 @@ test('stock admin: refresh caches the shop list, ticking saves the watch list, a
   assert.equal(r.msgs.length, 0);
   assert.equal(r.next[48], 15);
   setSetting('stock_watch', '47,32');
+});
+
+test('verify / banned alerts carry the stored Google link; others and foreign hosts do not', () => {
+  const row = { action_url: 'https://accounts.google.com/signin/continue?x=1', action_kind: 'verify' };
+  assert.match(linkOf({ kind: 'verify', label: '', hint: '' }, row), /验证链接：<https:\/\/accounts\.google\.com\/signin\/continue\?x=1>/);
+  assert.match(linkOf({ kind: 'banned', label: '', hint: '' }, { ...row, action_kind: 'appeal' }), /申诉链接/);
+  assert.equal(linkOf({ kind: 'auth', label: '', hint: '' }, row), '');
+  assert.equal(linkOf({ kind: 'verify', label: '', hint: '' }, {}), '');
+  assert.equal(linkOf({ kind: 'verify', label: '', hint: '' }, { action_url: 'https://evil.example/', action_kind: 'verify' }), '');
 });

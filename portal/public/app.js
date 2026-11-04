@@ -107,9 +107,29 @@ function quotas(a,full=false){
 }
 function accState(a){
   if(a.state==='off')return a.asleep?['sleep','休眠中','闲置超过 1 小时自动关闭，下次请求会自动唤醒']:['','已停用'];
-  if(a.state==='cooldown')return ['warn','冷却中',[a.reason,a.retryAt?`${until(a.retryAt)} 后重试`:''].filter(Boolean).join(' · ')];
-  if(a.state==='error')return ['bad','异常',a.reason||''];
+  if(a.state==='cooldown')return ['warn','冷却中',[a.detail||a.reason,a.retryAt?recover(a.retryAt):''].filter(Boolean).join(' · ')];
+  if(a.state==='error')return ['bad','异常',a.detail||a.reason||''];
   return ['good','正常'];
+}
+/* 出错 / 冷却的细节：翻译后的原因、逐模型冷却、Google 给的验证 / 申诉链接 */
+function recover(iso){const ms=Date.parse(iso)-Date.now();if(!(ms>0))return '即将恢复';const n=Math.max(1,Math.ceil(ms/6e4)),d=Math.floor(n/1440),h=Math.floor(n%1440/60),m=n%60;
+  return (d?`${d} 天 ${h} 小时`:h?`${h} 小时${m?` ${m} 分钟`:''}`:`${m} 分钟`)+'后恢复';}
+const ACT={verify:'去验证',appeal:'去申诉'};
+const modelCds=a=>(a.cooldowns||[]).filter(c=>c.scope==='model'&&c.model);
+function cdList(a){
+  const L=modelCds(a);if(!L.length)return '';
+  return `<ul class="cdl">${L.map(c=>`<li><b class="mono" title="${esc(c.model)}">${esc(c.model)}</b><span>${esc([c.text,c.status&&!String(c.text).includes(c.status)?c.status:''].filter(Boolean).join(' · '))}</span><i>${esc(recover(c.retryAt))}</i></li>`).join('')}</ul>`;
+}
+function fixBtns(a){
+  if(!a.action?.url)return '';
+  return `<span class="fix"><a class="btn sm primary" href="${esc(a.action.url)}" target="_blank" rel="noopener noreferrer">${ic('ext')}${ACT[a.action.kind]||ACT.verify}</a><button class="btn sm ghost icon" data-act="copyurl:${esc(a.id)}" aria-label="复制链接" title="复制链接">${ic('copy')}</button></span>`;
+}
+function accIssue(a){
+  const p=a.problem,[k,t]=accState(a),cd=cdList(a),fix=fixBtns(a);
+  if(!p&&k!=='bad'&&k!=='warn'&&!cd&&!fix)return '';
+  const n=modelCds(a).length,title=p?p.label:k==='bad'||k==='warn'?(a.detail||t):n?`${n} 个模型冷却中`:a.action?.kind==='appeal'?'账号被 Google 停用':'需要验证账号';
+  const sub=[p?(p.kind==='error'&&a.detail?a.detail:p.hint):'',a.retryAt?recover(a.retryAt):''].filter(Boolean).join(' · ');
+  return `<div class="ac-alert ${p||k==='bad'?'':'warn'}">${ic('alert')}<div class="ac-al-b"><b>${esc(title)}</b>${sub?`<small>${esc(sub)}</small>`:''}${cd}${fix?`<div class="ac-fix">${fix}</div>`:''}</div></div>`;
 }
 /* 5 小时 / 周限额（retrieveUserQuotaSummary，与 CPA 面板同源） */
 const WINNAME={gemini:'Gemini',claude:'Claude / GPT'};
@@ -239,7 +259,7 @@ function accCard(a){
       </div>
       ${p?'':stateChip(a)}
     </div>
-    ${p?`<div class="ac-alert">${ic('alert')}<div><b>${esc(p.label)}</b><small>${esc(p.hint)}</small></div></div>`:''}
+    ${accIssue(a)}
     <div class="ac-tiles">${qPills(a)}</div>
     <div class="ac-sub">${reqStrip(a.requests)}${tokUse(a)}</div>
     <div class="ac-foot">
@@ -283,13 +303,21 @@ function qTiles(a){
   if(G.length)return G.map(([k,f,r])=>pill(k==='cl'?'claude':'gemini',QG[k]?.[0]||k,'',f,r,k==='ar'?F.argon?.week??null:null)).join('');
   return `<small class="faint">${a.quotaErr?'额度读取失败，点刷新再试':'还没有额度数据'}</small>`;
 }
+function accProb(a){
+  const p=a.problem,[k,t,why]=accState(a),cds=modelCds(a);
+  const fix=a.action?.url?`<a class="ar-fix" href="${esc(a.action.url)}" target="_blank" rel="noopener noreferrer">${ACT[a.action.kind]||ACT.verify}</a>`:'';
+  if(p)return `<div class="ar-prob" title="${esc(p.kind==='error'&&a.detail?a.detail:p.hint)}">${ic('alert')}${esc(p.label)}${fix}</div>`;
+  if(k==='bad'||k==='warn')return `<div class="ar-prob ${k}" title="${esc(why||'')}">${esc(a.detail?t+' · '+a.detail:t)}${a.retryAt?` · ${esc(recover(a.retryAt))}`:''}${fix}</div>`;
+  if(cds.length)return `<div class="ar-prob warn" title="${esc(cds.map(c=>`${c.model} · ${c.text} · ${recover(c.retryAt)}`).join('\n'))}">${cds.length} 个模型冷却中${fix}</div>`;
+  return fix?`<div class="ar-prob">${fix}</div>`:'';
+}
 function accRow(a){
   const [k,t]=accState(a),p=a.problem,tier=tierName(a.tier);
   return `<div class="arow ${a.active?'':'off'}">
     <div class="ar-main">
       <div class="ar-name"><span class="sdot ${p?'bad':k||'idle'}" title="${esc(p?p.label:t)}"></span><strong title="${esc(a.email)}">${esc(a.email||a.id)}</strong></div>
       <div class="ar-meta">${tierTag(tier)}${a.shared?`<span class="ar-tag" title="自用保留 ${reserveText(a.reserve??D.rules?.reserve??30)}">大锅饭${a.reserve!=null?' · 留 '+reserveText(a.reserve):''}</span>`:''}${a.name?`<span class="ar-note">${esc(a.name)}</span>`:''}<span class="ar-today">Today <b class="mono">${fmtK(a.tokens?.today)}</b></span></div>
-      ${p?`<div class="ar-prob">${ic('alert')}${esc(p.label)}</div>`:k&&k!=='good'?`<div class="ar-prob ${k}">${esc(t)}</div>`:''}
+      ${accProb(a)}
     </div>
     <div class="ar-pills">${qPills(a)}</div>
     <div class="ar-act">
@@ -637,8 +665,8 @@ const LISTS={
       <span class="u-cell"><span class="avatar sm" title="${esc(a.owner||'无主')}">${esc((a.owner||'?')[0])}</span><span class="u-n"><strong class="mono" title="${esc(a.email||a.id)}">${esc(a.email||a.id)}</strong><span class="sub">${esc(a.owner||'无主')}</span></span></span>
       <span class="c-share">${a.shared?'<span class="ar-tag">大锅饭</span>':'<span class="faint">自用</span>'}</span>
       <span class="c-proxy">${proxySelect(a,A.proxies)}</span>
-      <span class="f-st"><span class="u-st ${k==='bad'?'bad':''}"><span class="sdot ${k||'idle'}"></span>${esc(accState(a)[1])}</span>${why?`<span class="sub" title="${esc(why)}">${esc(why)}</span>`:''}</span>
-      <span class="u-act"><button class="btn sm ghost icon" data-act="amodels:${esc(a.id)}" aria-label="模型" title="模型">${ic('layers')}</button><button class="switch" role="switch" aria-checked="${a.active}" aria-label="启用 ${esc(a.email)}" data-act="fleet:${esc(a.id)}"></button></span></div>`;}},
+      <span class="f-st"><span class="u-st ${k==='bad'?'bad':''}"><span class="sdot ${k||'idle'}"></span>${esc(accState(a)[1])}</span>${why?`<span class="sub" title="${esc(why)}">${esc(why)}</span>`:''}${modelCds(a).length?`<span class="sub" title="${esc(modelCds(a).map(c=>`${c.model} · ${c.text} · ${recover(c.retryAt)}`).join('\n'))}">${modelCds(a).length} 个模型冷却中</span>`:''}</span>
+      <span class="u-act">${a.action?.url?`<a class="btn sm ghost icon" href="${esc(a.action.url)}" target="_blank" rel="noopener noreferrer" aria-label="${ACT[a.action.kind]||ACT.verify}" title="${ACT[a.action.kind]||ACT.verify}">${ic('ext')}</a><button class="btn sm ghost icon" data-act="copyurl:${esc(a.id)}" aria-label="复制链接" title="复制链接">${ic('copy')}</button>`:''}<button class="btn sm ghost icon" data-act="amodels:${esc(a.id)}" aria-label="模型" title="模型">${ic('layers')}</button><button class="switch" role="switch" aria-checked="${a.active}" aria-label="启用 ${esc(a.email)}" data-act="fleet:${esc(a.id)}"></button></span></div>`;}},
 };
 function pagedList(k){
   const L=LISTS[k],A=D.admin,q=(ui['q_'+k]||'').trim().toLowerCase();
@@ -1201,7 +1229,8 @@ function accountDetail(id){
     <label class="field"><span>备注</span><input class="input" id="f-note" maxlength="40" value="${esc(a.name)}" data-note="${esc(a.id)}"></label>
     <div class="mt-l">${quotaWindows(a)}</div>
     <div class="rule mt-l"><h3>启用</h3><button class="switch" role="switch" aria-checked="${a.active}" aria-label="启用 ${esc(accName(a))}" data-act="toggle:${esc(a.id)}"></button></div>
-    <div class="rule"><h3>状态</h3><div class="val hstack" style="justify-content:flex-end">${why?`<small>${esc(why)}</small>`:''}${stateChip(a)}</div></div>
+    <div class="rule"><h3>状态</h3><div class="val hstack" style="justify-content:flex-end">${why?`<small>${esc(why)}</small>`:''}${stateChip(a)}${fixBtns(a)}</div></div>
+    ${modelCds(a).length?`<div class="rule cdrule"><h3>模型冷却</h3>${cdList(a)}</div>`:''}
     ${a.shared?`<div class="rule"><div><h3>自用保留</h3><p>剩余额度低于这条线就不再给别人用</p></div><div class="seg" role="radiogroup" aria-label="自用保留">${[['def',`默认 ${reserveText(D.rules?.reserve??30)}`],...RSV.map(v=>[String(v),reserveText(v)])].map(([v,l])=>`<label><input type="radio" name="accrsv" data-acc="${esc(a.id)}" value="${v}" ${(a.reserve==null?'def':String(a.reserve))===v?'checked':''}><span>${l}</span></label>`).join('')}</div></div>`:''}
     <div class="rule"><h3>专属出口</h3><div class="val">${a.proxy?`<span class="chip good"><span class="dot"></span>已绑定</span> <span class="mono">${esc(a.proxy)}</span>`:'<span class="chip warn">未绑定</span>'}</div></div>
     <div class="hstack mt"><button class="btn sm" data-act="refreshq:${esc(a.id)}">${ic('refresh')}刷新额度</button><small class="faint">${esc(ago(a.quotaAt))}</small><button class="btn sm" data-act="reauth">${ic('ext')}重新授权</button><button class="btn sm danger" data-act="delacc:${esc(a.id)}">${ic('trash')}删除</button></div>`,
@@ -1400,6 +1429,7 @@ document.addEventListener('click',act(async e=>{
       openDialog('撤销密钥',esc(k.name),'<p class="dim mt">不可恢复。</p>',
         `<button class="btn" data-act="close">取消</button><button class="btn primary" style="background:var(--bad)" data-act="dorevoke:${arg}">撤销</button>`);break;}
     case 'dorevoke':await api('DELETE','api/keys/'+arg);closeDialog();toast('密钥已撤销');reload();break;
+    case 'copyurl':{const x=[...(D.accounts||[]),...(D.admin?.accounts||[])].find(y=>y.id===arg);if(x?.action?.url)copy(x.action.url);break;}
     case 'copykey':{const k=D.keys?.find(x=>x.id===+arg);if(k?.key)copy(k.key);break;}
     case 'copy':copy(arg==='base'?baseURL():arg==='auth'?flow?.url||'':arg==='redirect'?D.admin?.site?.redirectURI||'':arg==='interactions'?D.admin?.site?.interactionsURL||'':createdKey||'');break;
     case 'ulimit':{const u=D.admin.users.find(x=>x.id===+arg),ov=u.dailyOverride,R=D.admin.rules||{};

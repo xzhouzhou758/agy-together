@@ -7,6 +7,8 @@ import { config } from './config.ts';
 import { one, all, run, now, getRules } from './db.ts';
 import { modelGroup, type Group, sleep } from './util.ts';
 import * as cpa from './cpa.ts';
+import { noteAction, clearAction } from './accaction.ts';
+import { classify } from './accerr.ts';
 
 export type Bucket = { window: string; frac: number; reset: string | null };
 export type Win = { key: 'gemini' | 'claude' | string; label: string; buckets: Bucket[] };
@@ -84,7 +86,10 @@ async function fetchQuota(authId: string): Promise<Quota> {
   if (!cred) throw new Error('credential not found');
   const headers = { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json', 'User-Agent': config.quotaUserAgent };
   const m = await cpa.apiCall(cred.authIndex, 'POST', config.quotaBaseURL + '/v1internal:fetchAvailableModels', headers, JSON.stringify({ project: cred.projectId }));
-  if (m.status < 200 || m.status >= 300) throw new Error('fetchAvailableModels ' + m.status + ': ' + m.body.slice(0, 300));
+  if (m.status < 200 || m.status >= 300) {
+    noteAction(authId, m.body); // the link sits deep in the body; quota_err keeps only 200 chars
+    throw new Error('fetchAvailableModels ' + m.status + ': ' + m.body.slice(0, 300));
+  }
   let groups: Quota['groups'] = [], argon: Argon = null;
   try { const j = JSON.parse(m.body); groups = parseModels(j); argon = parseArgon(j); } catch { throw new Error('fetchAvailableModels: bad body'); }
   let tier: Quota['tier'] = null, credits: Quota['credits'] = null;
@@ -97,6 +102,10 @@ async function fetchQuota(authId: string): Promise<Quota> {
     const q = await cpa.apiCall(cred.authIndex, 'POST', config.quotaBaseURL + '/v1internal:retrieveUserQuotaSummary', headers, JSON.stringify({ project: cred.projectId }));
     if (q.status >= 200 && q.status < 300) windows = parseSummary(JSON.parse(q.body));
   } catch {}
+  // quota calls keep working on a 403 account: only a healthy-looking one drops its verify / appeal link
+  const row = one('SELECT auto_disabled_at FROM accounts WHERE auth_id = ?', authId);
+  const bad = (cred.status === 'error' || cred.unavailable) && (!!classify(cred.statusMessage) || /payment_required|forbidden/i.test(cred.statusMessage));
+  if (row && row.auto_disabled_at == null && !bad) clearAction(authId);
   return { tier, credits, groups, windows, argon };
 }
 

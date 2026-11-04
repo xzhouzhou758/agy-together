@@ -1,6 +1,7 @@
 // Client for the CLIProxyAPI v8 management API. Only the portal holds the management key.
 import { config } from './config.ts';
 import { HttpError } from './util.ts';
+import type { Cooldown } from './accerr.ts';
 
 export type Cred = {
   id: string;
@@ -16,7 +17,29 @@ export type Cred = {
   note: string;
   updatedAt: string;
   createdAt: string;
+  cooldowns: Cooldown[]; // CPA's per-auth / per-model cooldowns (may include expired ones)
+  success: number;
+  failed: number;
+  lastRefresh: string | null;
 };
+
+const numOr = (v: unknown, d: number | null) => (v == null || v === '' || !Number.isFinite(Number(v)) ? d : Number(v));
+export function mapCooldowns(raw: unknown): Cooldown[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c) => c && typeof c === 'object').map((c: any) => {
+    const rem = numOr(c.remaining_seconds ?? c.remainingSeconds, 0)!;
+    const at = c.retry_at ?? c.retryAt;
+    return {
+      scope: String(c.scope || 'auth'),
+      model: String(c.model_key ?? c.modelKey ?? c.model ?? ''),
+      reason: String(c.reason || ''),
+      retryAt: at ? String(at) : rem > 0 ? new Date(Date.now() + rem * 1000).toISOString() : null,
+      remainingSeconds: rem,
+      backoffLevel: numOr(c.backoff_level ?? c.backoffLevel, null),
+      httpStatus: numOr(c.http_status ?? c.httpStatus, null),
+    };
+  });
+}
 
 async function mgmt(method: string, path: string, opts: { body?: unknown; raw?: Buffer | string; query?: Record<string, string>; timeoutMs?: number } = {}): Promise<{ status: number; data: any }> {
   const url = new URL(config.cpaURL + '/v8/management' + path);
@@ -56,7 +79,7 @@ function expectOK(r: { status: number; data: any }, what: string) {
 let credCache: { at: number; list: Cred[]; byId: Map<string, Cred>; byIndex: Map<string, string> } | null = null;
 let credInflight: Promise<void> | null = null;
 
-function mapCred(f: any): Cred {
+export function mapCred(f: any): Cred {
   return {
     id: String(f.id || f.name || ''),
     authIndex: String(f.auth_index || ''),
@@ -71,6 +94,10 @@ function mapCred(f: any): Cred {
     note: String(f.note || ''),
     updatedAt: String(f.updated_at || f.modtime || ''),
     createdAt: String(f.created_at || ''),
+    cooldowns: mapCooldowns(f.cooldowns),
+    success: Number(f.success) || 0,
+    failed: Number(f.failed) || 0,
+    lastRefresh: f.last_refresh ? String(f.last_refresh) : null,
   };
 }
 

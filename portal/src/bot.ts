@@ -14,6 +14,8 @@ import * as site from './site.ts';
 import { storedQuota } from './quota.ts';
 import { dailyWith } from './limits.ts';
 import { forbiddenReason, disableForbidden } from './autodisable.ts';
+import { classify } from './accerr.ts';
+import { actionOf } from './accaction.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const GRACE = 10 * 60e3;           // a problem must persist this long before anyone is pinged
@@ -28,14 +30,6 @@ const KINDS: Record<Problem['kind'], [string, string]> = {
   banned: ['可能被封', 'Google 停用了这个账号，暂时没法用了'],
   error: ['异常', ''],
 };
-function classify(msg: string): Problem['kind'] | null {
-  if (!msg) return null;
-  if (/verify your account|validation_required|account verification/i.test(msg)) return 'verify';
-  if (/has been disabled|suspended|terms of service|violat|account.{0,20}(banned|disabled)/i.test(msg)) return 'banned';
-  if (/invalid_grant|invalid_token|unauthenticated|\b401\b|token.{0,20}(expired|revoked)|refresh.{0,20}fail/i.test(msg)) return 'auth';
-  if (/\b403\b|permission_denied/i.test(msg)) return 'error';
-  return null;
-}
 /** What is wrong with an account right now, or null. Quota exhaustion / cooldown is not a problem. */
 export function accountProblem(row: Row, cred: cpa.Cred | undefined): Problem | null {
   if (!cred || row.suspended) return null;
@@ -194,6 +188,11 @@ function dayStart(t = now()): number {
 const TOK = 'COALESCE(u.total_tok, COALESCE(u.in_tok,0) + COALESCE(u.out_tok,0) + COALESCE(u.reasoning_tok,0))';
 
 // ---------- health watch ----------
+/** Google's verify / appeal link for a verify / banned problem, when one was seen (accounts.action_url). */
+export function linkOf(p: Problem, row: Row): string {
+  const a = p.kind === 'verify' || p.kind === 'banned' ? actionOf(row) : null;
+  return a ? `\n${a.kind === 'appeal' ? '申诉' : '验证'}链接：<${a.url}>` : '';
+}
 export type Owner = { discord_id?: unknown; name?: unknown };
 export type Item = { email: string; label?: string; hint?: string };
 /** One owner's message for this check run: all their newly-due problems (or recoveries) in one post, one @. */
@@ -265,7 +264,7 @@ export async function checkAccounts(): Promise<void> {
     }
     if (t - st.since < GRACE) continue;
     if (st.notified_at && (st.notified_at >= st.since || t - st.notified_at < REPING)) continue;
-    alerts.push({ ...a, label: p.label, hint: p.hint });
+    alerts.push({ ...a, label: p.label, hint: p.hint + linkOf(p, r) });
   }
   for (const m of alertPosts(alerts)) {
     if (await post(m.content, m.mention)) for (const id of m.authIds) run('UPDATE bot_alerts SET notified_at = ? WHERE auth_id = ?', t, id);
@@ -383,7 +382,7 @@ export function myAccounts(discordId: string, c: cpa.Creds): string {
     const retry = cred.nextRetryAfter && Date.parse(cred.nextRetryAfter) > Date.now() ? cred.nextRetryAfter : null;
     const state = cred.disabled ? '⏸️ 已停用' : p ? `⚠️ ${p.label}` : retry || cred.unavailable ? '🧊 冷却中' : '✅ 正常';
     const today = one(`SELECT COUNT(*) AS n, SUM(user_id != owner_id OR user_id IS NULL) AS others FROM usage WHERE auth_id = ? AND ts >= ?`, r.auth_id, since)!;
-    out.push(`\n**${cred.email || r.email}** ${r.shared ? '· 🍲 大锅饭' : '· 🔒 小锅饭'}\n${state}${p ? ` — ${p.hint}` : ''}`);
+    out.push(`\n**${cred.email || r.email}** ${r.shared ? '· 🍲 大锅饭' : '· 🔒 小锅饭'}\n${state}${p ? ` — ${p.hint}${linkOf(p, r)}` : ''}`);
     const q = storedQuota(r);
     if (q?.windows?.length) {
       for (const w of q.windows) out.push(`${WIN[w.key] || w.label}：${w.buckets.map((b) => `${BUCKET[b.window] || b.window} ${Math.round(b.frac * 100)}%`).join(' · ')}`);

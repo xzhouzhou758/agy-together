@@ -7,6 +7,7 @@ import { one, run, now } from './db.ts';
 import { maskSecrets } from './util.ts';
 import * as cpa from './cpa.ts';
 import { parseTrace, recentAllowed } from './gateway.ts';
+import { noteAction, clearAction } from './accaction.ts';
 
 export type TestResult = { ok: boolean; status: number; ms: number; reply: string; error: string };
 
@@ -66,7 +67,11 @@ export async function testModel(userId: number, authId: string, model: string): 
         reply = typeof c === 'string' ? c : Array.isArray(c) ? c.map((p: any) => p?.text || '').join('') : '';
       } catch {}
       res = { ok: true, status: r.status, ms, reply: reply.trim().slice(0, 200), error: '' };
-    } else res = { ok: false, status: r.status, ms, reply: '', error: errorText(r.status, r.body) };
+      clearAction(authId); // the account answers again: a stored verify / appeal link is stale
+    } else {
+      noteAction(authId, r.body);
+      res = { ok: false, status: r.status, ms, reply: '', error: errorText(r.status, r.body) };
+    }
   } catch (e) {
     const m = (e as Error).message;
     res = { ok: false, status: 0, ms: now() - start, reply: '', error: m === 'timeout' ? '超时（90 秒没有回应）' : m === 'served by another account' ? '安全检查未通过' : '连不上 CLIProxyAPI' };

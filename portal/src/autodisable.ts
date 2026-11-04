@@ -7,6 +7,7 @@ import { config } from './config.ts';
 import { all, one, run, now, type Row } from './db.ts';
 import { sleep } from './util.ts';
 import * as cpa from './cpa.ts';
+import { noteAction, clearAction } from './accaction.ts';
 
 const PROBE_EVERY_MS = 30 * 60000;
 const QUOTA_ERR_FRESH_MS = 20 * 60000; // an older quota_err may predate a manual re-enable
@@ -49,7 +50,10 @@ async function probe(cred: cpa.Cred): Promise<{ ok: boolean | null; reason?: str
     return { ok: null }; // CPA down or token refresh failed
   }
   const reason = match403(r.status + ' ' + r.body);
-  if (r.status === 403 || reason) return { ok: false, reason: reason || '403' };
+  if (r.status === 403 || reason) {
+    noteAction(cred.id, r.body); // Google's verify / appeal link, shown on 我的凭证
+    return { ok: false, reason: reason || '403' };
+  }
   // 2xx works; 429 is plain quota (CPA cools it down); 400/404 got past the permission check
   if ((r.status >= 200 && r.status < 300) || r.status === 400 || r.status === 404 || r.status === 429) return { ok: true };
   return { ok: null };
@@ -89,6 +93,7 @@ export async function sweep(): Promise<void> {
       if (!cred.disabled) {
         // someone turned it back on (admin / CPA panel): their call
         run('UPDATE accounts SET auto_disabled_at = NULL, auto_disabled_reason = NULL WHERE auth_id = ?', cred.id);
+        clearAction(cred.id);
         lastProbe.delete(cred.id);
         continue;
       }
@@ -101,6 +106,7 @@ export async function sweep(): Promise<void> {
         await cpa.setDisabled(cred.id, false);
         run(`UPDATE accounts SET auto_disabled_at = NULL, auto_disabled_reason = NULL,
           quota_err = CASE WHEN quota_err LIKE '%403%' THEN NULL ELSE quota_err END WHERE auth_id = ?`, cred.id);
+        clearAction(cred.id);
         lastProbe.delete(cred.id);
         console.log('[autodisable] re-enabled', cred.id);
       } else if (p.ok === false && p.reason) {

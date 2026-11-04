@@ -618,6 +618,20 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .ac-alert svg{width:18px;height:18px;flex:none;margin-top:2px}
 .ac-alert b{display:block;font-weight:600}
 .ac-alert small{display:block;color:var(--ink);opacity:.8;font-size:12.5px;line-height:1.5}
+.ac-alert.warn{background:var(--warn-soft);color:var(--warn)}
+.ac-al-b{flex:1;min-width:0}
+.ac-fix{margin-top:8px}
+.ac-alert .ac-fix .i{width:14px;height:14px;margin-top:0}
+.fix{display:inline-flex;align-items:center;gap:4px}
+a.btn{text-decoration:none}
+.cdl{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink)}
+.cdl li{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:8px;align-items:baseline}
+.cdl b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cdl span{opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cdl i{font-style:normal;color:var(--dim);white-space:nowrap}
+.cdrule{align-items:flex-start}
+.cdrule .cdl{flex:1;max-width:420px;margin:0}
+.ar-fix{margin-left:6px;padding:1px 8px;border-radius:999px;background:var(--accent);color:var(--accent-ink);font-weight:600;text-decoration:none}
 .bsteps{display:flex;flex-direction:column;gap:16px}
 .bstep{display:flex;gap:12px;align-items:flex-start}
 .bnum{width:26px;height:26px;flex:none;border-radius:50%;display:grid;place-items:center;font-size:13px;font-weight:600;background:var(--fill-2);color:var(--dim)}
