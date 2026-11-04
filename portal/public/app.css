@@ -620,6 +620,8 @@ textarea.input{height:auto;min-height:96px;padding-top:10px;padding-bottom:10px;
 .ac-alert small{display:block;color:var(--ink);opacity:.8;font-size:12.5px;line-height:1.5}
 .ac-alert.warn{background:var(--warn-soft);color:var(--warn)}
 .ac-al-b{flex:1;min-width:0}
+.ac-alert small.ac-raw{margin-top:6px;opacity:.65;word-break:break-word}
+.ac-raw .mono{font-size:inherit}
 .ac-fix{margin-top:8px}
 .ac-alert .ac-fix .i{width:14px;height:14px;margin-top:0}
 .fix{display:inline-flex;align-items:center;gap:4px}

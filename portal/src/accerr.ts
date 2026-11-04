@@ -39,7 +39,7 @@ export function safeGoogleURL(raw: string): string | null {
   try { u = new URL(raw); } catch { return null; }
   if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null;
   const h = u.hostname.toLowerCase();
-  const ok = h === 'google.com' || h.endsWith('.google.com') || h === 'googleapis.com' || h.endsWith('.googleapis.com') || h === 'goo.gl';
+  const ok = h === 'google.com' || h.endsWith('.google.com') || h === 'googleapis.com' || h.endsWith('.googleapis.com') || h === 'goo.gl' || h === 'forms.gle';
   return ok ? u.href : null;
 }
 

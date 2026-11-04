@@ -112,6 +112,7 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
     quotaAt: row.quota_at || null,
     quotaErr: row.quota_err || null,
     problem: accountProblem(row, cred),
+    autoOff: row.auto_disabled_at ? { at: Number(row.auto_disabled_at), reason: String(row.auto_disabled_reason || '') } : null, // autodisable.ts: when and Google's own words
     action: actionOf(row), // Google's verify / appeal link from the last 403 (cleared once the account works)
   };
 }

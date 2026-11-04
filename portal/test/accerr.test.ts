@@ -91,3 +91,8 @@ test('cooldowns: CPA fields normalized, only future ones shown, soonest first', 
   assert.equal(c.lastRefresh, '2026-11-04T00:00:00Z');
   assert.deepEqual(mapCred({ id: 'b.json' }).cooldowns, []);
 });
+
+test('extractAction: real ToS body with a forms.gle appeal link', () => {
+  const body = JSON.stringify({ error: { code: 403, status: 'PERMISSION_DENIED', details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'TOS_VIOLATION', metadata: { uiMessage: 'true', appeal_url: 'https://forms.gle/hGzM9MEUv2azZsrb9', appeal_url_link_text: 'Submit Appeal' } }] } });
+  assert.deepEqual(extractAction(body), { kind: 'appeal', url: 'https://forms.gle/hGzM9MEUv2azZsrb9' });
+});

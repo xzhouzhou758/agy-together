@@ -66,9 +66,11 @@ export async function disableForbidden(cred: cpa.Cred, reason: string): Promise<
   await cpa.setDisabled(cred.id, true);
   run('UPDATE accounts SET auto_disabled_at = ?, auto_disabled_reason = ? WHERE auth_id = ?', now(), reason, cred.id);
   console.log('[autodisable] disabled', cred.id, reason);
+  void probe(cred).catch(() => {}); // the 403 body carries Google's verify / appeal link (noteAction)
 }
 
 const lastProbe = new Map<string, number>();
+const linkTried = new Set<string>();
 let running = false;
 
 export async function sweep(): Promise<void> {
@@ -88,6 +90,8 @@ export async function sweep(): Promise<void> {
         await cpa.setDisabled(cred.id, true);
         run('UPDATE accounts SET auto_disabled_at = ?, auto_disabled_reason = ? WHERE auth_id = ?', now(), reason, cred.id);
         console.log('[autodisable] disabled', cred.id, reason);
+        linkTried.add(cred.id);
+        await probe(cred).catch(() => {}); // grab Google's verify / appeal link right away
         continue;
       }
       if (!cred.disabled) {
@@ -97,7 +101,14 @@ export async function sweep(): Promise<void> {
         lastProbe.delete(cred.id);
         continue;
       }
-      if (now() - Math.max(Number(row.auto_disabled_at), lastProbe.get(cred.id) || 0) < PROBE_EVERY_MS) continue;
+      if (now() - Math.max(Number(row.auto_disabled_at), lastProbe.get(cred.id) || 0) < PROBE_EVERY_MS) {
+        // not due yet; once per start, look for Google's verify / appeal link (result ignored: the 30 min wait stands)
+        if (!row.action_url && !linkTried.has(cred.id)) {
+          linkTried.add(cred.id);
+          await probe(cred).catch(() => {});
+        }
+        continue;
+      }
       lastProbe.set(cred.id, now());
       const p = await probe(cred);
       // owner may have toggled while the probe ran

@@ -129,7 +129,8 @@ function accIssue(a){
   if(!p&&k!=='bad'&&k!=='warn'&&!cd&&!fix)return '';
   const n=modelCds(a).length,title=p?p.label:k==='bad'||k==='warn'?(a.detail||t):n?`${n} 个模型冷却中`:a.action?.kind==='appeal'?'账号被 Google 停用':'需要验证账号';
   const sub=[p?(p.kind==='error'&&a.detail?a.detail:p.hint):'',a.retryAt?recover(a.retryAt):''].filter(Boolean).join(' · ');
-  return `<div class="ac-alert ${p||k==='bad'?'':'warn'}">${ic('alert')}<div class="ac-al-b"><b>${esc(title)}</b>${sub?`<small>${esc(sub)}</small>`:''}${cd}${fix?`<div class="ac-fix">${fix}</div>`:''}</div></div>`;
+  const g=a.autoOff?.reason?a.autoOff.reason.replace(/^403\s*/,''):'',raw=g?`<small class="ac-raw">${esc(ago(a.autoOff.at))}停用 · 403 · <span class="mono">${esc(g)}</span></small>`:'';
+  return `<div class="ac-alert ${p||k==='bad'?'':'warn'}">${ic('alert')}<div class="ac-al-b"><b>${esc(title)}</b>${sub?`<small>${esc(sub)}</small>`:''}${raw}${cd}${fix?`<div class="ac-fix">${fix}</div>`:''}</div></div>`;
 }
 /* 5 小时 / 周限额（retrieveUserQuotaSummary，与 CPA 面板同源） */
 const WINNAME={gemini:'Gemini',claude:'Claude / GPT'};
