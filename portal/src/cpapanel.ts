@@ -39,7 +39,11 @@ async function sendPanel(res: ServerResponse) {
   if (!r.ok) throw new HttpError(502, 'cpa_panel_unavailable');
   let html = await r.text();
   // The panel defaults its API base to location.origin; point it at our prefix instead.
-  html = html.replace('return np(`${e}//${t}${n?`:${n}`:``}`)', `return np(location.origin+${JSON.stringify(config.basePath + '/cpa')})`);
+  // The minified helper name changes between panel releases (np, Tp, ...), so match it loosely.
+  const base = JSON.stringify(config.basePath + '/cpa');
+  const patched = html.replace(/return ([\w$]+)\(`\$\{e\}\/\/\$\{t\}\$\{n\?`:\$\{n\}`:``\}`\)/, (_m, fn) => `return ${fn}(location.origin+${base})`);
+  if (patched === html) console.warn('cpapanel: api-base patch did not match; panel will default to the bare origin');
+  html = patched;
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
