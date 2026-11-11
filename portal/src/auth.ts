@@ -25,6 +25,8 @@ export function currentUser(req: IncomingMessage): User | null {
 export function requireUser(req: IncomingMessage): User {
   const u = currentUser(req);
   if (!u) throw new HttpError(401, 'unauthorized');
+  // an admin can look at the portal as a normal user: the page sends X-View-As: user, everything then answers as for a user
+  if (u.role === 'admin' && req.headers['x-view-as'] === 'user') return { ...u, role: 'user' };
   return u;
 }
 export function requireAdmin(req: IncomingMessage): User {

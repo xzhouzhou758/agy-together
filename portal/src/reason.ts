@@ -51,7 +51,7 @@ export function exhaustedFor(row: any, model: string): number {
     const s = Number.isFinite(t) ? Math.ceil((t - Date.now()) / 1000) : 0;
     until = Math.max(until, s > 0 ? s : 1);
   };
-  for (const w of q.windows || []) if (winKey && w.key === winKey) for (const b of w.buckets) consider(b.frac, b.reset);
+  for (const w of q.windows || []) if (winKey && w.key === winKey && !/argon/i.test(w.label || '')) for (const b of w.buckets) consider(b.frac, b.reset);
   for (const [gg, frac, reset] of q.groups || []) if (g && gg === g) consider(frac, reset);
   return until;
 }

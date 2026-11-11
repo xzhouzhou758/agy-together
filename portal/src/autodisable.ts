@@ -12,6 +12,9 @@ import { noteAction, clearAction } from './accaction.ts';
 const PROBE_EVERY_MS = 30 * 60000;
 const QUOTA_ERR_FRESH_MS = 20 * 60000; // an older quota_err may predate a manual re-enable
 const PROBE_MODEL = 'gemini-3.1-flash-lite';
+// CPA only flags a credential after real traffic fails, and quota calls still work on a banned one:
+// an idle account gets the probe now and then, so a ban nobody routes into still turns it off
+const IDLE_MS = 60 * 60000; // no usage / added for this long -> idle; also the per-account check spacing
 
 // structured "not a 403" markers win over everything; loose ones only lose to strong 403 markers
 const NOT_403 = /"code"\s*:\s*(429|401)\b|RESOURCE_EXHAUSTED|UNAUTHENTICATED|invalid_grant/i;
@@ -38,6 +41,7 @@ export function forbiddenReason(row: Row, cred: cpa.Cred): string | null {
 
 /** One tiny generation through the credential. true = works again, false = still 403, null = can't tell. */
 async function probe(cred: cpa.Cred): Promise<{ ok: boolean | null; reason?: string }> {
+  if (!cred.projectId) return { ok: null }; // no project: Google answers 403 "no valid license", which says nothing about the account
   const headers = { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json', 'User-Agent': config.quotaUserAgent };
   const body = {
     model: PROBE_MODEL, userAgent: 'antigravity', requestType: 'agent', project: cred.projectId, requestId: 'agent-' + crypto.randomUUID(),
@@ -70,8 +74,16 @@ export async function disableForbidden(cred: cpa.Cred, reason: string): Promise<
 }
 
 const lastProbe = new Map<string, number>();
+const lastIdle = new Map<string, number>(); // auth id -> last idle check
 const linkTried = new Set<string>();
 let running = false;
+
+/** Enabled account with no traffic and no idle check for IDLE_MS, and not just added. */
+function idleDue(row: Row): boolean {
+  const t = now() - IDLE_MS;
+  if ((lastIdle.get(row.auth_id) || 0) > t || Number(row.created_at || 0) > t) return false;
+  return !one('SELECT 1 FROM usage WHERE auth_id = ? AND ts > ? LIMIT 1', row.auth_id, t);
+}
 
 export async function sweep(): Promise<void> {
   if (running) return;
@@ -86,7 +98,21 @@ export async function sweep(): Promise<void> {
       if (row.auto_disabled_at == null) {
         if (cred.disabled) continue; // off by hand: not ours
         const reason = forbiddenReason(row, cred);
-        if (!reason) continue;
+        if (!reason) {
+          if (!idleDue(row)) continue;
+          lastIdle.set(cred.id, now());
+          const p = await probe(cred).catch(() => ({ ok: null as null, reason: undefined }));
+          await sleep(1000);
+          if (p.ok !== false || !p.reason) continue;
+          // owner may have toggled while the probe ran
+          if (one('SELECT auto_disabled_at FROM accounts WHERE auth_id = ?', cred.id)?.auto_disabled_at != null) continue;
+          if ((await cpa.creds(0)).byId.get(cred.id)?.disabled !== false) continue;
+          linkTried.add(cred.id); // the probe just stored the link
+          await cpa.setDisabled(cred.id, true);
+          run('UPDATE accounts SET auto_disabled_at = ?, auto_disabled_reason = ? WHERE auth_id = ?', now(), p.reason, cred.id);
+          console.log('[autodisable] disabled', cred.id, p.reason);
+          continue;
+        }
         await cpa.setDisabled(cred.id, true);
         run('UPDATE accounts SET auto_disabled_at = ?, auto_disabled_reason = ? WHERE auth_id = ?', now(), reason, cred.id);
         console.log('[autodisable] disabled', cred.id, reason);

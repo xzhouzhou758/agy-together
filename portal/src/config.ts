@@ -64,6 +64,9 @@ export const config = {
   browserUpstream: str('BROWSER_UPSTREAM', 'http://127.0.0.1:3010').replace(/\/+$/, ''),
   browserSessionMinutes: int('BROWSER_SESSION_MINUTES', 15),
 
+  // Embedding / Rerank relay config (sf.ts). Directory shared read-only with pool-gw.
+  sfDir: str('SF_DIR', './sf'),
+
   devLogin: bool('DEV_LOGIN', false),
 
   maxBodyBytes: int('MAX_BODY_MB', 50) * 1024 * 1024,

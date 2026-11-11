@@ -22,6 +22,7 @@ export function startMockCPA(opts: { apiKey: string; mgmtKey: string }) {
     claude429: false,                  // answer claude models with 429
     retryFirst: false,                 // queue a failed attempt (429) before the successful one
     recExtra: null as any,             // extra fields merged into the next usage record
+    hang: new Set<string>(),           // auth ids whose api-call never answers
     gen: new Map<string, { status: number; body: string }>(), // auth id -> upstream generateContent answer (api-call)
     rt: new Map<string, string>(),    // refresh token -> email Google's userinfo answers with
     files: new Map<string, any>(),     // uploaded credential JSON by id
@@ -133,6 +134,7 @@ export function startMockCPA(opts: { apiKey: string; mgmtKey: string }) {
         return json(res, 200, { status: s.status });
       }
       if (sub === '/requests/api-call') {
+        if ([...st.hang].some((id) => st.creds.get(id)?.index === b.auth_index)) return;
         if (String(b.url).includes('/userinfo')) {
           const c = [...st.creds.values()].find((x) => x.index === b.auth_index);
           const email = c ? st.rt.get(st.files.get(c.id)?.refresh_token) : undefined;

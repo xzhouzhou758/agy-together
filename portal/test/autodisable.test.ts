@@ -149,3 +149,38 @@ test('sweep: account re-enabled by hand drops its stored link', async () => {
   await ad.sweep();
   assert.equal(row('hand2.json').action_url, null);
 });
+
+test('sweep: idle banned account is probed and disabled; busy / new / unclear ones stay on', async () => {
+  const old = Date.now() - 2 * 3600e3;
+  const idle = account('idle.json', {}, { created_at: old });
+  const used = account('used.json', {}, { created_at: old });
+  const fresh = account('fresh.json');
+  const odd = account('odd.json', {}, { created_at: old });
+  for (const id of ['idle.json', 'used.json', 'fresh.json']) mock.st.gen.set(id, { status: 403, body: VERIFY });
+  mock.st.gen.set('odd.json', { status: 500, body: 'internal' }); // can't tell: never disables
+  db.run("INSERT INTO usage (ts, pool, auth_id, status, result, latency_ms) VALUES (?, 'shared', 'used.json', 200, 'ok', 10)", Date.now() - 5 * 60000);
+  await ad.sweep();
+  assert.equal(idle.disabled, true);
+  assert.ok(row('idle.json').auto_disabled_at > 0);
+  assert.match(row('idle.json').auto_disabled_reason, /Verify your account/);
+  for (const [c, id] of [[used, 'used.json'], [fresh, 'fresh.json'], [odd, 'odd.json']] as const) {
+    assert.equal(c.disabled, false, id);
+    assert.equal(row(id).auto_disabled_at, null, id);
+  }
+  // recovers through the regular probe
+  db.run('UPDATE accounts SET auto_disabled_at = ? WHERE auth_id = ?', Date.now() - 31 * 60000, 'idle.json');
+  mock.st.gen.set('idle.json', { status: 200, body: '{"response":{}}' });
+  await ad.sweep();
+  assert.equal(idle.disabled, false);
+  assert.equal(row('idle.json').auto_disabled_at, null);
+});
+
+test('sweep: an idle account is checked at most once an hour', async () => {
+  const c = account('hourly.json', {}, { created_at: Date.now() - 2 * 3600e3 });
+  await ad.sweep(); // works: stays on
+  assert.equal(c.disabled, false);
+  mock.st.gen.set('hourly.json', { status: 403, body: VERIFY });
+  await ad.sweep(); // checked a moment ago: not probed again
+  assert.equal(c.disabled, false);
+  assert.equal(row('hourly.json').auto_disabled_at, null);
+});

@@ -9,7 +9,7 @@ import { one, all, run, now, getRules, setRules, getSetting, setSetting, type Ro
 import { HttpError, sendJSON, readJSON, readBody, sha256, token, seal, unseal, str, clampInt, hashPassword, maskSecrets } from './util.ts';
 import { requireUser, requireAdmin, currentUser, devLogin, passwordLogin, logout, setUserActive, type User } from './auth.ts';
 import * as cpa from './cpa.ts';
-import { refreshQuota, storedQuota, lastQuotaAt } from './quota.ts';
+import { refreshQuota, storedQuota, lastQuotaAt, normalizeTier, famView, famState } from './quota.ts';
 import { breakerState, resetBreaker, accountInflight, userRotation } from './gateway.ts';
 import { MODES, newSalt } from './routing.ts';
 import { reasonText } from './reason.ts';
@@ -25,6 +25,7 @@ import { wakeFor } from './autosleep.ts';
 import { stockAdmin, setWatched } from './stock.ts';
 import * as aistudio from './aistudio.ts';
 import * as browser from './browser.ts';
+import { sfView, sfUpdate, sfTest } from './sf.ts';
 
 
 type Handler = (req: IncomingMessage, res: ServerResponse, p: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -101,20 +102,32 @@ function accountView(row: Row, cred: cpa.Cred | undefined) {
     id: row.auth_id,
     name: cred?.note || '',
     email: cred?.email || row.email || '',
-    tier: q?.tier || null,
+    tier: normalizeTier(q?.tier), // enterprise / standard read as FREE, older snapshots included
     active: !!cred && !cred.disabled,
+    createdAt: Number(row.created_at) || 0,
     asleep: !!row.sleep_at,
     shared: !!row.shared,
     reserve: row.reserve ?? null, // NULL = the admin's default (/api/rules reserve)
     proxy: proxy ? maskProxy(proxy) : null,
     ...accState(cred),
-    quota: q ? { credits: q.credits, groups: q.groups, windows: q.windows || null, argon: q.argon ?? null } : null,
+    quota: q ? { credits: q.credits, groups: q.groups, windows: q.windows || null, argon: q.argon ?? null,
+      fams: famView(q), argonState: famState(q, 'argon'), carbonState: famState(q, 'carbon'), claude55: !!q.claude55 } : null,
     quotaAt: row.quota_at || null,
     quotaErr: row.quota_err || null,
+    forbidden: forbiddenOf(row), // Google's 403 words (quota read or auto-disable), shown as the red 403 bar
     problem: accountProblem(row, cred),
     autoOff: row.auto_disabled_at ? { at: Number(row.auto_disabled_at), reason: String(row.auto_disabled_reason || '') } : null, // autodisable.ts: when and Google's own words
     action: actionOf(row), // Google's verify / appeal link from the last 403 (cleared once the account works)
   };
+}
+
+/** The upstream 403 text behind an account, or null: the last quota read failed with 403, or autodisable switched it off on a 403. */
+function forbiddenOf(row: Row): string | null {
+  const qe = String(row.quota_err || '');
+  if (/\b403\b/.test(qe)) return qe;
+  const ar = String(row.auto_disabled_reason || '');
+  if (row.auto_disabled_at && /^403\b/.test(ar)) return ar;
+  return null;
 }
 
 /** Anonymous label for an account in another user's shared-pool records. */
@@ -173,7 +186,7 @@ route('POST', '/api/setup', async (req) => {
 route('GET', '/api/me', (req) => {
   const u = requireUser(req);
   return {
-    id: u.id, name: u.name, handle: u.handle, discordId: u.discord_id, role: u.role, defaultPool: u.default_pool,
+    id: u.id, name: u.name, handle: u.handle, discordId: u.discord_id, role: u.role, realRole: currentUser(req)?.role || u.role, defaultPool: u.default_pool,
     rotation: userRotation(u.id).mode,
     inputLimit: u.input_limit ?? null,
     autoSleep: !!u.auto_sleep,
@@ -272,8 +285,54 @@ route('GET', '/api/overview', async (req) => {
     pool: await poolSummary(u),
     shops: getSetting('shops_on') === '0' ? [] : shopLinks(),
     daily: await dailyFor(u.id),
+    dash: dashboard(u, c),
   };
 });
+
+// ---------- 仪表盘 (same layout as agy-me): quota per model family, health, risk dots, recent requests ----------
+// Scope: a user's own credentials; an admin (not viewing as a user) sees every credential.
+type DashStatus = 'ok' | 'cooldown' | 'banned' | 'disabled';
+type FamW = { frac: number; reset: string | null } | null;
+function dashboard(u: User, c: Awaited<ReturnType<typeof cpa.creds>>) {
+  const admin = u.role === 'admin';
+  const rows = (admin ? all('SELECT * FROM accounts ORDER BY created_at') : all('SELECT * FROM accounts WHERE owner_id = ? ORDER BY created_at', u.id)).filter((r) => c.byId.has(r.auth_id));
+  const t = Date.now();
+  const n = { total: 0, ok: 0, cooldown: 0, banned: 0, disabled: 0 };
+  const dots: { id: string; email: string; status: DashStatus; reason: string; mine: boolean }[] = [];
+  const famKeys = ['gemini', 'claude', 'argon', 'carbon'] as const;
+  const acc = Object.fromEntries(famKeys.map((k) => [k, { total: 0, withQuota: 0, h5: [] as number[], week: [] as number[], earliest: null as number | null }]));
+  const live = (b: FamW): FamW => (b ? (b.reset && Date.parse(b.reset) <= t ? { frac: 1, reset: null } : b) : null);
+  for (const r of rows) {
+    const cred = c.byId.get(r.auth_id)!;
+    const s = accState(cred), prob = accountProblem(r, cred);
+    const status: DashStatus = cred.disabled ? 'disabled' : prob || s.state === 'error' ? 'banned' : s.state === 'cooldown' ? 'cooldown' : 'ok';
+    n.total++; n[status]++;
+    dots.push({ id: r.auth_id, email: cred.email || r.email || '', status, reason: prob?.label || s.detail || '', mine: r.owner_id === u.id });
+    if (status === 'disabled' || status === 'banned') continue;
+    const F = famView(storedQuota(r), t);
+    for (const k of famKeys) {
+      const f = F[k];
+      if (!f) continue;
+      const A = acc[k], h5 = live(f.h5), wk = live(f.week);
+      A.total++;
+      if (h5) A.h5.push(h5.frac);
+      if (wk) A.week.push(wk.frac);
+      const empty = [h5, wk].filter((b) => b && b.frac <= 0) as { frac: number; reset: string | null }[];
+      if (!empty.length) { A.withQuota++; continue; }
+      // back when the last of its empty windows refills
+      const back = empty.map((b) => (b.reset ? Date.parse(b.reset) : NaN)).filter(Number.isFinite);
+      if (back.length) { const b = Math.max(...back); if (A.earliest == null || b < A.earliest) A.earliest = b; }
+    }
+  }
+  const avg = (l: number[]) => (l.length ? l.reduce((x, y) => x + y, 0) / l.length : null);
+  const fam = Object.fromEntries(famKeys.map((k) => { const A = acc[k]; return [k, { total: A.total, withQuota: A.withQuota, h5: avg(A.h5), week: avg(A.week), earliest: A.earliest == null ? null : new Date(A.earliest).toISOString() }]; }));
+  // last 30 requests served by these credentials (admin: every request)
+  const recent = all(`SELECT ts, auth_id, COALESCE(requested_model, model) AS model, status, result, reason, latency_ms, COALESCE(cpa_ttft_ms, ttfb_ms) AS ttft FROM usage
+    ${admin ? '' : 'WHERE owner_id = ' + Number(u.id)} ORDER BY ts DESC, id DESC LIMIT 30`).reverse()
+    .map((r) => ({ ts: Number(r.ts), account: r.auth_id ? (isUp(r.auth_id) ? upName(r.auth_id) : c.byId.get(r.auth_id)?.email || '') : '', model: String(r.model || ''),
+      status: Number(r.status), failed: r.result !== 'ok', error: r.result !== 'ok' ? String(r.reason || r.result || '') : '', ttft: r.ttft == null ? null : Number(r.ttft), latency: Number(r.latency_ms) || null }));
+  return { scope: admin ? 'all' : 'mine', counts: n, fam, dots, recent };
+}
 
 // ---------- 买号渠道 (admin-curated links shown on every user's home) ----------
 type Shop = { name: string; url: string; note: string };
@@ -348,11 +407,13 @@ function tokenUse(authId: string) {
     SUM(CASE WHEN ts >= ? THEN ${tok} END) AS week, SUM(${tok}) AS total FROM usage WHERE auth_id = ?`,
     now() - 5 * 3600e3, midnight.getTime(), now() - 7 * 86400e3, authId);
   // per quota window family (matches retrieveUserQuotaSummary groups: Gemini vs Claude/GPT)
-  const fam = { gemini: { h5: 0, week: 0 }, claude: { h5: 0, week: 0 }, argon: { h5: 0, week: 0 } };
-  for (const x of all(`SELECT CASE WHEN lower(COALESCE(requested_model, model)) LIKE 'claude%' OR lower(COALESCE(requested_model, model)) LIKE 'gpt%' THEN 'claude'
-    WHEN lower(COALESCE(requested_model, model)) LIKE '%argon%' THEN 'argon' ELSE 'gemini' END AS f,
+  const fam = { gemini: { h5: 0, week: 0 }, claude: { h5: 0, week: 0 }, argon: { h5: 0, week: 0 }, carbon: { h5: 0, week: 0 } };
+  // same order as agy-me usedKeyOf: Argon, Carbon, Claude / GPT, then Gemini
+  for (const x of all(`SELECT CASE WHEN lower(COALESCE(requested_model, model)) LIKE '%argon%' THEN 'argon'
+    WHEN lower(COALESCE(requested_model, model)) LIKE '%carbon%' THEN 'carbon'
+    WHEN lower(COALESCE(requested_model, model)) LIKE 'claude%' OR lower(COALESCE(requested_model, model)) LIKE 'gpt%' THEN 'claude' ELSE 'gemini' END AS f,
     SUM(CASE WHEN ts >= ? THEN ${tok} END) AS h5, SUM(${tok}) AS week FROM usage WHERE auth_id = ? AND ts >= ? GROUP BY f`, now() - 5 * 3600e3, authId, now() - 7 * 86400e3)) {
-    fam[x.f as 'gemini' | 'claude' | 'argon'] = { h5: Number(x.h5 || 0), week: Number(x.week || 0) };
+    fam[x.f as 'gemini' | 'claude' | 'argon' | 'carbon'] = { h5: Number(x.h5 || 0), week: Number(x.week || 0) };
   }
   return { h5: Number(r?.h5 || 0), today: Number(r?.today || 0), week: Number(r?.week || 0), total: Number(r?.total || 0), fam };
 }
@@ -718,6 +779,10 @@ route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req
 route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });
 route('POST', '/api/admin/browser/kick', async (req) => { requireAdmin(req); return browser.kick(); });
 
+// Embedding / Rerank 中转（pool-gw 读同一份配置）
+route('GET', '/api/admin/sf', (req) => { requireAdmin(req); return sfView(); });
+route('PUT', '/api/admin/sf', async (req) => { requireAdmin(req); return sfUpdate(await readJSON(req)); });
+route('POST', '/api/admin/sf/test', async (req) => { requireAdmin(req); return sfTest(await readJSON(req)); });
 route('GET', '/api/admin/aistudio', (req) => { requireAdmin(req); return aistudio.aistudioOn() ? aistudio.listAll() : []; });
 route('POST', '/api/admin/aistudio/recheck', async (req) => { requireAdmin(req); aiOn(); return aistudio.sweep(); });
 route('DELETE', '/api/admin/aistudio/:id', async (req, _res, p) => aistudio.remove(requireAdmin(req).id, p.id, true));
