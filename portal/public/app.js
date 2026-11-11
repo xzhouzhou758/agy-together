@@ -3,6 +3,7 @@
 
 /* ============ 图标（内联 SVG，参考 Lucide，ISC 许可） ============ */
 const ICONS={
+  menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
   moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   home:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
@@ -48,15 +49,15 @@ const ic=n=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]||'
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const POOL={private:'小锅饭',shared:'大锅饭',aistudio:'AI Studio'};
-const poolTag=p=>`<span class="pool ${p}">${ic(p==='private'?'lock':p==='aistudio'?'spark':'users')}${POOL[p]}</span>`;
+const POOL={private:'小锅饭',shared:'大锅饭'};
+const poolTag=p=>`<span class="pool ${p}">${ic(p==='private'?'lock':'users')}${POOL[p]}</span>`;
 const level=q=>q>=40?'':q>=15?'mid':'low';
 const pad=n=>String(n).padStart(2,'0');
 function hms(ts){const d=new Date(ts);return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;}
 function mdhm(ts){const d=new Date(ts);return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;}
 function ago(ts){if(!ts)return '—';const s=Math.max(0,(Date.now()-ts)/1000);if(s<60)return '刚刚';if(s<3600)return Math.floor(s/60)+' 分钟前';if(s<86400)return Math.floor(s/3600)+' 小时前';return Math.floor(s/86400)+' 天前';}
 function until(iso){if(!iso)return '—';const s=(Date.parse(iso)-Date.now())/1000;if(!(s>0))return '0m';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;}
-function tierName(t){if(!t)return '';const x=t.toLowerCase();return x.includes('ultra')?'Ultra':x.includes('pro')?'Pro':x.includes('free')||x.includes('standard')?'Free':t;}
+function tierName(t){if(!t)return '';const x=t.toLowerCase();return x.includes('ultra')?'Ultra':x.includes('pro')?'Pro':'Free';} // enterprise / standard 也算 Free
 const ULTRA_GEM='<svg class="gem" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3h11l4.5 6-10 12L2 9z" fill="currentColor" opacity=".35"/><path d="M6.5 3h11l4.5 6-10 12L2 9zM2 9h20M9 3l3 6 3-6M12 21 9 9m6 0-3 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
 function tierTag(t,extra=''){if(!t)return '';const k=t.toLowerCase();return `<span class="tier ${esc(k)}">${k==='ultra'?ULTRA_GEM:''}${esc(t)}${extra}</span>`;}
 function fmtTok(n){return tk(n);}
@@ -70,13 +71,21 @@ const ERR={
 /* ============ 状态 ============ */
 let cfg={},me=null,page='home';
 let D={};               // 页面数据
-let ui={st:{view:'overview',range:'7d',scope:''},logView:'mine',addTab:'oauth',tr:{page:1,size:50,q:'',account:'',user:'',family:'',pool:'',err:false,auto:false}};
+let ui={admTab:(()=>{try{return localStorage.getItem('agy-admtab')||'ov'}catch(e){return 'ov'}})(),st:{view:'overview',range:'7d',scope:''},logView:'mine',addTab:'oauth',tr:{page:1,size:50,q:'',account:'',user:'',family:'',pool:'',err:false,auto:false}};
 let flow=null;          // 添加凭证流程
 let lastFocus=null;
+/* 管理员切到普通用户视角看界面（只影响自己这个浏览器） */
+const viewAsUser=()=>{try{return localStorage.getItem('agy-viewas')==='user';}catch(e){return false;}};
+async function toggleViewAs(){
+  try{viewAsUser()?localStorage.removeItem('agy-viewas'):localStorage.setItem('agy-viewas','user');}catch(e){}
+  me=await api('GET','api/me');page='home';await load('home');
+}
+const viewAsBtn=()=>me?.realRole==='admin'?`<button class="btn sm ${me.role==='admin'?'ghost':'view-user'}" data-act="viewas" title="切换管理员 / 普通用户界面">${ic(me.role==='admin'?'shield':'user')}${me.role==='admin'?'管理员':'用户视角'}</button>`:'';
 
 async function api(method,path,body,raw){
   const opt={method,headers:{},credentials:'same-origin'};
   if(method!=='GET')opt.headers['X-Portal-CSRF']='1';
+  if(viewAsUser())opt.headers['X-View-As']='user';
   if(raw!==undefined){opt.body=raw;opt.headers['Content-Type']='application/octet-stream';}
   else if(body!==undefined){opt.body=JSON.stringify(body);opt.headers['Content-Type']='application/json';}
   const r=await fetch(path,opt);
@@ -89,22 +98,57 @@ const fail=e=>toast(errText(e),true);
 function errText(e){
   const m={duplicate:'账号已存在',proxy_in_use:'出口已被占用',invalid_proxy:'代理地址无效',too_soon:'刷新太频繁',too_many_keys:'密钥数量已达上限',
     callback_rejected:'回调地址无效',state_mismatch:'回调地址与授权链接不匹配',invalid_callback:'回调地址无效',too_many_pending:'进行中的授权太多',
-    cpa_unreachable:'后端暂时不可用',invalid_zip:'ZIP 无法读取',empty_zip:'ZIP 里没有 JSON',csrf:'请求被拒绝',forbidden:'没有权限',invalid_url:'链接需以 http:// 或 https:// 开头',invalid_shops:'链接太多',invalid_channel_id:'频道 ID 应为数字',invalid_public_key:'Public Key 应为 64 位十六进制',invalid_daily_hour:'日报时间无效',bad_token:'Bot Token 无效',endpoint_rejected:'Discord 没有接受这个地址，确认站点地址能从外网打开',no_public_url:'先在「Discord 登录」里填站点地址',bot_post_failed:'发送失败：确认机器人能在这个频道发言',discord_api:'Discord 暂时无法连接'};
-  if(String(e?.code||'').startsWith('aistudio_')&&e.detail)return e.detail;
+    cpa_unreachable:'后端暂时不可用',invalid_zip:'ZIP 无法读取',empty_zip:'ZIP 里没有 JSON',csrf:'请求被拒绝',forbidden:'没有权限',invalid_url:'链接需以 http:// 或 https:// 开头',invalid_shops:'链接太多',invalid_sf_key:'Key 格式不对',invalid_sf_base:'接口地址要像 https://api.siliconflow.cn',invalid_sf_rpm:'限速填 0 以上的整数',invalid_sf_models:'模型名称或类型不对',invalid_channel_id:'频道 ID 应为数字',invalid_public_key:'Public Key 应为 64 位十六进制',invalid_daily_hour:'日报时间无效',bad_token:'Bot Token 无效',endpoint_rejected:'Discord 没有接受这个地址，确认站点地址能从外网打开',no_public_url:'先在「Discord 登录」里填站点地址',bot_post_failed:'发送失败：确认机器人能在这个频道发言',discord_api:'Discord 暂时无法连接'};
   return m[e?.code]||m[e?.message]||ERR[e?.code]||ERR[e?.message]||'操作失败';
 }
 
-/* ============ 配额 ============ */
-const QG={gp:['Gemini Pro',''],gf:['Gemini Flash','f'],ar:['Gemini 4 Argon','a'],cl:['Claude / GPT','c']};
-function qcell(f,reset){
-  const p=Math.round(f*100),lv=level(p),r=until(reset),tip=`剩余 ${p}% · ${r} 后重置`;
-  return `<span class="qcell ${lv}" title="${tip}" aria-label="${tip}"><span class="meter ${lv}"><span style="width:${Math.max(p,2)}%"></span></span><span class="pct">${p}%</span><span class="reset">${esc(r)}</span></span>`;
+/* ============ 额度片段（圆环版，照 agy-me） ============ */
+/* 重置时间已过的窗口按已恢复显示 */
+const live=b=>b&&b.reset&&Date.parse(b.reset)<=Date.now()?{...b,frac:1,reset:null}:b;
+const winP=b=>{b=live(b);return b?{p:Math.round(b.frac*100),r:short(b.reset)}:null;};
+const TOKF=new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1});
+const tokS=n=>Number.isFinite(n)&&n>0?TOKF.format(n):'—';
+const QIC={gemini:'icons/gemini.svg',claude:'icons/claude.svg'};
+const lvq=p=>p>=40?'good':p>=15?'mid':'low';
+function arcC(r,p){const t=`<circle class="tr" cx="22" cy="22" r="${r}"/>`;return p>0?t+`<circle class="${lvq(p)}" cx="22" cy="22" r="${r}" pathLength="100" stroke-dasharray="${p} 100"/>`:t;}
+function qLine(lab,b){const x=winP(b);return `<div class="aq-ln"><span class="w">${lab}</span><b class="${x?lvq(x.p):'na'}" title="剩余额度">${x?`${x.p}<small>%</small>`:'—'}</b><span class="t" title="${lab} 重置时间">${x?'↻ '+esc(x.r||'—'):''}</span></div>`;}
+/* 一个模型一格：外圈 5H，内圈 7D；f=null 是未开通 */
+function gauge(name,icon,f,used){
+  const img=`<img src="${QIC[icon]}" alt="">`;
+  if(!f)return `<div class="aq-q off"><div class="aq-ring one"><svg aria-hidden="true" viewBox="0 0 44 44">${arcC(19,0)}</svg>${img}</div><div class="aq-qb"><div class="aq-qn">${name}</div><div class="aq-off">未开通配额</div></div></div>`;
+  const ws=[f.h5,f.week].map(winP).filter(Boolean);
+  return `<div class="aq-q"><div class="aq-ring ${ws.length>1?'':'one'}"><svg aria-hidden="true" viewBox="0 0 44 44">${(ws.length?ws:[{p:0}]).map((x,i)=>arcC(i?13.6:19,x.p)).join('')}</svg>${img}</div>
+    <div class="aq-qb"><div class="aq-qn">${name}</div><div class="aq-windows">${qLine('5H',f.h5)}${qLine('7D',f.week)}</div>
+    <div class="aq-ln usage"><span class="w">已用</span><span class="amounts" title="依次为 5H 和 7D 已用量">${tokS(used?.h5)} / ${tokS(used?.week)}</span></div></div></div>`;
 }
-function quotas(a,full=false){
-  const g=a.quota?.groups||[];
-  if(!g.length)return `<div class="quotas ${full?'full':''}"><small class="faint">${a.quotaErr?'额度读取失败':'—'}</small></div>`;
-  return `<div class="quotas ${full?'full':''}">${g.map(([k,f,r])=>`<div class="qrow"><span class="qfam"><i class="${QG[k]?.[1]||''}"></i>${QG[k]?.[0]||esc(k)}</span>${qcell(f,r)}</div>`).join('')}</div>`;
+/* 四格：Gemini 3.8、Claude 5.5（或 4.6）/ GPT、Gemini 4 Argon、Gemini 4 Carbon；已用量取门户自己记的 Token */
+function quotaSlots(a){
+  const q=a.quota,F=q.fams||{},u=a.tokens?.fam||{},none={h5:null,week:null};
+  return [['Gemini 3.8','gemini',F.gemini||none,u.gemini],[`Claude ${q.claude55?'5.5':'4.6'} / GPT`,'claude',F.claude||none,u.claude],
+    ['Gemini 4 Argon','gemini',F.argon||null,u.argon],['Gemini 4 Carbon','gemini',F.carbon||null,u.carbon]];
 }
+function quotaBlock(a,cls=''){
+  const q=a.quota;
+  if(a.forbidden)return `<div class="aq-ban"><div class="aq-ban-l"><span class="aq-ban-ico"><span class="aq-lock"></span></span><div class="aq-ban-txt"><span>账号访问受限 (HTTP 403)</span><span class="aq-ban-sub">查看上游返回的错误详情</span></div></div><button type="button" data-act="reason:${esc(a.id)}">查看原因</button></div>`;
+  if(!q)return `<div class="aq-none">${a.quotaErr?'额度读取失败':'暂无模型额度遥测数据'}</div>`;
+  return `<div class="aq-quota ${cls}">${quotaSlots(a).map(x=>gauge(...x)).join('')}</div>`;
+}
+/* 状态标签：不正常的点开看原因 */
+function stInfo(a){
+  if(a.problem)return ['bad',a.forbidden?'403 异常':a.problem.label];
+  if(a.state==='error')return ['bad',a.forbidden?'403 异常':'异常'];
+  if(a.state==='cooldown')return ['warn','冷却中'];
+  if(a.state==='off')return ['off',a.asleep?'休眠中':'已停用'];
+  if(a.forbidden)return ['bad','403 异常'];
+  return ['','正常'];
+}
+function stTag(a){
+  const [c,t]=stInfo(a),why=c&&c!=='off'||a.autoOff||a.action;
+  const n=modelCds(a).length,cd=n&&!c?`<button type="button" class="aq-st warn" data-act="reason:${esc(a.id)}" title="查看原因">${n} 个模型冷却</button>`:'';
+  return (why?`<button type="button" class="aq-st ${c}" data-act="reason:${esc(a.id)}" title="查看原因">${esc(t)}</button>`:`<span class="aq-st ${c}">${esc(t)}</span>`)+cd;
+}
+/* 档位徽章：发光胶囊 */
+function gbTag(t){const n=tierName(t);if(!n)return '';const k=n.toLowerCase();return `<span class="gb ${esc(k)} sm"><span class="gb-aura"></span><span class="gb-pill"><span class="gb-beam"></span><span class="gb-t">${esc(n)}</span></span></span>`;}
 function accState(a){
   if(a.state==='off')return a.asleep?['sleep','休眠中','闲置超过 1 小时自动关闭，下次请求会自动唤醒']:['','已停用'];
   if(a.state==='cooldown')return ['warn','冷却中',[a.detail||a.reason,a.retryAt?recover(a.retryAt):''].filter(Boolean).join(' · ')];
@@ -124,39 +168,19 @@ function fixBtns(a){
   if(!a.action?.url)return '';
   return `<span class="fix"><a class="btn sm primary" href="${esc(a.action.url)}" target="_blank" rel="noopener noreferrer">${ic('ext')}${ACT[a.action.kind]||ACT.verify}</a>${cfg.browserEnabled&&D.accounts?.some(x=>x.id===a.id)?`<button class="btn sm" data-act="bropen:${esc(a.id)}">${ic('window')}用内置浏览器打开</button>`:''}<button class="btn sm ghost icon" data-act="copyurl:${esc(a.id)}" aria-label="复制链接" title="复制链接">${ic('copy')}</button></span>`;
 }
-function accIssue(a){
-  const p=a.problem,[k,t]=accState(a),cd=cdList(a),fix=fixBtns(a);
-  if(!p&&k!=='bad'&&k!=='warn'&&!cd&&!fix)return '';
-  const n=modelCds(a).length,title=p?p.label:k==='bad'||k==='warn'?(a.detail||t):n?`${n} 个模型冷却中`:a.action?.kind==='appeal'?'账号被 Google 停用':'需要验证账号';
-  const sub=[p?(p.kind==='error'&&a.detail?a.detail:p.hint):'',a.retryAt?recover(a.retryAt):''].filter(Boolean).join(' · ');
-  const g=a.autoOff?.reason?a.autoOff.reason.replace(/^403\s*/,''):'',raw=g?`<small class="ac-raw">${esc(ago(a.autoOff.at))}停用 · 403 · <span class="mono">${esc(g)}</span></small>`:'';
-  return `<div class="ac-alert ${p||k==='bad'?'':'warn'}">${ic('alert')}<div class="ac-al-b"><b>${esc(title)}</b>${sub?`<small>${esc(sub)}</small>`:''}${raw}${cd}${fix?`<div class="ac-fix">${fix}</div>`:''}</div></div>`;
-}
-/* 5 小时 / 周限额（retrieveUserQuotaSummary，与 CPA 面板同源） */
-const WINNAME={gemini:'Gemini',claude:'Claude / GPT'};
-const BUCKET={'5h':'5H',weekly:'Weekly'};
 const fmtK=n=>{n=Number(n)||0;return n>=1e9?(n/1e9).toFixed(n>=1e10?0:1)+'B':n>=1e6?(n/1e6).toFixed(n>=1e7?0:1)+'M':n>=1e3?(n/1e3).toFixed(n>=1e4?0:1)+'K':String(n);};
 function short(iso){if(!iso)return '';const ms=Date.parse(iso)-Date.now();if(!(ms>0))return 'now';const n=Math.ceil(ms/6e4),d=Math.floor(n/1440),h=Math.floor(n%1440/60),m=n%60;return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${m}m`;}
 function dur(iso){if(!iso)return '';const ms=Date.parse(iso)-Date.now();if(!(ms>0))return '可刷新';const n=Math.max(1,Math.ceil(ms/6e4)),d=Math.floor(n/1440),h=Math.floor(n%1440/60),m=n%60;
   return (d?`${d} 天 ${h} 小时`:h?`${h} 小时 ${m} 分钟`:`${m} 分钟`)+'后刷新';}
-function quotaWindows(a){
-  const W=a.quota?.windows,F=a.tokens?.fam||{};
-  if(!W?.length)return quotas(a,true);
-  return W.map(w=>{const weekEmpty=w.buckets.some(b=>b.window==='weekly'&&b.frac<=0),fam=w.key==='claude'?'claude':'gemini';
-    return `<div class="qwin"><div class="qwin-t">${w.key==='claude'?CLA:GEM}${esc(WINNAME[w.key]||w.label)}</div>${w.buckets.map(b=>{
-      const p=Math.round(b.frac*100),lv=level(p),full=b.frac===1&&(b.window!=='5h'||!weekEmpty),used=b.window==='5h'?F[fam]?.h5:b.window==='weekly'?F[fam]?.week:null;
-      return `<div class="qb"><div class="qb-h"><span>${esc(BUCKET[b.window]||b.window)}${used!=null?` <i class="tku">(${fmtK(used)})</i>`:''}</span><span class="qb-m"><span>${esc(short(b.reset))}</span><b class="${lv}">${full?'100%':p+'%'}</b></span></div><div class="meter ${lv}"><span style="width:${Math.max(p,1)}%"></span></div></div>`;}).join('')}</div>`;}).join('');
-}
 const stateChip=a=>{const [k,t,r]=accState(a);return `<span class="chip ${k}"${r?` title="${esc(r)}"`:''}><span class="dot"></span>${t}</span>`;};
 
 /* ============ 通用片段 ============ */
 function head(title,actions=''){return `<div class="head"><div><h1>${title}</h1></div>${actions?`<div class="hstack">${actions}</div>`:''}</div>`;}
 function empty(icon,title,action=''){return `<div class="empty"><div class="bubble">${ic(icon)}</div><h2>${title}</h2>${action}</div>`;}
 function poolPicker(name,selected){
-  return `<div class="pools ${cfg.aistudio?'three':''}" role="radiogroup" aria-label="账号池">
+  return `<div class="pools" role="radiogroup" aria-label="账号池">
     <label class="pool-opt"><input type="radio" name="${name}" value="private" ${selected==='private'?'checked':''}><span class="box"><b>${ic('lock')} 小锅饭</b><small>只用自己的账号</small></span></label>
     <label class="pool-opt"><input type="radio" name="${name}" value="shared" ${selected==='shared'?'checked':''}><span class="box"><b>${ic('users')} 大锅饭</b><small>用朋友共享的账号</small></span></label>
-    ${cfg.aistudio&&!name.startsWith('default')?`<label class="pool-opt"><input type="radio" name="${name}" value="aistudio" ${selected==='aistudio'?'checked':''}><span class="box"><b>${ic('spark')} AI Studio</b></span></label>`:''}
   </div>`;
 }
 const reserveText=v=>v?v+'%':'不保留';
@@ -165,26 +189,25 @@ const baseURL=()=>me?.baseURL&&me.baseURL!=='/v1'?me.baseURL:new URL('v1',locati
 
 /* ============ 页面 ============ */
 const PAGES=[
-  ['home','home','概览','概览'],
+  ['home','home','仪表盘','仪表盘'],
   ['accounts','key','我的凭证','凭证'],
-  ['pool','pot','大锅饭 / 小锅饭','锅饭'],
-  ['aistudio','spark','AI Studio','Studio'],
-  ['keys','terminal','API 密钥','密钥'],
+  ['pool','pot','大锅饭 / 小锅饭','大小锅饭'],
+  ['keys','terminal','API 密钥','API 密钥'],
   ['logs','activity','流量日志','日志'],
   ['stats','chart','Token 统计','统计'],
   ['browser','window','浏览器','浏览器'],
   ['profile','user','个人中心','我的'],
   ['users','users','用户管理','用户'],
-  ['admin','shield','管理员后台','管理'],
+  ['admin','shield','管理员后台','后台'],
 ];
-const navPages=()=>PAGES.filter(p=>p[0]==='aistudio'?!!cfg.aistudio:p[0]==='browser'?!!cfg.browserEnabled:(p[0]!=='admin'&&p[0]!=='users')||me?.role==='admin');
+const navBtns=(full)=>navPages().map(([id,icon,long,short])=>`<button type="button" data-act="goto:${id}" aria-current="${page===id?'page':'false'}" title="${long}">${ic(icon)}<span>${full?long:short}</span></button>`).join('');
+const navPages=()=>PAGES.filter(p=>p[0]==='browser'?!!cfg.browserEnabled:(p[0]!=='admin'&&p[0]!=='users')||me?.role==='admin');
 
 const LOADERS={
   home:async()=>{D.ov=await api('GET','api/overview');},
   accounts:async()=>{[D.accounts,D.rules]=await Promise.all([api('GET','api/accounts'),api('GET','api/rules')]);},
   pool:async()=>{[D.pool,D.rules,D.res]=await Promise.all([api('GET','api/pool/summary'),api('GET','api/rules'),api('GET','api/pool/resources').catch(()=>null)]);},
   keys:async()=>{D.keys=await api('GET','api/keys');},
-  aistudio:async()=>{D.ais=await api('GET','api/aistudio');D.aisAll=me?.role==='admin'?await api('GET','api/admin/aistudio').catch(()=>[]):null;},
   logs:async()=>{
     if(ui.logView==='mine')D.traffic=await api('GET','api/traffic?'+trafficQS());
     else D.contrib=await api('GET','api/usage/contributions');
@@ -196,7 +219,7 @@ const LOADERS={
   users:async()=>{const [users,rules]=await Promise.all([api('GET','api/admin/users'),api('GET','api/rules')]);D.admin={...(D.admin||{}),users,rules};},
   admin:async()=>{
     const [usage,users,accounts,proxies,shops,upstreams,rules,site,retry]=await Promise.all(['usage','users','accounts','proxies','shops','upstreams'].map(x=>api('GET','api/admin/'+x)).concat([api('GET','api/rules'),api('GET','api/admin/site'),api('GET','api/admin/retry').catch(()=>null)]));
-    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,ais:cfg.aistudio?await api('GET','api/admin/aistudio').catch(()=>[]):[],bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),stock:await api('GET','api/admin/stock').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true})),br:cfg.browserEnabled?await api('GET','api/admin/browser').catch(()=>null):null};
+    D.admin={usage,users,accounts,proxies,shops,upstreams,rules,site,retry,bot:await api('GET','api/admin/bot').catch(()=>null),botchat:await api('GET','api/admin/botchat').catch(()=>null),kb:await api('GET','api/admin/kb').catch(()=>[]),sharedAllow:(await api('GET','api/admin/shared-models').catch(()=>({allow:null}))).allow,res:await api('GET','api/pool/resources').catch(()=>null),stock:await api('GET','api/admin/stock').catch(()=>null),sw:await api('GET','api/admin/switches').catch(()=>({mentions:true,proactive:false,stockOnly:false,shops:true})),br:cfg.browserEnabled?await api('GET','api/admin/browser').catch(()=>null):null,sf:await api('GET','api/admin/sf').catch(()=>null)};
   },
 };
 
@@ -209,10 +232,52 @@ function dailyCard(d){
     ${unl?'':`<div class="meter ${lv}"><span style="width:${Math.max(p,1)}%"></span></div>`}
     ${!unl&&d.override==null?`<small class="faint">共享一个 Pro 号，每天多 ${d.per} 次</small>`:''}</section>`;
 }
+/* ============ 仪表盘（照 agy-me pageDash）：普通用户看自己的凭证，管理员看全部 ============ */
+const DST={ok:['good','正常'],cooldown:['warn','冷却'],banned:['bad','异常'],disabled:['','停用']};
+/* 额度族卡片：和凭证页同一套圆环（外圈 5H 平均，内圈 7D 平均） */
+function famCard(k,name,icon){
+  const F=D.ov.dash.fam[k]||{total:0},tot=F.total,pc=v=>v==null?null:Math.round(v*100);
+  const h=pc(F.h5),w=pc(F.week),ws=[h,w].filter(x=>x!=null);
+  const ring=`<div class="aq-ring fcq-ring ${ws.length>1?'':'one'}"><svg viewBox="0 0 44 44" aria-hidden="true">${(ws.length?ws:[0]).map((p,i)=>arcC(i?13.6:19,p)).join('')}</svg><img src="${QIC[icon]}" alt=""></div>`;
+  const ln=(lab,p)=>`<div class="aq-ln"><span class="w">${lab}</span><b class="${p==null?'na':lvq(p)}">${p==null?'—':p+'<small>%</small>'}</b></div>`;
+  const back=tot&&F.withQuota<tot&&F.earliest?`<span class="fc-back" title="${esc(new Date(F.earliest).toLocaleString())}">↻ ${esc(short(F.earliest)||'即将')}</span>`:'';
+  return `<section class="stat glass fcq ${tot?'':'off'}"><div class="fcq-n">${name}${back}</div>
+    <div class="fcq-b">${ring}${tot?`<div class="fcq-m"><div class="num">${F.withQuota}<small>/ ${tot}</small></div><div class="aq-windows">${ln('5H',h)}${ln('7D',w)}</div></div>`:`<div class="fcq-m"><div class="aq-off">未开通配额</div></div>`}</div></section>`;
+}
+const hv=p=>p>=80?'':p>=50?'mid':'low';
+function healthCard(){
+  const n=D.ov.dash.counts,usable=n.total-n.disabled,p=usable?Math.round(n.ok/usable*100):null;
+  return `<section class="stat glass fc"><div class="fc-h">${ic('shield')}<span>账号健康</span></div>
+    ${p==null?`<div class="num faint">—</div>`:`<div class="num">${n.ok}<small>/ ${usable}</small></div>
+    <div class="meter ${hv(p)}"><span style="width:${Math.max(p,1)}%"></span></div>`}
+    <div class="legend">${['ok','cooldown','banned','disabled'].map(s=>`<span><i class="sdot ${DST[s][0]}"></i>${DST[s][1]} <b>${n[s]}</b></span>`).join('')}</div></section>`;
+}
+function riskCard(){
+  const L=D.ov.dash.dots;
+  return `<section class="card glass"><div class="card-head"><h2>风控</h2><div class="legend">${['ok','cooldown','banned','disabled'].map(s=>`<span><i class="sdot ${DST[s][0]}"></i>${DST[s][1]}</span>`).join('')}</div></div>
+    ${L.length?`<div class="dots">${L.map(d=>{const t=esc(d.email+(d.reason?' · '+d.reason:''));return d.mine?`<button class="rdot ${d.status}" data-act="jump:${esc(d.id)}" title="${t}" aria-label="${esc(d.email)} ${DST[d.status][1]}"></button>`:`<i class="rdot ${d.status}" title="${t}"></i>`;}).join('')}</div>`:'<p class="faint">还没有凭证</p>'}</section>`;
+}
+function recentCard(){
+  const R=D.ov.dash.recent;
+  const T=R.filter(r=>!r.failed&&r.ttft).map(r=>r.ttft),top=T.length?Math.max(...T):null,max=Math.max(1000,top||0);
+  const bars=R.map(r=>{const h=r.failed?100:Math.max(6,Math.round((r.ttft||0)/max*100));
+    const tip=[`${mdhm(r.ts)}:${pad(new Date(r.ts).getSeconds())}`,r.account,r.model,r.failed?`${r.status} · ${r.error}`:`首字 ${sec(r.ttft)} · 耗时 ${sec(r.latency)}`].filter(Boolean).join('\n');
+    return `<i class="rb ${r.failed?'bad':''}" style="height:${h}%" title="${esc(tip)}"></i>`;}).join('');
+  const ok=R.filter(r=>!r.failed).length;
+  return `<section class="card glass"><div class="card-head"><h2>最近请求</h2><small class="faint">${R.length?`${ok}/${R.length} 成功${top!=null?` · 最高 ${sec(top)}`:''}`:''}</small></div>
+    ${R.length?`<div class="rbars" role="img" aria-label="最近 ${R.length} 次请求的首字时间">${bars}</div>`:'<p class="faint">还没有请求</p>'}</section>`;
+}
+function dashTop(){
+  const X=D.ov.dash;if(!X)return '';
+  return `<div class="grid g4">${famCard('gemini','Gemini 3.8','gemini')}${famCard('claude','Claude / GPT','claude')}${famCard('argon','Gemini 4 Argon','gemini')}${famCard('carbon','Gemini 4 Carbon','gemini')}</div>
+  <div class="grid dash-2">${healthCard()}${riskCard()}</div>
+  ${recentCard()}`;
+}
 function pageHome(){
-  const o=D.ov;
+  const o=D.ov,n=o.dash?.counts;
   const noacc=o.accounts===0;
-  return head(`你好，${esc(me.name)}`,`<button class="btn" data-act="goto:keys">${ic('terminal')}获取 API 密钥</button><button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)+annBanner()+
+  const nums=n?`<div class="dnums"><div><small>总账号</small><b>${n.total}</b></div><div><small>可用</small><b class="good-t">${n.ok}</b></div><div><small>正常率</small><b>${n.total-n.disabled?`${Math.round(n.ok/(n.total-n.disabled)*100)}<small>%</small>`:'—'}</b></div></div>`:'';
+  return head('仪表盘',`${nums}<button class="btn" data-act="goto:keys">${ic('terminal')}获取 API 密钥</button><button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)+annBanner()+dashTop()+
   (noacc?`<div class="card glass">${empty('key','还没有凭证',`<button class="btn primary" data-act="add">${ic('plus')}添加第一个凭证</button>`)}</div>`:'')+
   `<div class="grid g4 ${noacc?'mt-l':''}">
     <div class="stat glass mine"><div class="label">${ic('key')}我的账号</div><div class="num">${o.accounts}</div><small>${o.enabled} 个已启用</small></div>
@@ -237,7 +302,7 @@ function pageHome(){
     </section>
   </div>
   ${o.shops?.length?`<section class="card glass">
-    <div class="card-head"><div><h2>聪明佬打野的买号渠道</h2><p>谨慎购买，炸了不管</p></div></div>
+    <div class="card-head"><div><h2>买号渠道</h2><p>谨慎购买，炸了不管</p></div></div>
     <div class="shops">${o.shops.map(s=>`<a class="shop" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer"><span><strong>${esc(s.name)}</strong>${s.note?`<small>${esc(s.note)}</small>`:''}</span>${ic('ext')}</a>`).join('')}</div>
   </section>`:''}
   <section class="card glass">
@@ -246,93 +311,73 @@ function pageHome(){
   </section>`;
 }
 
-function reqStrip(r){
-  const rec=r?.recent||[],cells=Array.from({length:20},(_,i)=>{const v=rec[rec.length-20+i];return `<i class="${v===1?'ok':v===0?'bad':''}"></i>`;}).join('');
-  return `<div class="strip" title="最近 20 次请求"><span class="sq" aria-label="最近 20 次请求">${cells}</span><small><b class="good-t">${r?.ok||0}</b> ok · <b class="bad-t">${r?.fail||0}</b> fail</small></div>`;
-}
-function accCard(a){
-  const p=a.problem,[k]=accState(a),tier=tierName(a.tier);
-  return `<article class="acard ${a.active?'':'off'}">
-    <div class="ac-top">
-      <div class="ar-main">
-        <div class="ar-name"><span class="sdot ${p?'bad':k||'idle'}"></span><strong title="${esc(a.email)}">${esc(a.email||a.id)}</strong></div>
-        <div class="ar-meta">${tierTag(tier)}${a.shared?'<span class="ar-tag">大锅饭</span>':''}${a.name?`<span class="ar-note">${esc(a.name)}</span>`:''}</div>
-      </div>
-      ${p?'':stateChip(a)}
-    </div>
-    ${accIssue(a)}
-    <div class="ac-tiles">${qPills(a)}</div>
-    <div class="ac-sub">${reqStrip(a.requests)}${tokUse(a)}</div>
-    <div class="ac-foot">
-      <button class="btn sm ghost icon" data-act="models:${esc(a.id)}" aria-label="模型" title="模型">${ic('layers')}</button>
-      <button class="btn sm ghost icon" data-act="refreshq:${esc(a.id)}" aria-label="刷新额度" title="刷新额度">${ic('refresh')}</button>
-      <button class="btn sm ghost icon" data-act="detail:${esc(a.id)}" aria-label="详情" title="详情">${ic('sliders')}</button>
-      <button class="btn sm ghost icon danger" data-act="delacc:${esc(a.id)}" aria-label="删除" title="删除">${ic('trash')}</button>
-      <span class="switch-field sm ac-on"><small>大锅饭</small><button class="switch share" role="switch" aria-checked="${a.shared}" aria-label="${esc(accName(a))} 参与大锅饭" data-act="share:${esc(a.id)}"></button></span>
-      <span class="switch-field sm"><small>启用</small><button class="switch" role="switch" aria-checked="${a.active}" aria-label="启用 ${esc(accName(a))}" data-act="toggle:${esc(a.id)}"></button></span>
-    </div>
-  </article>`;
-}
-/* 已用 Token：这个号服务过的请求（含帮别人的） */
-function tokUse(a){
-  const t=a.tokens;if(!t)return '';
-  return `<div class="tokline"><span>Today <b class="mono">${fmtK(t.today)}</b></span><span>7D <b class="mono">${fmtK(t.week)}</b></span><span>Total <b class="mono">${fmtK(t.total)}</b></span></div>`;
-}
-/* 简略视图：每个号一行，额度胶囊的底色就是剩余进度 */
 // official marks (same files the CLIProxyAPI panel uses)
 const GEM='<img class="qp-ic" src="icons/gemini.svg" alt="" aria-hidden="true">';
 const CLA='<img class="qp-ic" src="icons/claude.svg" alt="" aria-hidden="true">';
 const GPT='<span class="qp-ic gpt-ic" aria-hidden="true"><img class="lt" src="icons/openai.svg" alt=""><img class="dk" src="icons/openai-dark.svg" alt=""></span>';
-function pill(fam,label,win,frac,reset,used){
-  const p=Math.round(frac*100),lv=p>=40?'good':p>=15?'mid':'low';
-  return `<div class="qt ${lv}" title="${esc(`${label} ${win} · ${p}% left${reset?' · resets in '+short(reset):''}${used!=null?' · used '+fmtK(used)+' tokens':''}`)}">
-    <div class="qt-a">${fam==='claude'?CLA:GEM}<b>${esc(label)}</b>${used!=null?`<i class="tku">${fmtK(used)}</i>`:''}<span class="qt-p">${p}<small>%</small></span></div>
-    <div class="qt-bar"><span style="width:${Math.max(p,2)}%"></span></div>
-    <div class="qt-c"><span>${esc(win)}</span><span>${esc(short(reset))}</span></div></div>`;
+/* 我的凭证：一个号一张卡 / 一行（圆环版） */
+const lsGet=(k,d)=>{try{return localStorage.getItem(k)??d;}catch(e){return d;}};
+const lsSet=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
+const cssId=id=>String(id).replace(/[^A-Za-z0-9_-]/g,'_');
+/* 旧的「完整 / 紧凑」= 现在的卡片 / 列表 */
+const accView=()=>{const v=lsGet('agy-accview','card');return v==='compact'||v==='list'?'list':'card';};
+ui.acc={page:1,size:+lsGet('agy-accsize','10')||10,sort:(s=>AF.QUOTA_SORTS.some(k=>s===k||s==='-'+k)?s:'')(lsGet('agy-accsort','')),focus:null};
+const A_who=a=>`<div class="aq-who"><div class="aq-mail" title="${esc(a.email)}">${esc(a.email||a.id)}</div><div class="aq-meta">${gbTag(a.tier)}${stTag(a)}${a.shared?`<span class="aq-pool" title="自用保留 ${reserveText(a.reserve??D.rules?.reserve??30)}">大锅饭${a.reserve!=null?' · 留 '+reserveText(a.reserve):''}</span>`:''}${a.name?`<span class="aq-sep"></span><span title="备注">${esc(a.name)}</span>`:''}</div></div>`;
+const A_acts=a=>`<button class="btn sm ghost icon" data-act="models:${esc(a.id)}" aria-label="模型" title="模型">${ic('layers')}</button><button class="btn sm ghost icon" data-act="refreshq:${esc(a.id)}" aria-label="刷新额度" title="刷新额度">${ic('refresh')}</button><button class="btn sm ghost icon" data-act="detail:${esc(a.id)}" aria-label="详情" title="详情">${ic('sliders')}</button>`;
+const A_share=a=>`<button type="button" role="switch" class="aq-tog share" data-act="share:${esc(a.id)}" aria-label="${esc(accName(a))} 参与大锅饭" aria-checked="${!!a.shared}"><span>大锅饭</span><span class="aq-sw" aria-hidden="true"></span></button>`;
+const A_tog=a=>`<button type="button" role="switch" class="aq-tog" data-act="toggle:${esc(a.id)}" aria-label="启用 ${esc(accName(a))}" aria-checked="${!!a.active}"><span>${a.active?'启用':'停用'}</span><span class="aq-sw" aria-hidden="true"></span></button>`;
+const syncTxt=a=>a.quotaAt?esc(ago(a.quotaAt))+'同步':'未同步';
+const accCard=a=>`<article class="aq-card aq-glass ${AF.tierOf(a.tier)==='ULTRA'?'aq-ultra':''} ${a.active?'':'off'}" id="acc-${cssId(a.id)}">
+      <div><div class="aq-head">${A_who(a)}</div>${quotaBlock(a)}</div>
+      <div class="aq-foot"><span class="aq-foot-l"><span class="aq-clock"></span><span>${syncTxt(a)}</span></span><span class="aq-act">${A_acts(a)}${A_share(a)}${A_tog(a)}</span></div></article>`;
+const accRow=a=>`<div class="aq-row ${a.active?'':'off'}" id="acc-${cssId(a.id)}">${A_who(a)}${quotaBlock(a)}<span class="aq-act">${A_acts(a)}${A_share(a)}${A_tog(a)}</span></div>`;
+/* 分页：当前页的号；跳到某个号时翻到它所在的页 */
+const ACC_SIZES=[10,20,50,100];
+const accSorted=()=>AF.sort(D.accounts||[],ui.acc.sort);
+function pageList(){
+  const L=accSorted(),n=ui.acc.size,pages=Math.max(1,Math.ceil(L.length/n));
+  if(ui.acc.focus){const i=L.findIndex(a=>a.id===ui.acc.focus);if(i>=0)ui.acc.page=Math.floor(i/n)+1;}
+  ui.acc.page=Math.min(Math.max(1,ui.acc.page|0),pages);
+  return {L,P:L.slice((ui.acc.page-1)*n,ui.acc.page*n),pages};
 }
-function qPills(a){
-  const old=a.quotaAt&&Date.now()-a.quotaAt>30*6e4?`<small class="q-stale" title="额度数据不是实时的，点刷新额度拿最新的">${ago(a.quotaAt)}的数据</small>`:'';
-  return qTiles(a)+old;
+function accPager(total,pages){
+  const n=ui.acc.size,p=ui.acc.page,from=total?(p-1)*n+1:0,to=Math.min(total,p*n);
+  return `<div class="pager aq-pager"><small class="faint">${from}–${to} / ${total}</small>
+    <select class="select sm" data-accsize aria-label="每页显示">${ACC_SIZES.map(x=>`<option value="${x}" ${x===n?'selected':''}>${x} 个/页</option>`).join('')}</select>
+    <button class="btn sm ghost" data-act="apg:${p-1}" ${p<=1?'disabled':''} aria-label="上一页">‹</button><span class="mono faint">${p} / ${pages}</span><button class="btn sm ghost" data-act="apg:${p+1}" ${p>=pages?'disabled':''} aria-label="下一页">›</button>
+    <label class="aq-jump"><span>跳至</span><input class="input sm" type="number" min="1" max="${pages}" data-accjump value="${p}" aria-label="跳到第几页"><span>页</span></label></div>`;
 }
-function qTiles(a){
-  const W=a.quota?.windows,F=a.tokens?.fam||{};
-  // Gemini 4 Argon has its own upstream quota (per-model quotaInfo); the summary windows don't include it
-  const ar=a.quota?.argon==='off'?null:(a.quota?.groups||[]).find(g=>g[0]==='ar'),arT=a.quota?.argon==='off'?`<div class="qt wide off" title="上游把这个号的 Argon 标成了 disabled，用不了"><div class="qt-a">${GEM}<b>Gemini 4 Argon</b><span class="qt-p">未开通</span></div></div>`:ar?pill('argon','Gemini 4 Argon',ar[2]&&Date.parse(ar[2])-Date.now()<6*3600e3?'5H':'Weekly',ar[1],ar[2],F.argon?.week??null).replace('class="qt ','class="qt wide '):'';
-  if(W?.length)return W.map(w=>{const fam=w.key==='claude'?'claude':'gemini',lab=w.key==='gemini'?'Gemini':w.key==='claude'?'Claude':w.label;
-    return w.buckets.map(b=>pill(fam,lab,BUCKET[b.window]||b.window,b.frac,b.reset,b.window==='5h'?F[fam]?.h5:b.window==='weekly'?F[fam]?.week:null)).join('');}).join('')+arT;
-  const G=a.quota?.groups||[];
-  if(G.length)return G.map(([k,f,r])=>pill(k==='cl'?'claude':'gemini',QG[k]?.[0]||k,'',f,r,k==='ar'?F.argon?.week??null:null)).join('');
-  return `<small class="faint">${a.quotaErr?'额度读取失败，点刷新再试':'还没有额度数据'}</small>`;
+/* 表头排序：只有「模型配额」一个；剩得多在前 → 剩得少在前 → 默认（导入时间） */
+const SORT_LABEL=Object.fromEntries(AF.SORTS);
+function sortBtns(keys){
+  const cur=ui.acc.sort||'',d=cur.startsWith('-'),k=d?cur.slice(1):cur;
+  return keys.map(x=>`<button type="button" class="sorth${x===k?' on':''}" data-act="asort:${x}" aria-label="按${SORT_LABEL[x]}排序"${x===k?` aria-sort="${d?'descending':'ascending'}"`:''}>${SORT_LABEL[x]}<i>${x===k?(d?'↓':'↑'):'⇅'}</i></button>`).join('');
 }
-function accProb(a){
-  const p=a.problem,[k,t,why]=accState(a),cds=modelCds(a);
-  const fix=a.action?.url?`<a class="ar-fix" href="${esc(a.action.url)}" target="_blank" rel="noopener noreferrer">${ACT[a.action.kind]||ACT.verify}</a>`:'';
-  if(p)return `<div class="ar-prob" title="${esc(p.kind==='error'&&a.detail?a.detail:p.hint)}">${ic('alert')}${esc(p.label)}${fix}</div>`;
-  if(k==='bad'||k==='warn')return `<div class="ar-prob ${k}" title="${esc(why||'')}">${esc(a.detail?t+' · '+a.detail:t)}${a.retryAt?` · ${esc(recover(a.retryAt))}`:''}${fix}</div>`;
-  if(cds.length)return `<div class="ar-prob warn" title="${esc(cds.map(c=>`${c.model} · ${c.text} · ${recover(c.retryAt)}`).join('\n'))}">${cds.length} 个模型冷却中${fix}</div>`;
-  return fix?`<div class="ar-prob">${fix}</div>`:'';
+let accIds='';
+function accBody(){
+  const {L:LL,P:L,pages}=pageList();accIds=L.map(a=>a.id).join('\n');
+  const pg=accPager(LL.length,pages),QS=AF.QUOTA_SORTS;
+  if(accView()==='card')return `<div class="acards-head"><span class="sorts">${sortBtns(QS)}</span></div><div class="aq-cards">${L.map(accCard).join('')}</div>${pg}`;
+  return `<section class="aq-list aq-glass"><div class="aq-row th"><span class="aq-th-who"></span><span class="sorts aq-sorts">${sortBtns(QS)}</span><span></span></div>
+    ${L.map(accRow).join('')}</section>${pg}`;
 }
-function accRow(a){
-  const [k,t]=accState(a),p=a.problem,tier=tierName(a.tier);
-  return `<div class="arow ${a.active?'':'off'}">
-    <div class="ar-main">
-      <div class="ar-name"><span class="sdot ${p?'bad':k||'idle'}" title="${esc(p?p.label:t)}"></span><strong title="${esc(a.email)}">${esc(a.email||a.id)}</strong></div>
-      <div class="ar-meta">${tierTag(tier)}${a.shared?`<span class="ar-tag" title="自用保留 ${reserveText(a.reserve??D.rules?.reserve??30)}">大锅饭${a.reserve!=null?' · 留 '+reserveText(a.reserve):''}</span>`:''}${a.name?`<span class="ar-note">${esc(a.name)}</span>`:''}<span class="ar-today">Today <b class="mono">${fmtK(a.tokens?.today)}</b></span></div>
-      ${accProb(a)}
-    </div>
-    <div class="ar-pills">${qPills(a)}</div>
-    <div class="ar-act">
-      <button class="btn sm ghost icon" data-act="models:${esc(a.id)}" aria-label="模型" title="模型">${ic('layers')}</button>
-      <button class="btn sm ghost icon" data-act="refreshq:${esc(a.id)}" aria-label="刷新额度" title="刷新额度">${ic('refresh')}</button>
-      <button class="btn sm ghost icon" data-act="detail:${esc(a.id)}" aria-label="详情" title="详情">${ic('sliders')}</button>
-      <button class="switch" role="switch" aria-checked="${a.active}" aria-label="启用 ${esc(accName(a))}" title="${a.active?'已启用':'已停用'}" data-act="toggle:${esc(a.id)}"></button>
-    </div>
-  </div>`;
+function refreshAcc(){const b=$('#acc-body');if(b)b.innerHTML=accBody();else render();}
+/* 静默更新：只换内容变了的号；可见的号或顺序变了才整块重画 */
+function patchAcc(prev){
+  const b=$('#acc-body');if(page!=='accounts'||!b){render();return;}
+  const {P:L}=pageList();
+  if(L.map(a=>a.id).join('\n')!==accIds||!b.querySelector('.aq-card,.aq-row:not(.th)')){refreshAcc();return;}
+  const old=new Map((prev||[]).map(a=>[a.id,JSON.stringify(a)])),f=accView()==='card'?accCard:accRow;
+  for(const a of L){if(old.get(a.id)===JSON.stringify(a))continue;const el=document.getElementById('acc-'+cssId(a.id));if(el)el.outerHTML=f(a);}
 }
-const accView=()=>{try{return localStorage.getItem('agy-accview')||'full'}catch(e){return 'full'}};
+setInterval(async()=>{
+  if(!me||page!=='accounts'||loadState!=='idle'||dialogOpen()||document.visibilityState!=='visible')return;
+  let r;try{r=await api('GET','api/accounts');}catch(e){return;}
+  if(page!=='accounts'||dialogOpen()||!Array.isArray(r))return;
+  const prev=D.accounts;D.accounts=r;patchAcc(prev);
+},60000);
 function sleepBar(){
-  return `<section class="card glass sleepbar"><div class="row"><div><h2>${ic('moon')}闲置自动休眠</h2></div>
-    <button class="switch" role="switch" aria-checked="${!!me.autoSleep}" aria-label="闲置自动休眠" data-act="autosleep"></button></div></section>`;
+  return `<span class="sleep-pill" title="闲置自动休眠">${ic('moon')}<span>闲置休眠</span><button class="switch" role="switch" aria-checked="${!!me.autoSleep}" aria-label="闲置自动休眠" data-act="autosleep"></button></span>`;
 }
 // 打开「闲置自动休眠」前的说明，样式同添加凭证前的提示
 function sleepTipDialog(){
@@ -351,13 +396,11 @@ async function setAutoSleep(on){
 }
 function pageAccounts(){
   const acc=D.accounts,v=accView();
-  const seg=acc.length?`<div class="seg" role="radiogroup" aria-label="显示方式"><label><input type="radio" name="accview" value="full" ${v!=='compact'?'checked':''}><span>详细</span></label><label><input type="radio" name="accview" value="compact" ${v==='compact'?'checked':''}><span>简略</span></label></div>`:'';
-  return head('我的凭证',`${seg}${acc.length?`<button class="btn" data-act="export">${ic('download')}导出</button>`:''}<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)+
-    (acc.length?sleepBar():'')+
-    (acc.length?(v==='compact'?`<section class="card glass arows">${acc.map(accRow).join('')}</section>`:`<div class="acards">${acc.map(accCard).join('')}</div>`)
+  const seg=acc.length?`<div class="seg" role="radiogroup" aria-label="显示方式"><label><input type="radio" name="accview" value="card" ${v==='card'?'checked':''}><span>卡片</span></label><label><input type="radio" name="accview" value="list" ${v==='list'?'checked':''}><span>列表</span></label></div>`:'';
+  return head('我的凭证',`${acc.length?sleepBar():''}${seg}${acc.length?`<button class="btn" data-act="export">${ic('download')}导出</button>`:''}<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)+
+    (acc.length?`<div id="acc-body">${accBody()}</div>`
       :`<section class="card glass">${empty('key','还没有凭证',`<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)}</section>`);
 }
-
 let mdlFor=null,mdl=null; // mdl: {id,label,list,res:{model:{run}|{ok,ms,reply,error}}}
 function mtestLine(r){
   if(!r)return '';
@@ -463,7 +506,6 @@ function pageKeys(){
       <div class="seg" role="radiogroup" aria-label="${esc(k.name)} 使用的账号池">
         <label><input type="radio" name="kp-${k.id}" value="private" data-key="${k.id}" ${k.pool==='private'?'checked':''}><span>小锅饭</span></label>
         <label><input type="radio" name="kp-${k.id}" value="shared" data-key="${k.id}" ${k.pool==='shared'?'checked':''}><span>大锅饭</span></label>
-        ${cfg.aistudio||k.pool==='aistudio'?`<label><input type="radio" name="kp-${k.id}" value="aistudio" data-key="${k.id}" ${k.pool==='aistudio'?'checked':''}><span>AI Studio</span></label>`:''}
       </div>
       <div class="hstack"><button class="btn sm ghost" data-act="copykey:${k.id}" ${k.key?'':'disabled'}>${ic('copy')}复制</button><button class="btn sm" data-act="connect:${k.id}">接入</button><button class="btn sm ghost danger" data-act="revoke:${k.id}" aria-label="撤销 ${esc(k.name)}">${ic('trash')}</button></div>
     </div>`).join(''):empty('terminal','还没有密钥',`<button class="btn primary" data-act="newkey">${ic('plus')}创建密钥</button>`);
@@ -473,57 +515,11 @@ function pageKeys(){
   <section class="card glass"><div class="card-head"><h2>我的密钥</h2></div>${list}</section>`;
 }
 
-/* AI Studio */
-const AIS_SCRIPT='https://github.com/Lianues/aistudio-pg-bridge/raw/main/1-tampermonkey-cookie-grabber/aistudio-cookie-grabber.user.js';
-const aisState=a=>a.status==='valid'?dotChip('good','有效'):`<span class="chip bad"${a.error?` title="${esc(a.error)}"`:''}><span class="dot"></span>失效</span>`;
-function pageAistudio(){
-  const L=D.ais||[];
-  const list=L.length?`<div class="tbl ais">${L.map(a=>`<div class="tr">
-      <span class="mono">${esc(a.id)}</span>
-      <span>${a.tier?`<span class="chip">${esc(a.tier)}</span>`:''}</span>
-      <span>${aisState(a)}</span>
-      <span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span>
-      <span class="switch-field sm"><small>共享</small><button class="switch" role="switch" aria-checked="${!!a.shared}" aria-label="共享 ${esc(a.id)}" data-act="aisshare:${esc(a.id)}"></button></span>
-      <span class="num-r hstack" style="justify-content:flex-end">${a.status==='valid'?`<button class="btn sm" data-act="aischeck:${esc(a.id)}">重新检测</button>`:''}<button class="btn sm ghost danger" data-act="aisdel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span>
-    </div>`).join('')}</div>`:empty('spark','还没有号');
-  return head('AI Studio')+
-  `<section class="card glass"><div class="card-head"><h2>上传 Cookie</h2></div>
-    <textarea class="input mono" id="f-ais" rows="5" autocomplete="off" spellcheck="false" aria-label="Cookie"></textarea>
-    <div class="mt"><button class="btn primary" data-act="aisup">${ic('upload')}提交</button></div></section>
-  <section class="card glass"><div class="card-head"><h2>我的号</h2></div>${list}</section>
-  ${aisUsers(D.aisAll)}
-  ${fold('aishow','怎么获取 Cookie','',`<ol class="ais-steps">
-    <li>安装 Tampermonkey 或 脚本猫（暴力猴不行，读不到关键 Cookie）</li>
-    <li>Tampermonkey 设置 → 配置模式切到「高级」→ 安全 → 「脚本 Cookie 访问权限」改为 All</li>
-    <li>Chrome 138+：在扩展详情页打开「允许用户脚本」</li>
-    <li>安装脚本：<a href="${AIS_SCRIPT}" target="_blank" rel="noopener">aistudio-cookie-grabber.user.js</a></li>
-    <li>打开 <a href="https://aistudio.google.com/" target="_blank" rel="noopener">https://aistudio.google.com/</a> ，点右下角「📋 复制 WAA Cookie 到剪切板」</li>
-    <li>回到这里粘贴提交</li>
-  </ol>`,false)}`;
-}
-function aisUsers(L){
-  if(!L)return '';
-  const by=new Map();
-  for(const a of L){const k=a.ownerId;if(!by.has(k))by.set(k,{name:a.owner||'—',valid:0,shared:0,dead:0});const u=by.get(k);
-    if(a.status==='valid'){u.valid++;if(a.shared)u.shared++;}else u.dead++;}
-  const R=[...by.values()].sort((x,y)=>y.valid-x.valid||y.shared-x.shared||x.name.localeCompare(y.name));
-  const T=R.reduce((t,u)=>({valid:t.valid+u.valid,shared:t.shared+u.shared,dead:t.dead+u.dead}),{valid:0,shared:0,dead:0});
-  return `<section class="card glass"><div class="card-head"><h2>所有人</h2>${cnt(R.length)}</div>${R.length?`<div class="tbl ais-users"><div class="tr th"><span>用户</span><span class="num-r">有效</span><span class="num-r">共享</span><span class="num-r">失效</span></div>
-    ${R.map(u=>`<div class="tr"><span>${esc(u.name)}</span><span class="num-r">${u.valid}</span><span class="num-r">${u.shared}</span><span class="num-r faint">${u.dead}</span></div>`).join('')}
-    <div class="tr th"><span>合计</span><span class="num-r">${T.valid}</span><span class="num-r">${T.shared}</span><span class="num-r">${T.dead}</span></div></div>`:empty('users','还没有人上传')}</section>`;
-}
-function aisAdmin(L){
-  if(!cfg.aistudio)return '';
-  return fold('aisadmin','AI Studio 号',cnt(L.length),`
-    ${L.length?`<div class="tbl ais-admin">${L.map(a=>`<div class="tr"><span class="mono">${esc(a.id)}</span><span>${esc(a.owner||'—')}</span><span>${aisState(a)}</span><span>${a.shared?'<span class="chip">共享</span>':'<span class="chip">私有</span>'}</span><span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span><span class="num-r"><button class="btn sm ghost danger" data-act="aisadel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>`:''}
-    <div class="mt"><button class="btn sm" data-act="aisall">${ic('refresh')}全部检测</button></div>`,false);
-}
-
 /* 流量日志 */
 function trafficQS(){const t=ui.tr,p=new URLSearchParams({page:t.page,size:t.size});
   if(t.q)p.set('q',t.q);if(t.account)p.set('account',t.account);if(t.user)p.set('user',t.user);if(t.family)p.set('family',t.family);if(t.pool)p.set('pool',t.pool);if(t.err)p.set('errorsOnly','1');return p.toString();}
 const CHIPS=[['all','全部'],['f:claude','claude'],['f:gemini','gemini'],['f:flash','flash'],['f:pro','pro'],['f:image','绘图'],['err','仅错误'],['p:private','小锅饭'],['p:shared','大锅饭']];
-function trChips(){const t=ui.tr;return CHIPS.concat(cfg.aistudio?[['p:aistudio','AI Studio']]:[]).map(([k,l])=>{
+function trChips(){const t=ui.tr;return CHIPS.map(([k,l])=>{
   const on=k==='all'?!t.family&&!t.pool&&!t.err:k==='err'?t.err:k.startsWith('f:')?t.family===k.slice(2):t.pool===k.slice(2);
   return `<button type="button" class="fchip ${k.startsWith('p:')?k.slice(2):''}" aria-pressed="${on}" data-act="trchip:${k}">${l}</button>`;}).join('');}
 function trTotals(){const T=D.traffic;return `<span>Total <b>${T.total.toLocaleString()}</b></span><span>OK <b class="good-t">${T.ok.toLocaleString()}</b></span><span>Error <b class="bad-t">${T.error.toLocaleString()}</b></span>`;}
@@ -696,23 +692,35 @@ function pageUsers(){
   </section>`;
 }
 
+const ADM_TABS=[['ov','总览'],['pool','号池'],['fwd','转发'],['site','站点']];
+function admTab(v){ui.admTab=v;try{localStorage.setItem('agy-admtab',v);}catch(err){}render();}
 function pageAdmin(){
   const A=D.admin,r=A.rules,u=A.usage,s=A.site,siteOK=s.clientId&&s.clientSecretSet;
   const alarms=u.breaker.tripped||u.alarms.length?fold('alarms','安全熔断',u.breaker.tripped?dotChip('bad','已熔断'):dotChip('good','正常'),
     `${u.alarms.slice(0,8).map(a=>`<div class="rule"><div><h3>${esc(a.kind)}</h3><div class="alarm mono">${esc(a.detail)}</div></div><div class="val faint mono">${mdhm(a.ts)}</div></div>`).join('')}
     ${u.breaker.tripped?`<div class="mt"><button class="btn primary" data-act="breaker">${ic('refresh')}解除熔断</button></div>`:''}`,u.breaker.tripped):'';
-  return head('管理员后台',`<a class="cpa-link" href="cpa/" target="_blank" rel="noopener"><span class="cpa-ic">${ic('sliders')}</span><span><b>CLIProxyAPI</b><small>管理面板</small></span>${ic('ext')}</a>`)+
-  `<div class="grid g4">
+  const tab=ADM_TABS.some(t=>t[0]===ui.admTab)?ui.admTab:'ov';
+  const urgent=(tab!=='ov'&&u.breaker.tripped?alarms:'')+(tab!=='site'&&!siteOK?`<button type="button" class="adm-alert glass" data-act="admtab:site">${ic('alert')}<b>Discord 登录未配置</b>${ic('arrow')}</button>`:'');
+  const tabs=`<div class="seg full adm-tabs" role="radiogroup" aria-label="后台分区">${ADM_TABS.map(([v,l])=>`<label><input type="radio" name="admTab" value="${v}" ${tab===v?'checked':''}><span>${l}</span></label>`).join('')}</div>`;
+  const body={
+    ov:()=>`<div class="grid g4">
     <div class="stat glass"><div class="label">${ic('activity')}今日请求</div><div class="num">${u.total.toLocaleString()}</div></div>
     <div class="stat glass mine"><div class="label">${ic('lock')}小锅饭</div><div class="num">${u.private.toLocaleString()}</div></div>
     <div class="stat glass give"><div class="label">${ic('users')}大锅饭</div><div class="num">${u.shared.toLocaleString()}</div></div>
     <div class="stat glass"><div class="label">${ic('alert')}无可用账号</div><div class="num">${u.rejected}</div></div>
   </div>
   ${alarms}
-  ${annAdmin()}
-  ${fold('poolres','大锅饭资源',A.res?`<span class="fold-sum">${A.res.counts.ok+A.res.counts.cooldown}/${A.res.counts.total} 可用${A.res.counts.problem?` · ${A.res.counts.problem} 出问题`:''}</span>`:'',`<div class="res">${resSummary(A.res)}${sharedUseBlock(A.res)}${backupBlock(A.res)}</div>${resTable(A.res)}`)}
+  ${annAdmin()}`,
+    pool:()=>`${fold('poolres','大锅饭资源',A.res?`<span class="fold-sum">${A.res.counts.ok+A.res.counts.cooldown}/${A.res.counts.total} 可用${A.res.counts.problem?` · ${A.res.counts.problem} 出问题`:''}</span>`:'',`<div class="res">${resSummary(A.res)}${sharedUseBlock(A.res)}${backupBlock(A.res)}</div>${resTable(A.res)}`)}
   ${fold('fleet','全部账号',cnt(A.accounts.length),`<div class="fold-tools"><div class="search-sm">${ic('search')}<input class="input sm" data-search="fleet" value="${esc(ui.q_fleet||'')}" placeholder="搜索邮箱 / 主人" aria-label="搜索账号"></div></div><div id="pg-fleet">${pagedList('fleet')}</div>`)}
-  ${fold('rules','大锅饭规则',`<span class="fold-sum">${r.dailyBase} + ${r.dailyPer}/号 · ${r.keyConc} 并发 · ${r.keyRpm}/min · 单号 ${r.accConc} · 保留 ${reserveText(r.reserve)} · 输入 ${r.sharedInput?Math.round(r.sharedInput/1e4)+' 万':'不限'}</span>`,`
+  ${fold('proxies','专属出口',cnt(A.proxies.length),`
+    <div class="tbl proxies">${A.proxies.map(p=>`<div class="tr"><span class="mono">${esc(p.url)}</span><span class="mono faint">${esc(A.accounts.find(a=>a.id===p.account)?.email||p.account||'—')}</span><span class="num-r"><button class="btn sm ghost danger" data-act="delproxy:${p.id}" ${p.account?'disabled':''} aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>
+    <div class="hstack mt"><input class="input mono" id="f-proxy" placeholder="socks5://user:pass@host:port" autocomplete="off" spellcheck="false" style="flex:1"><button class="btn" data-act="addproxy">${ic('plus')}添加</button></div>`,false)}
+  ${fold('shops','买号渠道',A.sw?.shops===false?dotChip('','已隐藏'):cnt((A.shops||[]).length),`
+    ${swRule('显示买号渠道','shops',A.sw?.shops!==false)}
+    <div id="shop-edit">${(A.shops||[]).map(shopRow).join('')}</div>
+    <div class="hstack mt"><button class="btn sm" data-act="shopadd">${ic('plus')}添加</button><button class="btn primary sm" data-act="shopsave">保存</button></div>`,false)}`,
+    fwd:()=>`${fold('rules','大锅饭规则',`<span class="fold-sum">${r.dailyBase} + ${r.dailyPer}/号 · ${r.keyConc} 并发 · ${r.keyRpm}/min · 单号 ${r.accConc} · 保留 ${reserveText(r.reserve)} · 输入 ${r.sharedInput?Math.round(r.sharedInput/1e4)+' 万':'不限'}</span>`,`
     <div class="rule"><h3>大锅饭 Key 总并发 / 限速</h3><div class="hstack"><input class="input" type="number" min="1" max="200" data-rule="keyConc" value="${r.keyConc}" aria-label="大锅饭 Key 总并发"><small>并发</small><input class="input" type="number" min="1" max="10000" data-rule="keyRpm" value="${r.keyRpm}" aria-label="大锅饭 Key 总限速"><small>次/分</small></div></div>
     <div class="rule"><h3>单号并发上限</h3><div class="hstack"><input class="input" type="number" min="1" max="20" data-rule="accConc" value="${r.accConc}" aria-label="单号并发上限"></div></div>
     <div class="rule"><div><h3>每日次数</h3><p>每人每天 = 基础 + 共享的 Pro 号数 × 加成；管理员不限</p></div><div class="hstack"><input class="input" type="number" min="0" max="1000000" data-rule="dailyBase" value="${r.dailyBase}" aria-label="基础次数"><small>基础</small><input class="input" type="number" min="0" max="1000000" data-rule="dailyPer" value="${r.dailyPer}" aria-label="每个共享号加成"><small>/ 号</small></div></div>
@@ -723,12 +731,8 @@ function pageAdmin(){
   ${A.retry?fold('retry','上游重试',`<span class="fold-sum">${A.retry.requestRetry} 轮 · 最多等 ${A.retry.maxRetryInterval}s</span>`,`
     <div class="rule"><div><h3>重试轮数 / 每轮最多换号</h3><p>在 CLIProxyAPI 配置里改</p></div><div class="val mono">${A.retry.requestRetry} 轮 · ${A.retry.maxRetryCredentials||'不限'} 个</div></div>
     <div class="rule"><div><h3>最大等待时长</h3><p>名单内的号都在冷却时，最多等这么久再重试；0 = 不等</p></div><div class="hstack"><input class="input" type="number" min="0" max="300" data-retry="maxWait" value="${A.retry.maxRetryInterval}" aria-label="最大等待时长"><small>秒</small></div></div>`,false):''}
-  ${aisAdmin(A.ais||[])}
-  ${brAdmin(A.br)}
-  ${fold('proxies','专属出口',cnt(A.proxies.length),`
-    <div class="tbl proxies">${A.proxies.map(p=>`<div class="tr"><span class="mono">${esc(p.url)}</span><span class="mono faint">${esc(A.accounts.find(a=>a.id===p.account)?.email||p.account||'—')}</span><span class="num-r"><button class="btn sm ghost danger" data-act="delproxy:${p.id}" ${p.account?'disabled':''} aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>
-    <div class="hstack mt"><input class="input mono" id="f-proxy" placeholder="socks5://user:pass@host:port" autocomplete="off" spellcheck="false" style="flex:1"><button class="btn" data-act="addproxy">${ic('plus')}添加</button></div>`,false)}
-  ${fold('site','Discord 登录',siteOK?dotChip('good','已配置'):dotChip('bad','未配置'),`
+  ${sfCard(A.sf)}`,
+    site:()=>`${fold('site','Discord 登录',siteOK?dotChip('good','已配置'):dotChip('bad','未配置'),`
     <div class="kv">
       <span>站点地址</span><input class="input mono" data-site="publicURL" value="${esc(s.publicURL)}" placeholder="https://pot.example.com">
       <span>Redirect URI</span><div class="code"><span>${esc(s.redirectURI||'—')}</span><button class="btn sm ghost" data-act="copy:redirect" ${s.redirectURI?'':'disabled'}>${ic('copy')}复制</button></div>
@@ -741,10 +745,9 @@ function pageAdmin(){
     </div>
     <div class="mt-l"><button class="btn primary" data-act="savesite">保存</button></div>`,!siteOK)}
   ${botCard(A.bot,s)}
-  ${fold('shops','买号渠道',A.sw?.shops===false?dotChip('','已隐藏'):cnt((A.shops||[]).length),`
-    ${swRule('显示买号渠道','shops',A.sw?.shops!==false)}
-    <div id="shop-edit">${(A.shops||[]).map(shopRow).join('')}</div>
-    <div class="hstack mt"><button class="btn sm" data-act="shopadd">${ic('plus')}添加</button><button class="btn primary sm" data-act="shopsave">保存</button></div>`,false)}`;
+  ${brAdmin(A.br)}`,
+  }[tab];
+  return head('管理员后台',`<a class="cpa-link" href="cpa/" target="_blank" rel="noopener"><span class="cpa-ic">${ic('sliders')}</span><span><b>CLIProxyAPI</b><small>管理面板</small></span>${ic('ext')}</a>`)+tabs+urgent+body();
 }
 /* 模型选择：大锅饭 / 外部上游开放哪些模型 */
 let mp=null; // {kind:'shared'|'up', id, all:[{id,from}], allow:null|[]}
@@ -865,6 +868,29 @@ function brAdmin(B){
   return fold('browser','浏览器',B.active?dotChip('good','使用中'):B.starting?dotChip('warn','启动中'):dotChip('','空闲'),`
     <div class="rule"><h3>正在使用</h3><div class="hstack"><span class="val">${B.active?`${esc(B.active.name)} · <span class="mono">${mmss(B.active.remainingSec)}</span>`:B.starting?esc(B.starting):'—'}</span><button class="btn sm danger" data-act="brkick" ${B.active?'':'disabled'}>踢出</button></div></div>
     <div class="rule"><h3>排队</h3><div class="val">${B.queue.length?B.queue.map(esc).join('、'):'—'}</div></div>`,false);
+}
+
+/* ============ Embedding / Rerank（硅基流动） ============ */
+function sfRow(m={type:'embedding',free:false,enabled:true}){
+  return `<div class="sf-row"><input class="input sm mono" data-sf="name" placeholder="BAAI/bge-m3" maxlength="120" value="${esc(m.name||'')}" aria-label="模型名称">
+    <select class="select sm" data-sf="type" aria-label="类型"><option value="embedding" ${m.type==='embedding'?'selected':''}>Embedding</option><option value="rerank" ${m.type==='rerank'?'selected':''}>Rerank</option></select>
+    <label class="sf-ck"><input type="checkbox" data-sf="free" ${m.free?'checked':''} aria-label="免费"></label>
+    <label class="sf-ck"><input type="checkbox" data-sf="enabled" ${m.enabled?'checked':''} aria-label="启用"></label>
+    <button class="btn sm ghost" data-act="sftest">${ic('play')}测试</button>
+    <button class="btn sm ghost danger icon" data-act="sfdel" aria-label="删除">${ic('trash')}</button></div>`;
+}
+function sfCard(S){
+  if(!S)return '';
+  const on=S.enabled&&S.keySet,n=S.models.filter(m=>m.enabled).length;
+  return fold('sf','Embedding / Rerank',on?dotChip('good',`${n} 个模型`):!S.enabled?dotChip('','已关闭'):dotChip('warn','未填 Key'),`
+    <div class="rule sw-rule"><h3>开启</h3><button class="switch" role="switch" aria-checked="${S.enabled}" aria-label="开启 Embedding / Rerank" data-act="sfon"></button></div>
+    <div class="kv">
+      <span>硅基流动 API Key</span><div class="hstack">${S.keySet?`<span class="chip good">已设置 ···${esc(S.keyTail)}</span>`:''}<input class="input mono" type="password" autocomplete="new-password" id="sf-key" placeholder="${S.keySet?'不改就留空':'sk-...'}" style="flex:1"></div>
+      <span>接口地址</span><input class="input mono" id="sf-base" value="${esc(S.base)}" placeholder="https://api.siliconflow.cn">
+      <span>每人每分钟</span><div class="hstack"><input class="input" type="number" min="0" max="100000" id="sf-rpm" value="${S.rpm}" style="max-width:140px"><small>次</small></div>
+    </div>
+    <div class="sf-list mt-l"><div class="sf-row th"><span>模型</span><span>类型</span><span>免费</span><span>启用</span><span></span><span></span></div><div id="sf-edit">${S.models.map(sfRow).join('')}</div></div>
+    <div class="hstack mt"><button class="btn sm" data-act="sfadd">${ic('plus')}添加模型</button><button class="btn primary sm" data-act="sfsave">保存</button></div>`,!on);
 }
 
 function pageLoading(){
@@ -1013,30 +1039,49 @@ function pageStats(){
   return head('Token 统计',ctl)+kpi+body+ranks;
 }
 
+/* 顶栏选中项：同步 aria-current、公告红点，下划线弹到新位置 */
+function syncNav(){
+  document.querySelectorAll('.tnav button,.mnav button').forEach(b=>b.setAttribute('aria-current',b.dataset.act==='goto:'+page?'page':'false'));
+  const bell=document.querySelector('.top .bell');if(bell)bell.classList.toggle('on',!!ANN.unread);
+  moveInd(true);
+}
+function moveInd(anim){
+  const n=document.querySelector('.tnav'),i=n?.querySelector('.tnav-ind'),b=n?.querySelector('button[aria-current=page]');
+  if(!i)return;
+  if(!b||!b.offsetWidth){i.style.opacity='0';return;}
+  if(!anim)i.style.transition='none';
+  i.style.opacity='1';i.style.left=(b.offsetLeft+b.offsetWidth/2-9)+'px';i.style.top=(b.offsetTop+b.offsetHeight-4)+'px';
+  if(!anim){void i.offsetWidth;i.style.transition='';}
+}
+addEventListener('resize',()=>moveInd(false));
 function render(){
   const root=$('#root');
   if(!me){root.innerHTML=loginView();return;}
   if(!navPages().some(p=>p[0]===page))page='home';
-  const views={home:pageHome,accounts:pageAccounts,pool:pagePool,aistudio:pageAistudio,keys:pageKeys,logs:pageLogs,stats:pageStats,browser:pageBrowser,profile:pageProfile,users:pageUsers,admin:pageAdmin};
+  const views={home:pageHome,accounts:pageAccounts,pool:pagePool,keys:pageKeys,logs:pageLogs,stats:pageStats,browser:pageBrowser,profile:pageProfile,users:pageUsers,admin:pageAdmin};
   let main;
   if(loadState==='loading')main=pageLoading();
   else if(loadState==='error')main=pageError();
   else{try{main=views[page]();}catch(e){console.error(e);main=pageError();}}
+  // 顶栏不重画：只换主体内容，选中下划线弹过去
+  const navKey=[navPages().map(p=>p[0]).join(),me.role,me.realRole||'',isDark()?'d':'l'].join('|');
+  const hdr=root.querySelector('.top');
+  if(hdr&&hdr.dataset.nav===navKey&&document.getElementById('main')){document.getElementById('main').innerHTML=main;syncNav();}
+  else{
   root.innerHTML=`<div class="app">
-    <aside class="side glass" aria-label="侧边栏">
-      <div class="brand big">${logoImg()}<span class="bt"><b>AGY</b><small>Together</small></span></div>
-      <nav class="nav" aria-label="主导航">${navPages().map(([id,icon,long,short])=>`<button type="button" data-act="goto:${id}" aria-current="${page===id?'page':'false'}" aria-label="${long}">${ic(icon)}<span class="long">${long}</span><span class="short" aria-hidden="true">${short}</span></button>`).join('')}</nav>
-      <button class="side-user" data-act="goto:profile" aria-label="个人中心"><span class="avatar">${esc((me.name||'?')[0])}</span><span class="uname"><b>${esc(me.name)}</b><small>@${esc(me.handle)}</small></span></button>
-    </aside>
     <div class="content"><div class="wrap">
-      <header class="top glass">
-        <div class="top-left"><div class="brand">${logoImg('width:36px;height:36px;border-radius:11px;font-size:17px')}</div>${me.role==='admin'?'<span class="chip warn">管理员</span>':''}</div>
+      <header class="top glass${navPages().length>7?" many":""}" data-nav="${esc(navKey)}">
+        <div class="top-left"><button type="button" class="btn sm ghost icon nav-tog" data-act="navtog" aria-label="菜单">${ic('menu')}</button>${me?.realRole==='admin'?'<div class="brand tb tb-btn" data-act="viewas">':'<div class="brand tb">'}${logoImg()}<span class="tb-name">Antigravity<i class="me">together</i></span></div></div>
+        <nav class="tnav has-ind" aria-label="主导航">${navBtns()}<span class="tnav-ind" aria-hidden="true"></span></nav>
         <div class="top-right"><button class="btn sm ghost icon bell ${ANN.unread?'on':''}" data-act="anns" aria-label="公告${ANN.unread?`（${ANN.unread} 条未读）`:''}" title="公告">${ic('bell')}</button><button class="btn sm ghost icon" data-act="reload" aria-label="刷新">${ic('refresh')}</button>${themeBtn()}</div>
       </header>
+      <div class="nav-shade" data-act="navtog"></div><aside class="mnav glass" aria-label="主导航">${navBtns(true)}</aside>
       <main id="main" tabindex="-1">${main}</main>
       <footer class="credit">Made with 🦴 by 聪明绝顶二狗子</footer>
     </div></div>
   </div>`;
+  moveInd(false);}
+  if(page==='accounts'&&ui.acc.focus&&loadState==='idle'){const el=document.getElementById('acc-'+cssId(ui.acc.focus));ui.acc.focus=null;if(el){el.scrollIntoView({block:'center'});el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),2200);}}
 }
 
 const logoImg=(st='')=>cfg.logo?`<img class="logo" src="logo.jpg" alt=""${st?` style="${st}"`:''}>`:`<span class="logo"${st?` style="${st}"`:''}>A</span>`;
@@ -1045,7 +1090,7 @@ function loginView(){
   return `<div class="login">
     <section class="login-card glass">
       <div class="lg-logo">${cfg.logo?'<img src="logo.jpg" alt="">':'<span class="logo">A</span>'}</div>
-      <h1 class="lg-title"><b>AGY</b><span>Together</span></h1>
+      <h1 class="lg-title"><b>Antigravity</b><i class="me">together</i></h1>
       ${sso}
       ${sso?'<div class="lg-or"><span>或使用账号密码</span></div>':''}
       <form class="lg-form" id="pwform" autocomplete="on">
@@ -1222,13 +1267,42 @@ async function uploadFiles(files){
 }
 
 /* ============ 详情 / 确认 ============ */
+/* 查看原因：错误详情弹窗（照 agy-me reasonDialog，字段换成门户的 problem / detail / action / autoOff） */
+function errMsg(raw){
+  try{const i=raw.indexOf('{');if(i<0)return '';const p=JSON.parse(raw.slice(i));const e=typeof p.error==='string'?JSON.parse(p.error).error:p.error||p;return String(e?.message||'');}catch(e){return '';}
+}
+function reasonDialog(id){
+  const a=D.accounts?.find(x=>x.id===id);if(!a)return;
+  const p=a.problem,fb=a.forbidden||'',raw=fb||a.quotaErr||a.autoOff?.reason||'';
+  const parsed=errMsg(raw)||a.detail||(p?p.hint:'')||raw||'上游未提供具体原因',both=!!raw&&raw!==parsed;
+  const tags=[];
+  if(fb)tags.push(['bad',/TOS_VIOLATION|violation of Terms|terms of service/i.test(fb)?'由于违规被禁用':'上游拒绝访问']);
+  if(p)tags.push(['bad',p.label]);
+  else if(a.state==='error')tags.push(['bad','账号异常']);
+  if(a.action?.kind==='verify'&&p?.kind!=='verify')tags.push(['bad','需要验证账号']);
+  if(a.state==='cooldown')tags.push(['warn','冷却中'+(a.retryAt?' · '+recover(a.retryAt):'')]);
+  const n=modelCds(a).length;if(n)tags.push(['warn',`${n} 个模型冷却中`]);
+  if(a.state==='off')tags.push(['',a.asleep?'休眠中':a.autoOff?'已自动停用':'账号已停用']);
+  const url=a.action?.url||'',lab=a.action?.kind==='appeal'?'申诉':'验证';
+  const at=fb&&a.quotaAt?['额度检测时间',a.quotaAt]:a.autoOff?.at?['自动停用时间',a.autoOff.at]:null;
+  openDialog('错误详情','',`<div class="rs">
+    <section><h3>账号</h3><div class="rs-acc">${esc(a.email||a.id)}</div></section>
+    <section><h3>错误状态</h3><div class="rs-tags">${tags.length?tags.map(([c,t])=>`<span class="chip ${c}"><span class="dot"></span>${esc(t)}</span>`).join(''):esc(a.detail||'账号异常')}</div></section>
+    <section><div class="rs-hd"><h3>原因</h3>${both?'<button type="button" class="link" data-act="rsraw">显示原始报文</button>':''}</div>
+      <pre class="rs-body" id="rs-p">${esc(parsed)}</pre>${both?`<pre class="rs-body" id="rs-r" hidden>${esc(raw)}</pre>`:''}
+      ${n?`<div class="mt-s">${cdList(a)}</div>`:''}
+      <div class="rs-acts">${url?`<a class="btn sm primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${ic('ext')}前往${lab}</a><button type="button" class="btn sm" data-act="copyurl:${esc(a.id)}">${ic('copy')}复制${lab}链接</button>${cfg.browserEnabled?`<button type="button" class="btn sm" data-act="bropen:${esc(a.id)}">${ic('window')}内置浏览器打开</button>`:''}`:`<button type="button" class="btn sm" disabled title="上游报文未提供可用链接">前往${lab}</button><button type="button" class="btn sm" disabled title="上游报文未提供可用链接">复制${lab}链接</button>`}</div></section>
+    <details><summary>账号自助排查指南</summary><p>先核对上方账号和原因。若上游要求验证，请使用该账号完成验证；若返回 TOS_VIOLATION，请通过上游提供的申诉入口提交申诉。处理后在凭证页刷新额度。</p></details>
+    ${at?`<section class="rs-meta"><span class="aq-clock"></span>${at[0]}：${esc(new Date(at[1]).toLocaleString())}</section>`:''}
+  </div>`,`<button class="btn primary" data-act="close">关闭</button>`);
+}
 function accountDetail(id){
   const a=D.accounts?.find(x=>x.id===id);if(!a)return;
   const [,,why]=accState(a),q=a.quota;
   openDialog(esc(accName(a)),esc(a.email),
-    `<div class="hstack mt">${a.tier?`<span class="chip">${esc(tierName(a.tier))}</span>`:''}${a.shared?poolTag('shared'):'<span class="chip">仅自用</span>'}${q&&q.credits!=null?`<span class="chip">积分 ${Number(q.credits).toLocaleString()}</span>`:''}</div>
+    `<div class="hstack mt">${gbTag(a.tier)}${a.shared?poolTag('shared'):'<span class="chip">仅自用</span>'}${q&&q.credits!=null?`<span class="chip">积分 ${Number(q.credits).toLocaleString()}</span>`:''}</div>
     <label class="field"><span>备注</span><input class="input" id="f-note" maxlength="40" value="${esc(a.name)}" data-note="${esc(a.id)}"></label>
-    <div class="mt-l">${quotaWindows(a)}</div>
+    ${quotaBlock(a,'dq')}
     <div class="rule mt-l"><h3>启用</h3><button class="switch" role="switch" aria-checked="${a.active}" aria-label="启用 ${esc(accName(a))}" data-act="toggle:${esc(a.id)}"></button></div>
     <div class="rule"><h3>状态</h3><div class="val hstack" style="justify-content:flex-end">${why?`<small>${esc(why)}</small>`:''}${stateChip(a)}${fixBtns(a)}</div></div>
     ${modelCds(a).length?`<div class="rule cdrule"><h3>模型冷却</h3>${cdList(a)}</div>`:''}
@@ -1284,7 +1358,7 @@ function connectDialog(id){
 /* ============ 事件 ============ */
 function go(p){closeDialog();load(p);$('#main')?.focus({preventScroll:true});window.scrollTo({top:0});}
 // PATCH / quota responses carry no request strip; keep the one we already have
-function keepAcc(v){D.accounts=D.accounts.map(x=>x.id===v.id?{...v,requests:x.requests,tokens:x.tokens}:x);}
+function keepAcc(v){const prev=D.accounts;D.accounts=D.accounts.map(x=>x.id===v.id?{...v,requests:x.requests,tokens:x.tokens}:x);return prev;}
 const act=fn=>async(...a)=>{try{await fn(...a);}catch(e){fail(e);}};
 
 document.addEventListener('click',act(async e=>{
@@ -1295,13 +1369,16 @@ document.addEventListener('click',act(async e=>{
   const i=el.dataset.act.indexOf(':');
   const a=i<0?el.dataset.act:el.dataset.act.slice(0,i),arg=i<0?'':el.dataset.act.slice(i+1);
   switch(a){
-    case 'goto':go(arg);break;
+    case 'goto':document.body.classList.remove('nav-open');go(arg);break;
+    case 'navtog':document.body.classList.toggle('nav-open');break;
+    case 'admtab':admTab(arg);scrollTo({top:0,behavior:'smooth'});break;
     case 'brjoin':brSet(await api('POST','api/browser/join'));render();break;
     case 'bropen':brSet(await api('POST','api/browser/open',{id:arg}));go('browser');break;
     case 'brleave':brSet(await api('POST','api/browser/leave'));render();break;
     case 'brkick':await api('POST','api/admin/browser/kick');D.admin.br=await api('GET','api/admin/browser');toast('已踢出');render();break;
     case 'close':closeDialog();break;
     case 'reload':reload();break;
+    case 'viewas':if(ui.st)ui.st.scope=null;await toggleViewAs();break;
     case 'retry':load(page);break;
     case 'signin':location.href='auth/discord/login';break;
     case 'devlogin':
@@ -1361,12 +1438,17 @@ document.addEventListener('click',act(async e=>{
       for(const id of ids){const b={};if(name)b.name=name;if(shared){b.shared=true;if(rsv!=null)b.reserve=rsv;}if(Object.keys(b).length)await api('PATCH','api/accounts/'+encodeURIComponent(id),b);}
       closeDialog();toast(shared?'账号已添加，并放进了大锅饭':'账号已添加，仅自用');go('accounts');break;}
     case 'detail':accountDetail(arg);break;
+    case 'reason':reasonDialog(arg);break;
+    case 'rsraw':{const p=$('#rs-p'),r=$('#rs-r');if(!p||!r)break;const show=r.hidden;r.hidden=!show;p.hidden=show;el.textContent=show?'显示解析结果':'显示原始报文';break;}
+    case 'asort':ui.acc.sort=AF.nextSort(ui.acc.sort,arg);lsSet('agy-accsort',ui.acc.sort);ui.acc.page=1;refreshAcc();break;
+    case 'apg':ui.acc.page=+arg||1;refreshAcc();$('#acc-body')?.scrollIntoView({block:'start',behavior:'smooth'});break;
+    case 'jump':ui.acc.focus=arg;go('accounts');break;
     case 'refreshq':{
       el.disabled=true;const inDlg=dialogOpen();
-      try{const v=await api('POST','api/accounts/'+encodeURIComponent(arg)+'/quota');keepAcc(v);render();if(inDlg)accountDetail(arg);toast(v.quotaErr?'额度读取失败':'额度已刷新',!!v.quotaErr);}
+      try{const v=await api('POST','api/accounts/'+encodeURIComponent(arg)+'/quota');patchAcc(keepAcc(v));if(inDlg)accountDetail(arg);toast(v.quotaErr?'额度读取失败':'额度已刷新',!!v.quotaErr);}
       finally{el.disabled=false;}break;}
     case 'toggle':{const inDlg=dialogOpen();const x=D.accounts.find(y=>y.id===arg);const v=await api('PATCH','api/accounts/'+encodeURIComponent(arg),{active:!x.active});
-      keepAcc(v);render();if(inDlg)accountDetail(arg);toast(v.active?'账号已启用':'账号已停用');break;}
+      patchAcc(keepAcc(v));if(inDlg)accountDetail(arg);toast(v.active?'账号已启用':'账号已停用');break;}
     case 'models':case 'amodels':{
       const x=a==='models'?D.accounts?.find(y=>y.id===arg):D.admin?.accounts?.find(y=>y.id===arg);const label=x?.email||arg;
       modelsDialog(arg,label,null);
@@ -1405,18 +1487,7 @@ document.addEventListener('click',act(async e=>{
     case 'dodelacc':await api('DELETE','api/accounts/'+encodeURIComponent(arg));closeDialog();toast('凭证已删除');reload();break;
     case 'share':shareDialog(arg);break;
     case 'confirmshare':{const x=D.accounts.find(y=>y.id===arg);const b={shared:!x.shared};if(!x.shared)b.reserve=pickedReserve();const v=await api('PATCH','api/accounts/'+encodeURIComponent(arg),b);
-      keepAcc(v);closeDialog();render();toast(v.shared?`“${accName(v)}”已放进大锅饭`:`已撤回“${accName(v)}”的共享`);break;}
-    case 'aisup':{const v=$('#f-ais').value.trim();if(!v)break;el.disabled=true;
-      try{await api('POST','api/aistudio',{cookies:v});$('#f-ais').value='';toast('已添加');await reload();}finally{el.disabled=false;}break;}
-    case 'aisshare':{const x=(D.ais||[]).find(y=>y.id===arg);if(!x)break;el.disabled=true;
-      try{const v=await api('POST','api/aistudio/'+encodeURIComponent(arg)+'/share',{shared:!x.shared});Object.assign(x,v);render();toast(v.shared?'已共享':'已取消共享');}finally{el.disabled=false;}break;}
-    case 'aischeck':{el.disabled=true;try{const r=await api('POST','api/aistudio/'+encodeURIComponent(arg)+'/check');
-      toast(r.state==='alive'?'有效':r.state==='dead'?'已失效':'暂时无法检测，请稍后再试',r.state!=='alive');await reload();}finally{el.disabled=false;}break;}
-    case 'aisdel':case 'aisadel':
-      openDialog('删除',esc(arg),'',`<button class="btn" data-act="close">取消</button><button class="btn primary" style="background:var(--bad)" data-act="do${a}:${esc(arg)}">删除</button>`);break;
-    case 'doaisdel':await api('DELETE','api/aistudio/'+encodeURIComponent(arg));closeDialog();toast('已删除');reload();break;
-    case 'doaisadel':await api('DELETE','api/admin/aistudio/'+encodeURIComponent(arg));closeDialog();toast('已删除');reload();break;
-    case 'aisall':{el.disabled=true;try{const r=await api('POST','api/admin/aistudio/recheck');toast(`检测了 ${r.checked} 个，失效 ${r.dead} 个`);await reload();}finally{el.disabled=false;}break;}
+      const prev=keepAcc(v);closeDialog();patchAcc(prev);toast(v.shared?`“${accName(v)}”已放进大锅饭`:`已撤回“${accName(v)}”的共享`);break;}
     case 'newkey':newKeyDialog(arg);break;
     case 'createkey':{
       const pool=$('input[name=newKeyPool]:checked')?.value||'private';
@@ -1494,6 +1565,15 @@ document.addEventListener('click',act(async e=>{
     case 'clearbot':await api('PUT','api/admin/site',{clearBotToken:true});toast('已清除');reload();break;
     case 'shopadd':$('#shop-edit').insertAdjacentHTML('beforeend',shopRow());$('#shop-edit .shop-row:last-child input')?.focus();break;
     case 'shopdel':el.closest('.shop-row')?.remove();break;
+    case 'sfadd':$('#sf-edit').insertAdjacentHTML('beforeend',sfRow());$('#sf-edit .sf-row:last-child input')?.focus();break;
+    case 'sftest':{const r=el.closest('.sf-row'),name=$('[data-sf=name]',r).value.trim();if(!name){toast('先填模型名称',true);break;}
+      el.disabled=true;try{const t=await api('POST','api/admin/sf/test',{name,type:$('[data-sf=type]',r).value});toast(t.ok?`可用 · ${t.ms}ms · ${t.detail}`:`不可用 · ${t.detail}`,!t.ok);}finally{el.disabled=false;}break;}
+    case 'sfdel':el.closest('.sf-row')?.remove();break;
+    case 'sfon':{const on=!D.admin.sf.enabled;D.admin.sf=await api('PUT','api/admin/sf',{enabled:on});render();toast(on?'Embedding / Rerank 已开启':'Embedding / Rerank 已关闭');break;}
+    case 'sfsave':{
+      const models=$$('#sf-edit .sf-row').map(r=>({name:$('[data-sf=name]',r).value.trim(),type:$('[data-sf=type]',r).value,free:$('[data-sf=free]',r).checked,enabled:$('[data-sf=enabled]',r).checked})).filter(m=>m.name);
+      const b={base:$('#sf-base').value.trim(),rpm:Math.round(+$('#sf-rpm').value||0),models},k=$('#sf-key').value.trim();if(k)b.key=k;
+      D.admin.sf=await api('PUT','api/admin/sf',b);render();toast('已保存');break;}
     case 'sw':{const on=!(D.admin.sw?.[arg]!==false);D.admin.sw=await api('PUT','api/admin/switches',{[arg]:on});render();toast(arg==='mentions'?(on?'机器人会 @ 人':'机器人不再 @ 任何人'):arg==='proactive'?(on?'机器人会主动发提醒、日报和补货通知':'机器人只在被 @ 时说话'):arg==='stockOnly'?(on?'只有补货通知会 @ 人':'恢复正常 @ 人'):(on?'买号渠道已显示':'买号渠道已隐藏'));break;}
     case 'shopsave':{
       const shops=$$('#shop-edit .shop-row').map(r=>Object.fromEntries($$('[data-shop]',r).map(i=>[i.dataset.shop,i.value.trim()]))).filter(s=>s.url||s.name);
@@ -1541,15 +1621,18 @@ document.addEventListener('change',act(async e=>{
     await api('PATCH','api/me',{inputLimit:n||null});me.inputLimit=n||null;render();toast(n?`输入上限：${+(n/1e4).toFixed(1)} 万 Token`:'输入上限已关闭');}
   else if(t.name==='rotation'){await api('PATCH','api/me',{rotation:t.value});me.rotation=t.value;render();toast('账号轮换：'+(ROT.find(x=>x[0]===t.value)||[,''])[1]);}
   else if(t.dataset.retry){const v=Math.max(0,Math.min(300,Math.round(+t.value||0)));t.value=v;D.admin.retry=await api('PUT','api/admin/retry',{maxWait:v});toast('最大等待时长已更新');}
-  else if(t.name==='accrsv'){const v=await api('PATCH','api/accounts/'+encodeURIComponent(t.dataset.acc),{reserve:t.value==='def'?null:+t.value});keepAcc(v);toast('自用保留已更新');}
+  else if(t.name==='accrsv'){const v=await api('PATCH','api/accounts/'+encodeURIComponent(t.dataset.acc),{reserve:t.value==='def'?null:+t.value});patchAcc(keepAcc(v));toast('自用保留已更新');}
   else if(t.id==='f-accshare'){const w=$('#f-rsvwrap');if(w)w.hidden=!t.checked;}
   else if(t.name==='mpmode'){const l=$('#mp-list');if(l)l.classList.toggle('dis',t.value==='all');}
-  else if(t.name==='accview'){try{localStorage.setItem('agy-accview',t.value);}catch(err){}render();}
+  else if(t.name==='admTab'){admTab(t.value);}
+  else if(t.name==='accview'){lsSet('agy-accview',t.value);ui.acc.page=1;refreshAcc();}
+  else if(t.dataset.accsize!==undefined){ui.acc.size=+t.value||10;lsSet('agy-accsize',String(ui.acc.size));ui.acc.page=1;refreshAcc();}
+  else if(t.dataset.accjump!==undefined){ui.acc.page=+t.value||1;refreshAcc();$('#acc-body')?.scrollIntoView({block:'start',behavior:'smooth'});}
   else if(t.name==='addTab'){ui.addTab=t.value;addDialog(1);$(`#layer input[name=addTab][value=${t.value}]`)?.focus();}
   else if(t.name==='reserve'){D.admin.rules=await api('PUT','api/admin/rules',{reserve:+t.value});toast('自用保留已更新');}
   else if(t.dataset.rule){const v=Math.max(+t.min||0,Math.min(+t.max||1e9,Math.round(+t.value||0)));t.value=v;D.admin.rules=await api('PUT','api/admin/rules',{[t.dataset.rule]:v});toast('规则已更新');}
   else if(t.dataset.proxy!==undefined){await api('PATCH','api/admin/accounts/'+encodeURIComponent(t.dataset.proxy),{proxyId:t.value?+t.value:null});toast(t.value?'专属出口已绑定':'专属出口已解绑');reload();}
-  else if(t.dataset.note!==undefined){const v=await api('PATCH','api/accounts/'+encodeURIComponent(t.dataset.note),{name:t.value.trim()});keepAcc(v);render();toast('备注已保存');}
+  else if(t.dataset.note!==undefined){const v=await api('PATCH','api/accounts/'+encodeURIComponent(t.dataset.note),{name:t.value.trim()});patchAcc(keepAcc(v));toast('备注已保存');}
   else if(t.matches('[data-trpage]')){const n=Math.round(+t.value)||1;ui.tr.page=Math.max(1,Math.min(+t.max||1,n));await refreshTraffic();}
   else if(t.dataset.trf){ui.tr[t.dataset.trf]=t.value;ui.tr.page=1;await refreshTraffic();}
   else if(t.dataset.trsize!==undefined){ui.tr.size=+t.value;ui.tr.page=1;await refreshTraffic();}

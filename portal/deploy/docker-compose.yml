@@ -9,8 +9,11 @@ services:
     environment:
       HOST: 127.0.0.1
       PORT: "8320"
+      SF_DIR: /app/sf
     volumes:
       - ./data:/app/data
+      # Embedding / Rerank relay config, shared read-only with pool-gw (/etc/sf)
+      - ./sf:/app/sf
     mem_limit: 160m
     restart: unless-stopped
     logging:

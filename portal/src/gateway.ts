@@ -12,7 +12,20 @@ import { explainUnavailable, sendGatewayError, type Why } from './reason.ts';
 import { dailyFor, secondsToMidnight, sharedModels, sharedAllows } from './limits.ts';
 import { upstreamsFor, upstreamRequest, usageSniffer, upAuthId, enabledUpstreams, openModels, type Upstream, type Tok } from './upstream.ts';
 import { wakeFor } from './autosleep.ts';
+import { sfKind, sfRelay, sfModelIds } from './sf.ts';
 
+
+// ---------- 大锅饭: presets that are refused outright ----------
+// 「昆仑 IDE」预设 dresses content up as IDE files to slip past moderation; Google then hangs on it for minutes,
+// tying up shared accounts. The Discord bot's own prompts quote the ban (with this marker), so they pass.
+const BOT_MARKER = '===== 数据（用户名都是站内昵称，可以直接说）=====';
+const KUNLUN = [/huatu[\\/]+Project_Workspace[\\/]+Novel_Engine/, /LOCAL_WINDOWS_HOST_DAEMON/, /【ToolCall引导】/];
+export function bannedPreset(body: Buffer): boolean {
+  if (!body.length) return false;
+  const t = body.toString('utf8');
+  return !t.includes(BOT_MARKER) && KUNLUN.some((re) => re.test(t));
+}
+const KUNLUN_MSG = '大锅饭已禁用「昆仑 IDE」预设：它把内容伪装成 IDE 文件绕过审核，谷歌会长时间不响应，拖垮号池并导致大家 502。请换用其他预设后再试。';
 
 // ---------- live counters ----------
 const keyInflight = new Map<number, number>();
@@ -231,6 +244,17 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     if (isGen) record(ctx, { status: w.status, result: w.result, reason: w.message });
     fail(w.status, code, w.message, w.retryAfter);
   };
+
+  if (pool === 'shared') {
+    // Embedding / Rerank: relayed to SiliconFlow with the admin's key (own per-key rate limit, no daily count)
+    const sk = sfKind(P);
+    if (sk) return sfRelay(res, method, sk, key.id, body, fail);
+    if (isGen && bannedPreset(body)) {
+      console.warn('[gateway] blocked kunlun preset, key', key.id, 'len', body.length);
+      record(ctx, { status: 403, result: 'blocked', reason: '昆仑 IDE 预设已禁用' });
+      return fail(403, 'preset_blocked', KUNLUN_MSG);
+    }
+  }
 
   if (breaker.tripped) {
     if (isGen) record(ctx, { status: 503, result: 'blocked', reason: '网关已熔断' });
@@ -466,6 +490,7 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
           for (const u of enabledUpstreams()) for (const m of await openModels(u)) add.add(m);
           const open = sharedModels();
           if (open) { ok = new Set([...ok].filter((m) => open.has(m))); add = new Set([...add].filter((m) => open.has(m))); }
+          for (const m of sfModelIds()) add.add(m); // Embedding / Rerank (governed by the SiliconFlow settings, not the shared-model list)
         }
         const filtered = filterModelList(raw.toString('utf8'), ok, add);
         const b = filtered === null ? raw : Buffer.from(filtered);

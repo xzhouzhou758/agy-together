@@ -18,7 +18,7 @@ function windowsOf(q: ReturnType<typeof storedQuota>): AccWins {
   if (!q) return out;
   for (const w of q.windows || []) {
     const f: Fam | null = w.key === 'gemini' ? 'gemini' : w.key === 'claude' ? 'claude' : null;
-    if (!f) continue;
+    if (!f || /argon/i.test(w.label || '')) continue; // Argon has its own quota; older snapshots filed it under gemini
     for (const b of w.buckets) if (b.window === '5h' || b.window === 'weekly') (out[f] ||= {})[b.window === '5h' ? 'h5' : 'weekly'] = { frac: b.frac, reset: b.reset };
   }
   const g = (k: string) => q.groups?.find((x) => x[0] === k);

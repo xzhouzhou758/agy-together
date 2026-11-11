@@ -10,7 +10,7 @@ const SID = 'agy_sid';
 const OSTATE = 'agy_oauth_state';
 const DAPI = 'https://discord.com/api/v10';
 
-export type User = { id: number; discord_id: string; name: string; handle: string; role: 'admin' | 'user'; active: number; default_pool: string; rotation_mode?: string | null; session_salt?: string | null; input_limit?: number | null };
+export type User = { id: number; discord_id: string; name: string; handle: string; role: 'admin' | 'user'; active: number; default_pool: string; rotation_mode?: string | null; session_salt?: string | null; input_limit?: number | null; auto_sleep?: number | null };
 
 export function currentUser(req: IncomingMessage): User | null {
   const sid = parseCookies(req.headers.cookie)[SID];
@@ -25,6 +25,8 @@ export function currentUser(req: IncomingMessage): User | null {
 export function requireUser(req: IncomingMessage): User {
   const u = currentUser(req);
   if (!u) throw new HttpError(401, 'unauthorized');
+  // an admin can look at the portal as a normal user: the page sends X-View-As: user, everything then answers as for a user
+  if (u.role === 'admin' && req.headers['x-view-as'] === 'user') return { ...u, role: 'user' };
   return u;
 }
 export function requireAdmin(req: IncomingMessage): User {

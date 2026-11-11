@@ -260,7 +260,7 @@ test('self-use reserve removes a shared account below the threshold', async () =
   const q = await alice.req('POST', '/api/accounts/' + encodeURIComponent(a2) + '/quota');
   assert.equal(q.status, 200);
   assert.deepEqual(q.data.quota.groups.map((g: any) => g[0]), ['gp', 'gf', 'ar', 'cl']);
-  assert.equal(q.data.tier, 'g1-pro-tier');
+  assert.equal(q.data.tier, 'PRO'); // normalised: g1-pro-tier -> PRO (enterprise / standard -> FREE)
   // 5h / weekly windows from retrieveUserQuotaSummary, Gemini first, 5h before weekly
   assert.deepEqual(q.data.quota.windows.map((w: any) => w.key), ['gemini', 'claude']);
   assert.deepEqual(q.data.quota.windows[1].buckets.map((b: any) => [b.window, b.frac]), [['5h', 0.1], ['weekly', 0.8]]);
