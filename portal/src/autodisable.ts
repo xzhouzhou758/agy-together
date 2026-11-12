@@ -1,5 +1,5 @@
 // Auto-disable accounts that upstream answers with 403 (Google "Verify your account", account
-// disabled/suspended), so CPA and the scheduler plugin stop retrying them. Only accounts this
+// disabled/suspended) or 401 (sign-in dead after CPA's own refresh), so CPA and the scheduler plugin stop retrying them. Only accounts this
 // module disabled (accounts.auto_disabled_at) are ever re-enabled, after a probe succeeds.
 // Probing works on a disabled credential: CPA's /requests/api-call looks auths up by index and
 // never checks Disabled. Quota calls keep working on 403 accounts, so the probe is a tiny generation.
@@ -29,17 +29,30 @@ function match403(s: string): string | null {
   return ('403 ' + (m ? m[1] : s.replace(/\s+/g, ' ').trim())).slice(0, 160);
 }
 
-/** Short reason when the account is in a 403 state, else null. 429 / 401 / invalid_grant never count. */
+// 401 = the account's sign-in is dead (CPA already tried its refresh): turned off like a 403
+const NOT_401 = /"code"\s*:\s*(429|403)\b|RESOURCE_EXHAUSTED|PERMISSION_DENIED/i;
+const IS_401 = /"code"\s*:\s*401\b|UNAUTHENTICATED|invalid_grant|invalid_token|\b401\b|unauthori[sz]ed|token.{0,20}revoked|refresh.{0,20}fail/i;
+function match401(s: string): string | null {
+  if (!s || NOT_401.test(s) || !IS_401.test(s)) return null;
+  return /invalid_grant|refresh.{0,20}fail|revoked/i.test(s) ? '401 授权已失效，需要重新登录' : '401 登录失效';
+}
+/** A quota read that failed because Google answered 401 (CPA management errors never count). */
+function quota401(err: string): string | null {
+  const m = /^fetchAvailableModels 401:\s*([\s\S]*)/.exec(err);
+  return m ? match401('401 ' + m[1]) || '401 登录失效' : null;
+}
+
+/** Short reason when the account is in a 403 / 401 state, else null. 429 / quota answers never count. */
 export function forbiddenReason(row: Row, cred: cpa.Cred): string | null {
   if (cred.status === 'error' || cred.unavailable) {
-    const r = match403(cred.statusMessage);
+    const r = match403(cred.statusMessage) || match401(cred.statusMessage);
     if (r) return r;
   }
-  if (row.quota_err && (!row.quota_at || Number(row.quota_at) > now() - QUOTA_ERR_FRESH_MS)) return match403(String(row.quota_err));
+  if (row.quota_err && (!row.quota_at || Number(row.quota_at) > now() - QUOTA_ERR_FRESH_MS)) return match403(String(row.quota_err)) || quota401(String(row.quota_err));
   return null;
 }
 
-/** One tiny generation through the credential. true = works again, false = still 403, null = can't tell. */
+/** One tiny generation through the credential. true = works again, false = still 403 / 401, null = can't tell. */
 async function probe(cred: cpa.Cred): Promise<{ ok: boolean | null; reason?: string }> {
   if (!cred.projectId) return { ok: null }; // no project: Google answers 403 "no valid license", which says nothing about the account
   const headers = { Authorization: 'Bearer $TOKEN$', 'Content-Type': 'application/json', 'User-Agent': config.quotaUserAgent };
@@ -58,6 +71,7 @@ async function probe(cred: cpa.Cred): Promise<{ ok: boolean | null; reason?: str
     noteAction(cred.id, r.body); // Google's verify / appeal link, shown on 我的凭证
     return { ok: false, reason: reason || '403' };
   }
+  if (r.status === 401) return { ok: false, reason: match401('401 ' + r.body) || '401 登录失效' };
   // 2xx works; 429 is plain quota (CPA cools it down); 400/404 got past the permission check
   if ((r.status >= 200 && r.status < 300) || r.status === 400 || r.status === 404 || r.status === 429) return { ok: true };
   return { ok: null };
@@ -142,7 +156,7 @@ export async function sweep(): Promise<void> {
       if (p.ok === true) {
         await cpa.setDisabled(cred.id, false);
         run(`UPDATE accounts SET auto_disabled_at = NULL, auto_disabled_reason = NULL,
-          quota_err = CASE WHEN quota_err LIKE '%403%' THEN NULL ELSE quota_err END WHERE auth_id = ?`, cred.id);
+          quota_err = CASE WHEN quota_err LIKE '%403%' OR quota_err LIKE '%401%' THEN NULL ELSE quota_err END WHERE auth_id = ?`, cred.id);
         clearAction(cred.id);
         lastProbe.delete(cred.id);
         console.log('[autodisable] re-enabled', cred.id);

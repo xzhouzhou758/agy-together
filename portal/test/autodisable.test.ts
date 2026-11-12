@@ -41,15 +41,15 @@ after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
-test('forbiddenReason: 403 forms count, 429 / 401 / cooldown do not', () => {
+test('forbiddenReason: 403 and 401 forms count, 429 / cooldown do not', () => {
   const r = { quota_err: null };
   const cred = (status: string, statusMessage: string, unavailable = false) => ({ status, statusMessage, unavailable }) as any;
   assert.match(ad.forbiddenReason(r, cred('error', VERIFY))!, /^403 Verify your account/);
   assert.ok(ad.forbiddenReason(r, cred('error', 'Your account has been suspended')));
   assert.ok(ad.forbiddenReason(r, cred('active', 'HTTP 403 Forbidden', true)));
   assert.equal(ad.forbiddenReason(r, cred('error', R429)), null);
-  assert.equal(ad.forbiddenReason(r, cred('error', R401)), null);
-  assert.equal(ad.forbiddenReason(r, cred('error', 'invalid_grant: Token has been expired or revoked.')), null);
+  assert.equal(ad.forbiddenReason(r, cred('error', R401)), '401 登录失效');
+  assert.equal(ad.forbiddenReason(r, cred('error', 'invalid_grant: Token has been expired or revoked.')), '401 授权已失效，需要重新登录');
   assert.equal(ad.forbiddenReason(r, cred('error', 'quota cooldown, retry after 30s', true)), null);
   assert.equal(ad.forbiddenReason(r, cred('active', VERIFY)), null); // stale message on a healthy credential
   assert.ok(ad.forbiddenReason({ quota_err: 'fetchAvailableModels 403: ' + VERIFY, quota_at: Date.now() }, cred('active', '')));
@@ -57,7 +57,7 @@ test('forbiddenReason: 403 forms count, 429 / 401 / cooldown do not', () => {
   assert.equal(ad.forbiddenReason({ quota_err: 'fetchAvailableModels 403: ' + VERIFY, quota_at: Date.now() - 3600e3 }, cred('active', '')), null);
 });
 
-test('sweep: 403 account is disabled, 429 / 401 / manual / suspended left alone', async () => {
+test('sweep: 403 / 401 accounts are disabled, 429 / manual / suspended left alone', async () => {
   const bad = account('bad.json', err(VERIFY));
   const busy = account('busy.json', err(R429));
   const expired = account('expired.json', err(R401));
@@ -67,7 +67,9 @@ test('sweep: 403 account is disabled, 429 / 401 / manual / suspended left alone'
   assert.equal(bad.disabled, true);
   assert.ok(row('bad.json').auto_disabled_at > 0);
   assert.match(row('bad.json').auto_disabled_reason, /Verify your account/);
-  for (const [c, id] of [[busy, 'busy.json'], [expired, 'expired.json'], [susp, 'susp.json']] as const) {
+  assert.equal(expired.disabled, true);
+  assert.match(row('expired.json').auto_disabled_reason, /^401/);
+  for (const [c, id] of [[busy, 'busy.json'], [susp, 'susp.json']] as const) {
     assert.equal(c.disabled, false, id);
     assert.equal(row(id).auto_disabled_at, null, id);
   }
