@@ -49,7 +49,7 @@ const ic=n=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]||'
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const POOL={private:'小锅饭',shared:'大锅饭',aistudio:'AI Studio'};
+const POOL={private:'小锅饭',shared:'大锅饭',aistudio:'AI Studio/Playground'};
 const poolTag=p=>`<span class="pool ${p}">${ic(p==='private'?'lock':p==='aistudio'?'spark':'users')}${POOL[p]}</span>`;
 const level=q=>q>=40?'':q>=15?'mid':'low';
 const pad=n=>String(n).padStart(2,'0');
@@ -182,7 +182,7 @@ function poolPicker(name,selected){
   return `<div class="pools ${cfg.aistudio?'three':''}" role="radiogroup" aria-label="账号池">
     <label class="pool-opt"><input type="radio" name="${name}" value="private" ${selected==='private'?'checked':''}><span class="box"><b>${ic('lock')} 小锅饭</b><small>只用自己的账号</small></span></label>
     <label class="pool-opt"><input type="radio" name="${name}" value="shared" ${selected==='shared'?'checked':''}><span class="box"><b>${ic('users')} 大锅饭</b><small>用朋友共享的账号</small></span></label>
-    ${cfg.aistudio&&!name.startsWith('default')?`<label class="pool-opt"><input type="radio" name="${name}" value="aistudio" ${selected==='aistudio'?'checked':''}><span class="box"><b>${ic('spark')} AI Studio</b></span></label>`:''}
+    ${cfg.aistudio&&!name.startsWith('default')?`<label class="pool-opt"><input type="radio" name="${name}" value="aistudio" ${selected==='aistudio'?'checked':''}><span class="box"><b>${ic('spark')} AI Studio/Playground</b></span></label>`:''}
   </div>`;
 }
 const reserveText=v=>v?v+'%':'不保留';
@@ -194,7 +194,7 @@ const PAGES=[
   ['home','home','仪表盘','仪表盘'],
   ['accounts','key','我的凭证','凭证'],
   ['pool','pot','大锅饭 / 小锅饭','大小锅饭'],
-  ['aistudio','spark','AI Studio','AI Studio'],
+  ['aistudio','spark','AI Studio/Playground','AI Studio'],
   ['keys','terminal','API 密钥','API 密钥'],
   ['logs','activity','流量日志','日志'],
   ['stats','chart','Token 统计','统计'],
@@ -510,7 +510,7 @@ function pageKeys(){
       <div class="seg" role="radiogroup" aria-label="${esc(k.name)} 使用的账号池">
         <label><input type="radio" name="kp-${k.id}" value="private" data-key="${k.id}" ${k.pool==='private'?'checked':''}><span>小锅饭</span></label>
         <label><input type="radio" name="kp-${k.id}" value="shared" data-key="${k.id}" ${k.pool==='shared'?'checked':''}><span>大锅饭</span></label>
-        ${cfg.aistudio||k.pool==='aistudio'?`<label><input type="radio" name="kp-${k.id}" value="aistudio" data-key="${k.id}" ${k.pool==='aistudio'?'checked':''}><span>AI Studio</span></label>`:''}
+        ${cfg.aistudio||k.pool==='aistudio'?`<label><input type="radio" name="kp-${k.id}" value="aistudio" data-key="${k.id}" ${k.pool==='aistudio'?'checked':''}><span>AI Studio/Playground</span></label>`:''}
       </div>
       <div class="hstack"><button class="btn sm ghost" data-act="copykey:${k.id}" ${k.key?'':'disabled'}>${ic('copy')}复制</button><button class="btn sm" data-act="connect:${k.id}">接入</button><button class="btn sm ghost danger" data-act="revoke:${k.id}" aria-label="撤销 ${esc(k.name)}">${ic('trash')}</button></div>
     </div>`).join(''):empty('terminal','还没有密钥',`<button class="btn primary" data-act="newkey">${ic('plus')}创建密钥</button>`);
@@ -533,7 +533,7 @@ function pageAistudio(){
       <span class="switch-field sm"><small>共享</small><button class="switch" role="switch" aria-checked="${!!a.shared}" aria-label="共享 ${esc(a.id)}" data-act="aisshare:${esc(a.id)}"></button></span>
       <span class="num-r hstack" style="justify-content:flex-end">${a.status==='valid'?`<button class="btn sm" data-act="aischeck:${esc(a.id)}">重新检测</button>`:''}<button class="btn sm ghost danger" data-act="aisdel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span>
     </div>`).join('')}</div>`:empty('spark','还没有号');
-  return head('AI Studio')+
+  return head('AI Studio/Playground')+
   `<section class="card glass"><div class="card-head"><h2>上传 Cookie</h2></div>
     <textarea class="input mono" id="f-ais" rows="5" autocomplete="off" spellcheck="false" aria-label="Cookie"></textarea>
     <div class="mt"><button class="btn primary" data-act="aisup">${ic('upload')}提交</button></div></section>
@@ -561,7 +561,7 @@ function aisUsers(L){
 }
 function aisAdmin(L){
   if(!cfg.aistudio)return '';
-  return fold('aisadmin','AI Studio 号',cnt(L.length),`
+  return fold('aisadmin','AI Studio/Playground 号',cnt(L.length),`
     ${L.length?`<div class="tbl ais-admin">${L.map(a=>`<div class="tr"><span class="mono">${esc(a.id)}</span><span>${esc(a.owner||'—')}</span><span>${aisState(a)}</span><span>${a.shared?'<span class="chip">共享</span>':'<span class="chip">私有</span>'}</span><span class="faint">${a.checkedAt?ago(a.checkedAt):'—'}</span><span class="num-r"><button class="btn sm ghost danger" data-act="aisadel:${esc(a.id)}" aria-label="删除">${ic('trash')}</button></span></div>`).join('')}</div>`:''}
     <div class="mt"><button class="btn sm" data-act="aisall">${ic('refresh')}全部检测</button></div>`,false);
 }
@@ -570,7 +570,7 @@ function aisAdmin(L){
 function trafficQS(){const t=ui.tr,p=new URLSearchParams({page:t.page,size:t.size});
   if(t.q)p.set('q',t.q);if(t.account)p.set('account',t.account);if(t.user)p.set('user',t.user);if(t.family)p.set('family',t.family);if(t.pool)p.set('pool',t.pool);if(t.err)p.set('errorsOnly','1');return p.toString();}
 const CHIPS=[['all','全部'],['f:claude','claude'],['f:gemini','gemini'],['f:flash','flash'],['f:pro','pro'],['f:image','绘图'],['err','仅错误'],['p:private','小锅饭'],['p:shared','大锅饭']];
-function trChips(){const t=ui.tr;return CHIPS.concat(cfg.aistudio?[['p:aistudio','AI Studio']]:[]).map(([k,l])=>{
+function trChips(){const t=ui.tr;return CHIPS.concat(cfg.aistudio?[['p:aistudio','AI Studio/Playground']]:[]).map(([k,l])=>{
   const on=k==='all'?!t.family&&!t.pool&&!t.err:k==='err'?t.err:k.startsWith('f:')?t.family===k.slice(2):t.pool===k.slice(2);
   return `<button type="button" class="fchip ${k.startsWith('p:')?k.slice(2):''}" aria-pressed="${on}" data-act="trchip:${k}">${l}</button>`;}).join('');}
 function trTotals(){const T=D.traffic;return `<span>Total <b>${T.total.toLocaleString()}</b></span><span>OK <b class="good-t">${T.ok.toLocaleString()}</b></span><span>Error <b class="bad-t">${T.error.toLocaleString()}</b></span>`;}
