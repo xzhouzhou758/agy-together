@@ -136,7 +136,7 @@ function quotaBlock(a,cls=''){
 /* 状态标签：不正常的点开看原因 */
 function stInfo(a){
   if(a.problem)return ['bad',a.forbidden?'403 异常':a.problem.label];
-  if(a.state==='error')return ['bad',a.forbidden?'403 异常':'异常'];
+  if(a.state==='error')return ['bad',a.forbidden?'403 异常':'报错'];
   if(a.state==='cooldown')return ['warn','冷却中'];
   if(a.state==='off')return ['off',a.asleep?'休眠中':'已停用'];
   if(a.forbidden)return ['bad','403 异常'];
@@ -152,7 +152,7 @@ function gbTag(t){const n=tierName(t);if(!n)return '';const k=n.toLowerCase();re
 function accState(a){
   if(a.state==='off')return a.asleep?['sleep','休眠中','闲置超过 1 小时自动关闭，下次请求会自动唤醒']:['','已停用'];
   if(a.state==='cooldown')return ['warn','冷却中',[a.detail||a.reason,a.retryAt?recover(a.retryAt):''].filter(Boolean).join(' · ')];
-  if(a.state==='error')return ['bad','异常',a.detail||a.reason||''];
+  if(a.state==='error')return ['bad','报错',a.detail||a.reason||''];
   return ['good','正常'];
 }
 /* 出错 / 冷却的细节：翻译后的原因、逐模型冷却、Google 给的验证 / 申诉链接 */
@@ -233,7 +233,7 @@ function dailyCard(d){
     ${!unl&&d.override==null?`<small class="faint">共享一个 Pro 号，每天多 ${d.per} 次</small>`:''}</section>`;
 }
 /* ============ 仪表盘（照 agy-me pageDash）：普通用户看自己的凭证，管理员看全部 ============ */
-const DST={ok:['good','正常'],cooldown:['warn','冷却'],banned:['bad','异常'],disabled:['','停用']};
+const DST={ok:['good','正常'],cooldown:['warn','冷却'],banned:['bad','报错'],disabled:['','停用']};
 /* 额度族卡片：和凭证页同一套圆环（外圈 5H 平均，内圈 7D 平均） */
 function famCard(k,name,icon){
   const F=D.ov.dash.fam[k]||{total:0},tot=F.total,pc=v=>v==null?null:Math.round(v*100);
