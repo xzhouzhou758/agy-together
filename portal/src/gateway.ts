@@ -9,9 +9,9 @@ import { sha256, readBody, HttpError } from './util.ts';
 import * as cpa from './cpa.ts';
 import { belowReserve } from './quota.ts';
 import { sessionKey, userMode, newSalt } from './routing.ts';
-import { explainUnavailable, sendGatewayError, type Why } from './reason.ts';
+import { explainUnavailable, sendGatewayError, type Why, type UpBusy } from './reason.ts';
 import { dailyFor, secondsToMidnight, sharedModels, sharedAllows } from './limits.ts';
-import { upstreamsFor, upstreamRequest, usageSniffer, upAuthId, enabledUpstreams, openModels, type Upstream, type Tok } from './upstream.ts';
+import { upstreamsFor, upstreamRequest, usageSniffer, upAuthId, enabledUpstreams, openModels, upUsableCreds, upPluginHealthy, upAuthIdForIndex, type Upstream, type Tok } from './upstream.ts';
 import { wakeFor } from './autosleep.ts';
 import { sfKind, sfRelay, sfModelIds } from './sf.ts';
 import { aistudioOn, allowFor as aistudioAllowFor, NOT_ELIGIBLE } from './aistudio.ts';
@@ -33,13 +33,121 @@ const KUNLUN_MSG = '大锅饭已禁用「昆仑 IDE」预设：它把内容伪�
 const keyInflight = new Map<number, number>();
 const accInflight = new Map<string, number>();
 const keyWindow = new Map<number, number[]>();
+const accWindow = new Map<string, number[]>();
+const lastPrePicked = new Map<string, number>();
+const sessionLastAuth = new Map<string, string>();
+let pickSeq = 0;
+const nextPickTick = () => now() + ((++pickSeq) % 1000) / 1000;
+
 const inc = <K>(m: Map<K, number>, k: K, d: number) => {
   const v = (m.get(k) || 0) + d;
   if (v <= 0) m.delete(k);
   else m.set(k, v);
 };
-export function accountInflight(id: string) {
+export function accountInflight(id: string): number {
   return accInflight.get(id) || 0;
+}
+export function accountRpmUsed(id: string, t = now()): number {
+  const w = accWindow.get(id);
+  if (!w || !w.length) return 0;
+  const cut = t - 60000;
+  let n = 0;
+  for (const ts of w) if (ts > cut) n++;
+  return n;
+}
+export function accountBusy(id: string, rules = getRules(), t = now()): boolean {
+  return (rules.accConc > 0 && accountInflight(id) >= rules.accConc) || (rules.accRpm > 0 && accountRpmUsed(id, t) >= rules.accRpm);
+}
+export function accountWaitSeconds(ids: string[], rules = getRules(), t = now()): number {
+  if (!ids.length) return 5;
+  const cut = t - 60000;
+  let minWait = Infinity;
+  for (const id of ids) {
+    const live = (accWindow.get(id) || []).filter((ts) => ts > cut).sort((a, b) => a - b);
+    const concFull = rules.accConc > 0 && accountInflight(id) >= rules.accConc;
+    const rpmFull = rules.accRpm > 0 && live.length >= rules.accRpm;
+    if (concFull && !rpmFull) return 3;
+    if (rpmFull) {
+      const idx = live.length - rules.accRpm;
+      const w = Math.max(1, Math.ceil((live[idx] + 60000 - t) / 1000));
+      if (w < minWait) minWait = w;
+    }
+  }
+  return Number.isFinite(minWait) ? minWait : 5;
+}
+
+type AccountHold = { settle: (actualKey: string) => void; abort: () => void; release: () => void };
+const NOOP_HOLD: AccountHold = { settle() {}, abort() {}, release() {} };
+
+function removeStampOnce(id: string, stamp: number) {
+  const w = accWindow.get(id);
+  if (!w) return;
+  const i = w.indexOf(stamp);
+  if (i >= 0) w.splice(i, 1);
+  if (!w.length) accWindow.delete(id);
+}
+function pushStamp(id: string, stamp: number) {
+  const cut = now() - 60000;
+  const w = (accWindow.get(id) || []).filter((t) => t > cut);
+  w.push(stamp);
+  accWindow.set(id, w);
+}
+
+function holdAccount(candidates: string[], sessionKeyStr?: string): AccountHold {
+  if (!candidates.length) return NOOP_HOLD;
+  let reserved = '';
+  if (sessionKeyStr) {
+    const prev = sessionLastAuth.get(sessionKeyStr);
+    if (prev && candidates.includes(prev)) reserved = prev;
+  }
+  if (!reserved) {
+    reserved = candidates[0];
+    let best = lastPrePicked.get(reserved) || 0;
+    for (let i = 1; i < candidates.length; i++) {
+      const t = lastPrePicked.get(candidates[i]) || 0;
+      if (t < best) { best = t; reserved = candidates[i]; }
+    }
+  }
+  lastPrePicked.set(reserved, nextPickTick());
+  const stamp = now();
+  let current = reserved;
+  let state: 'held' | 'released' | 'aborted' = 'held';
+  let settled = false;
+  inc(accInflight, current, 1);
+  pushStamp(current, stamp);
+
+  return {
+    settle(actualKey: string) {
+      if (settled || state === 'aborted' || !actualKey) return;
+      settled = true;
+      if (actualKey !== current) {
+        if (state === 'held') {
+          inc(accInflight, current, -1);
+          inc(accInflight, actualKey, 1);
+        }
+        removeStampOnce(current, stamp);
+        pushStamp(actualKey, stamp);
+        current = actualKey;
+      }
+      lastPrePicked.set(actualKey, nextPickTick());
+      if (sessionKeyStr) {
+        sessionLastAuth.delete(sessionKeyStr);
+        if (sessionLastAuth.size >= 5000) sessionLastAuth.delete(sessionLastAuth.keys().next().value!);
+        sessionLastAuth.set(sessionKeyStr, actualKey);
+      }
+    },
+    abort() {
+      if (state === 'aborted') return;
+      if (state === 'held') inc(accInflight, current, -1);
+      removeStampOnce(current, stamp);
+      state = 'aborted';
+    },
+    release() {
+      if (state !== 'held') return;
+      inc(accInflight, current, -1);
+      state = 'released';
+    },
+  };
 }
 
 // request_id -> allowed set, for the usage-queue cross-check
@@ -159,7 +267,7 @@ export async function allowedFor(userId: number, pool: 'private' | 'shared', mod
   return rows
     .filter((r) => usable(r.auth_id))
     .filter((r) => listing || !belowReserve(r, model))
-    .filter((r) => listing || accountInflight(r.auth_id) < rules.accConc)
+    .filter((r) => listing || !accountBusy(r.auth_id, rules))
     .map((r) => r.auth_id);
 }
 
@@ -336,12 +444,58 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     }
     allowed = await allowedFor(key.user_id, pool, model, listing).catch(() => []);
   }
-  const ups: Upstream[] = pool === 'shared' && isGen ? await upstreamsFor(model).catch(() => []) : [];
-  if (!allowed.length && isGen && !ups.length) {
-    const w = await explainUnavailable(key.user_id, pool, model).catch((): Why => ({ status: 503, result: 'no_account', message: '没有可用账号' }));
+  type UpPlan = { u: Upstream; cpaPlugin: boolean; usableIds: string[]; allowIds: string[]; holdKeys: string[]; weight: number };
+  const rawUps: Upstream[] = pool === 'shared' && isGen ? await upstreamsFor(model).catch(() => []) : [];
+  const availUps: UpPlan[] = [];
+  const busyUpKeys: string[] = [];
+  if (rawUps.length) {
+    const rules = getRules();
+    await Promise.all(rawUps.map(async (u) => {
+      if (u.mgmtKey) {
+        const [usableCreds, pluginOk] = await Promise.all([
+          upUsableCreds(u, model).catch(() => null),
+          upPluginHealthy(u).catch(() => false),
+        ]);
+        if (!usableCreds || !usableCreds.length) return;
+        const usableIds = usableCreds.map((c) => c.id);
+        if (pluginOk) {
+          const freeIds = usableIds.filter((id) => !accountBusy(`up:${u.id}:${id}`, rules));
+          if (!freeIds.length) {
+            busyUpKeys.push(...usableIds.map((id) => `up:${u.id}:${id}`));
+            return;
+          }
+          availUps.push({ u, cpaPlugin: true, usableIds, allowIds: freeIds, holdKeys: freeIds.map((id) => `up:${u.id}:${id}`), weight: freeIds.length });
+        } else {
+          const k = `up:${u.id}`;
+          if (accountBusy(k, rules)) { busyUpKeys.push(k); return; }
+          availUps.push({ u, cpaPlugin: false, usableIds, allowIds: [], holdKeys: [k], weight: 1 });
+        }
+      } else {
+        const k = `up:${u.id}`;
+        if (accountBusy(k, rules)) { busyUpKeys.push(k); return; }
+        availUps.push({ u, cpaPlugin: false, usableIds: [], allowIds: [], holdKeys: [k], weight: 1 });
+      }
+    }));
+    availUps.sort((a, b) => a.u.id - b.u.id);
+  }
+  const buildUpBusy = (): UpBusy | undefined => {
+    if (!busyUpKeys.length) return undefined;
+    const rules = getRules(), t = now();
+    let conc = false, rpm = false;
+    for (const id of busyUpKeys) {
+      const cFull = rules.accConc > 0 && accountInflight(id) >= rules.accConc;
+      const rFull = rules.accRpm > 0 && accountRpmUsed(id, t) >= rules.accRpm;
+      if (cFull && !rFull) conc = true;
+      if (rFull) rpm = true;
+    }
+    return { conc, rpm, wait: accountWaitSeconds(busyUpKeys, rules, t) };
+  };
+
+  if (!allowed.length && isGen && !availUps.length) {
+    const w = await explainUnavailable(key.user_id, pool, model, undefined, buildUpBusy()).catch((): Why => ({ status: 503, result: 'no_account', message: '没有可用账号' }));
     return refuse(w, w.result === 'quota' ? 'insufficient_quota' : w.result === 'no_model' ? 'model_not_found' : 'no_available_account');
   }
-  const allowSet = new Set(allowed);
+  let allowSet = new Set(allowed);
   if (isGen) {
     inc(keyInflight, key.id, 1);
     countedKey = true;
@@ -350,9 +504,9 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   // Build the upstream request. Strip every client copy of the allow header (and any X-Agy-*), then set exactly one.
   const headers = forwardHeaders(req.headers);
   headers[config.allowHeader] = allowed.length ? allowed.join(',') : '__none__';
-  if (isGen) {
-    const rot = userRotation(key.user_id);
-    const sk = sessionKey({ keyId: key.id, model, headers: req.headers, body: json, salt: rot.salt });
+  const rot = isGen ? userRotation(key.user_id) : null;
+  const sk = isGen && rot ? sessionKey({ keyId: key.id, model, headers: req.headers, body: json, salt: rot.salt }) : null;
+  if (isGen && rot) {
     headers['X-Agy-Mode'] = sk ? rot.mode : 'performance';
     if (sk) headers['X-Agy-Session'] = sk.key;
   }
@@ -364,37 +518,94 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
 
   let servedAuth: string | null = null;
   let requestId: string | null = null;
+  let activeHold: AccountHold = NOOP_HOLD;
   let finished = false;
   const finish = (status: number, result: string, reason?: string | null, x?: Extra) => {
     if (finished) return;
     finished = true;
     if (countedKey) inc(keyInflight, key.id, -1);
-    if (servedAuth) inc(accInflight, servedAuth, -1);
+    activeHold.release();
     if (isGen) record(ctx, { status, result, authId: servedAuth, requestId, reason, x });
   };
 
-  // ---- external upstream (Tools): plain reverse proxy with that upstream's key ----
+  // ---- external upstream (Tools / external CPA backup pool): reverse proxy with per-account protection ----
   let cur: http.ClientRequest | null = null;
   let cpaOK = allowed.length > 0; // may the Google accounts (via CPA) take this request
-  const goUp = (u: Upstream) => {
+  let triedCPA = false;
+  const canFallbackCPA = () => {
+    if (triedCPA || !cpaOK) return false;
+    if (pool === 'shared' && isGen) {
+      const rules = getRules();
+      allowed = allowed.filter((id) => !accountBusy(id, rules));
+      if (!allowed.length) return false;
+      allowSet = new Set(allowed);
+      headers[config.allowHeader] = allowed.join(',');
+    }
+    return true;
+  };
+  const refreshPlan = (p: UpPlan, ignoreDown = false): UpPlan | null => {
+    if (!ignoreDown && isDown(p.u.id)) return null;
+    const rules = getRules();
+    if (p.cpaPlugin) {
+      const freeIds = p.usableIds.filter((id) => !accountBusy(`up:${p.u.id}:${id}`, rules));
+      if (!freeIds.length) {
+        for (const id of p.usableIds) { const k = `up:${p.u.id}:${id}`; if (!busyUpKeys.includes(k)) busyUpKeys.push(k); }
+        return null;
+      }
+      return { ...p, allowIds: freeIds, holdKeys: freeIds.map((id) => `up:${p.u.id}:${id}`), weight: freeIds.length };
+    }
+    const k = `up:${p.u.id}`;
+    if (accountBusy(k, rules)) {
+      if (!busyUpKeys.includes(k)) busyUpKeys.push(k);
+      return null;
+    }
+    return p;
+  };
+
+  const goUp = (plan: UpPlan) => {
+    const u = plan.u;
     const sn = usageSniffer();
     const x = (): Extra => ({ authId: upAuthId(u.id), ownerId: u.ownerId, tok: sn.done() });
-    const r = upstreamRequest(u, method, fwdURL.pathname + fwdURL.search, req.headers, body.length);
+    let extra: Record<string, string> | undefined;
+    if (plan.cpaPlugin) {
+      extra = {
+        [config.allowHeader]: plan.allowIds.join(','),
+        'X-Agy-Mode': sk ? rot!.mode : 'performance',
+      };
+      if (sk) extra['X-Agy-Session'] = sk.key;
+    }
+    const hold = isGen ? holdAccount(plan.holdKeys, plan.cpaPlugin && sk ? `up:${u.id}:${sk.key}` : undefined) : NOOP_HOLD;
+    activeHold = hold;
+    const r = upstreamRequest(u, method, fwdURL.pathname + fwdURL.search, req.headers, body.length, extra);
     cur = r;
     r.on('error', () => {
       if (finished) return;
-      if (!res.headersSent && !triedCPA && cpaOK) { markDown(u.id); return goCPA(); }
+      hold.abort();
+      if (!res.headersSent && canFallbackCPA()) { markDown(u.id); return goCPA(); }
       if (!res.headersSent) fail(502, 'upstream_error', `上游 ${u.name} 不可达`);
       else res.destroy();
       finish(502, 'upstream', `${u.name} 不可达`, x());
     });
-    r.on('response', (ur) => {
+    r.on('response', async (ur) => {
       const status = ur.statusCode || 502;
-      if ((status === 429 || status >= 500) && !triedCPA && cpaOK) {
-        // Tools is full or broken: let the Google accounts take this one
+      if ((status === 429 || status >= 500) && canFallbackCPA()) {
+        // Upstream is full or broken: let the Google accounts take this one
         ur.resume();
         if (status >= 500) markDown(u.id);
+        hold.abort();
         return goCPA();
+      }
+      if (plan.cpaPlugin) {
+        const trace = parseTrace(ur.headers['x-cpa-trace-id']);
+        if (trace) {
+          const credId = await upAuthIdForIndex(u, trace.index).catch(() => null);
+          if (finished) { ur.destroy(); return; }
+          if (credId) hold.settle(`up:${u.id}:${credId}`);
+        } else if (status >= 400) {
+          hold.abort();
+        }
+      } else if (isGen) {
+        hold.settle(`up:${u.id}`);
       }
       const tHead = now() - ctx.start;
       if (status >= 400 && status < 500 && status !== 429) {
@@ -430,17 +641,32 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     });
     r.end(body);
   };
-  let rrPick: Upstream | null = null;
-  if (ups.length) {
+  let rrPick: UpPlan | null = null;
+  if (availUps.length) {
     // a model only the upstreams serve (e.g. Tools' *-tiered names) never goes to CPA, which would just refuse it
     const sup = allowed.length && model ? await supportedModels(allowed) : null;
     if (sup && sup.size && !sup.has(model)) cpaOK = false;
-    // take turns: the upstreams count as accounts next to the allowed Google ones
-    const live = ups.filter((u) => !isDown(u.id));
+    // take turns weighted by each upstream's free account count next to the allowed Google ones
+    const live = availUps.map((p) => refreshPlan(p)).filter((p): p is UpPlan => p !== null);
     const g = cpaOK ? allowed.length : 0;
-    const n = g + live.length, i = n ? rr++ % n : 0;
-    if (i >= g && live.length) rrPick = live[i - g];
-    else if (!g) rrPick = ups[0]; // nothing else to try
+    const upWeight = live.reduce((s, p) => s + p.weight, 0);
+    const n = g + upWeight, i = n ? rr++ % n : 0;
+    if (i >= g && live.length) {
+      let rem = i - g;
+      for (const p of live) {
+        if (rem < p.weight) { rrPick = p; break; }
+        rem -= p.weight;
+      }
+    } else if (!g) {
+      const lastResort = availUps.map((p) => refreshPlan(p, true)).find((p): p is UpPlan => p !== null) || null;
+      if (!lastResort) {
+        const w = await explainUnavailable(key.user_id, pool, model, undefined, buildUpBusy()).catch((): Why => ({ status: 503, result: 'no_account', message: '没有可用账号' }));
+        fail(w.status, w.result === 'quota' ? 'insufficient_quota' : w.result === 'no_model' ? 'model_not_found' : 'no_available_account', w.message, w.retryAfter);
+        finish(w.status, w.result, w.message);
+        return;
+      }
+      rrPick = lastResort;
+    }
   }
   res.on('close', () => {
     if (!res.writableFinished) {
@@ -448,15 +674,17 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
       finish(499, 'client', '客户端断开');
     }
   });
-  let triedCPA = false;
   const goCPA = () => {
   triedCPA = true;
+  const hold = isGen ? holdAccount(allowed, sk?.key) : NOOP_HOLD;
+  activeHold = hold;
   const up = http.request({
     host: target.hostname, port: target.port || 80, method, path: fwdURL.pathname + fwdURL.search, headers,
   });
   cur = up;
   up.on('error', () => {
     if (!finished) {
+      hold.abort();
       fail(502, 'upstream_error', '上游 CLIProxyAPI 不可达');
       finish(502, 'upstream', '上游不可达');
     }
@@ -468,7 +696,9 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
     if (trace) {
       requestId = trace.requestId;
       const authId = await cpa.authIdForIndex(trace.index).catch(() => null);
+      if (finished) { ur.destroy(); return; }
       if (!authId || !allowSet.has(authId)) {
+        hold.abort();
         ur.destroy();
         up.destroy();
         alarm('allow_violation', { authIndex: trace.index, authId, allowed, keyId: key.id, pool, requestId, path: P }, true);
@@ -477,16 +707,19 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
         return;
       }
       servedAuth = authId;
-      inc(accInflight, authId, 1);
+      if (isGen) hold.settle(authId);
       recentAllowed.set(trace.requestId, { allowed: allowSet, ts: now() });
     } else if (isGen && status >= 200 && status < 300) {
       // A successful generation without a trace cannot be verified: refuse it.
+      hold.abort();
       ur.destroy();
       up.destroy();
       alarm('missing_trace', { keyId: key.id, pool, path: P, status }, true);
       fail(502, 'gateway_locked', '安全检查未通过，网关已暂停');
       finish(502, 'blocked', '响应缺少追踪信息');
       return;
+    } else if (isGen && status >= 400) {
+      hold.abort();
     }
     const tHead = now() - ctx.start;
     // ---- model list: buffer and filter to the models the allowed accounts support ----
@@ -522,16 +755,17 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
       ur.on('error', () => finish(502, 'upstream', '上游连接中断'));
       ur.on('end', async () => {
         ctx.ttfb ??= tHead;
+        hold.release();
         const text = Buffer.concat(chunks).toString('utf8');
         const noAcc = /auth_unavailable|agy_allow|auth_not_found|no auth available|unknown provider for model|model_not_found/i.test(text);
-        if (isGen && (status === 429 || noAcc) && ups.some((u) => !isDown(u.id))) {
-          // CPA has nothing for it: hand the same request to an external upstream instead
-          if (servedAuth) { inc(accInflight, servedAuth, -1); servedAuth = null; }
-          const live = ups.filter((u) => !isDown(u.id));
-          return goUp(live[rr++ % live.length]);
-        }
         if (isGen && (status === 429 || noAcc)) {
-          const w = await explainUnavailable(key.user_id, pool, model, { status, text }).catch((): Why => ({ status: status === 429 ? 429 : 503, result: status === 429 ? 'quota' : 'no_account', message: status === 429 ? '上游限流，请稍后重试' : '没有可用账号' }));
+          const live = availUps.map((p) => refreshPlan(p)).filter((p): p is UpPlan => p !== null);
+          if (live.length) {
+            // CPA has nothing for it: hand the same request to an available external upstream instead
+            servedAuth = null;
+            return goUp(live[rr++ % live.length]);
+          }
+          const w = await explainUnavailable(key.user_id, pool, model, { status, text }, buildUpBusy()).catch((): Why => ({ status: status === 429 ? 429 : 503, result: status === 429 ? 'quota' : 'no_account', message: status === 429 ? '上游限流，请稍后重试' : '没有可用账号' }));
           const ra = Number(ur.headers['retry-after']);
           fail(w.status, w.result === 'quota' ? 'insufficient_quota' : w.result === 'no_model' ? 'model_not_found' : 'no_available_account', w.message, w.retryAfter ?? (Number.isFinite(ra) && ra > 0 ? ra : undefined));
           finish(w.status, w.result, w.message);
@@ -563,10 +797,24 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   else goCPA();
 }
 
-// periodic cleanup of request_id map
+// periodic cleanup of request_id map and rate-limit sliding windows
 setInterval(() => {
-  const cut = now() - 300000;
+  const t = now();
+  const cut = t - 300000;
   for (const [k, v] of recentAllowed) if (v.ts < cut) recentAllowed.delete(k);
+  const wCut = t - 60000;
+  for (const [k, w] of accWindow) {
+    const live = w.filter((ts) => ts > wCut);
+    if (live.length) accWindow.set(k, live);
+    else accWindow.delete(k);
+  }
+  for (const [k, w] of keyWindow) {
+    const live = w.filter((ts) => ts > wCut);
+    if (live.length) keyWindow.set(k, live);
+    else keyWindow.delete(k);
+  }
+  const pCut = t - 3600000;
+  for (const [k, ts] of lastPrePicked) if (ts < pCut) lastPrePicked.delete(k);
 }, 60000).unref();
 
 // ---------- AI Studio pool: plain reverse proxy to the relay ----------

@@ -1,12 +1,20 @@
 // Readable (Chinese) reasons for "no account / quota / rate limit" gateway errors, shaped like the
 // endpoint's own error body, plus the short reason text stored in the traffic log.
 import type { ServerResponse } from 'node:http';
-import { all, getRules } from './db.ts';
+import { all, getRules, type Rules } from './db.ts';
 import { modelGroup } from './util.ts';
 import * as cpa from './cpa.ts';
 import { storedQuota, belowReserve } from './quota.ts';
 
 export type Why = { status: number; result: 'no_account' | 'quota' | 'rate_limited' | 'no_model' | 'daily_limit' | 'input_limit'; message: string; retryAfter?: number };
+export type UpBusy = { conc: boolean; rpm: boolean; wait: number };
+
+function busyWhy(rules: Rules, conc: boolean, wait: number): Why {
+  if (conc) {
+    return { status: 503, result: 'no_account', message: `大锅饭的账号都在忙（每个号最多同时 ${rules.accConc} 个请求），请稍后重试`, retryAfter: wait };
+  }
+  return { status: 503, result: 'no_account', message: `大锅饭的账号已达每分钟上限（每个号每分钟最多 ${rules.accRpm} 次），请稍后重试`, retryAfter: wait };
+}
 
 /** 「约 2 小时 15 分」 */
 export function humanWait(sec: number): string {
@@ -60,8 +68,9 @@ export function exhaustedFor(row: any, model: string): number {
  * Why no account can serve this request. `upstream` is CPA's own error, when CPA (not the portal) refused.
  * Every branch only looks at accounts the caller could use anyway (own accounts / the shared pool).
  */
-export async function explainUnavailable(userId: number, pool: 'private' | 'shared', model: string, upstream?: { status: number; text: string }): Promise<Why> {
+export async function explainUnavailable(userId: number, pool: 'private' | 'shared', model: string, upstream?: { status: number; text: string }, upBusy?: UpBusy): Promise<Why> {
   const who = pool === 'private' ? '你的账号' : '大锅饭的账号';
+  const orUpBusy = (fallback: Why): Why => (pool === 'shared' && upBusy && upstream?.status !== 429 ? busyWhy(getRules(), upBusy.conc, upBusy.wait) : fallback);
   const rows = pool === 'private'
     ? all('SELECT * FROM accounts WHERE owner_id = ? ORDER BY auth_id', userId)
     : all('SELECT a.* FROM accounts a JOIN users u ON u.id = a.owner_id WHERE a.shared = 1 AND u.active = 1 ORDER BY a.auth_id');
@@ -70,10 +79,10 @@ export async function explainUnavailable(userId: number, pool: 'private' | 'shar
   if (!known.length) {
     return pool === 'private'
       ? { status: 503, result: 'no_account', message: '你还没有自己的账号：小锅饭 Key 只用你自己的凭证，请先在「我的凭证」添加' }
-      : { status: 503, result: 'no_account', message: '大锅饭里还没有共享账号' };
+      : orUpBusy({ status: 503, result: 'no_account', message: '大锅饭里还没有共享账号' });
   }
   const enabled = known.filter((r) => !c?.byId.get(r.auth_id)?.disabled);
-  if (!enabled.length) return { status: 503, result: 'no_account', message: `${who}都已停用` };
+  if (!enabled.length) return orUpBusy({ status: 503, result: 'no_account', message: `${who}都已停用` });
 
   // model support
   let supporting = enabled;
@@ -81,11 +90,11 @@ export async function explainUnavailable(userId: number, pool: 'private' | 'shar
     const lists = await Promise.all(enabled.map((r) => modelsOf(r.auth_id)));
     if (lists.every((l) => l !== null)) {
       supporting = enabled.filter((_, i) => lists[i]!.has(model.toLowerCase()));
-      if (!supporting.length) return { status: 404, result: 'no_model', message: `没有支持该模型的账号：${model}` };
+      if (!supporting.length) return orUpBusy({ status: 404, result: 'no_model', message: `没有支持该模型的账号：${model}` });
     }
   }
   if (upstream && /unknown provider for model|model_not_found/i.test(upstream.text)) {
-    return { status: 404, result: 'no_model', message: `没有支持该模型的账号：${model || '（未指定模型）'}` };
+    return orUpBusy({ status: 404, result: 'no_model', message: `没有支持该模型的账号：${model || '（未指定模型）'}` });
   }
 
   // quota used up (cached 5h / weekly data)
@@ -93,7 +102,7 @@ export async function explainUnavailable(userId: number, pool: 'private' | 'shar
   const ex = supporting.map((r) => exhaustedFor(r, model));
   if (ex.every((s) => s > 0)) {
     const s = Math.min(...ex);
-    return { status: 429, result: 'quota', message: `${who}${label ? ' ' + label + ' ' : ''}额度已用完${after(s)}`, retryAfter: s };
+    return orUpBusy({ status: 429, result: 'quota', message: `${who}${label ? ' ' + label + ' ' : ''}额度已用完${after(s)}`, retryAfter: s });
   }
 
   // CPA cooldown (rate limited upstream)
@@ -108,20 +117,26 @@ export async function explainUnavailable(userId: number, pool: 'private' | 'shar
   if (!usable.length) {
     const waits = cool.filter((s) => s > 0).concat(ex.filter((s) => s > 0));
     const s = waits.length ? Math.min(...waits) : undefined;
-    return { status: 429, result: 'quota', message: `${who}${label ? ' ' + label + ' ' : ''}暂时被上游限流，正在冷却${after(s)}`, retryAfter: s };
+    return orUpBusy({ status: 429, result: 'quota', message: `${who}${label ? ' ' + label + ' ' : ''}暂时被上游限流，正在冷却${after(s)}`, retryAfter: s });
   }
 
   if (pool === 'shared') {
     const rules = getRules();
-    if (usable.every((r) => belowReserve(r, model))) {
-      return { status: 503, result: 'no_account', message: `大锅饭的账号${label ? ' ' + label + ' ' : ''}剩余额度都低于号主设的自用保留线，暂不对外` };
+    const above = usable.filter((r) => !belowReserve(r, model));
+    if (!above.length) {
+      return orUpBusy({ status: 503, result: 'no_account', message: `大锅饭的账号${label ? ' ' + label + ' ' : ''}剩余额度都低于号主设的自用保留线，暂不对外` });
     }
-    const { accountInflight } = await import('./gateway.ts');
-    if (usable.every((r) => belowReserve(r, model) || accountInflight(r.auth_id) >= rules.accConc)) {
-      return { status: 503, result: 'no_account', message: `大锅饭的账号都在忙（每个号最多同时 ${rules.accConc} 个请求），请稍后重试`, retryAfter: 5 };
+    const { accountInflight, accountRpmUsed, accountBusy, accountWaitSeconds } = await import('./gateway.ts');
+    const t = Date.now();
+    if (above.every((r) => accountBusy(r.auth_id, rules, t))) {
+      const ids = above.map((r) => r.auth_id);
+      const conc = ids.some((id) => rules.accConc > 0 && accountInflight(id) >= rules.accConc && !(rules.accRpm > 0 && accountRpmUsed(id, t) >= rules.accRpm)) || !!upBusy?.conc;
+      const wait = upBusy ? Math.min(accountWaitSeconds(ids, rules, t), upBusy.wait) : accountWaitSeconds(ids, rules, t);
+      return busyWhy(rules, conc, wait);
     }
   }
   if (upstream?.status === 429) return { status: 429, result: 'quota', message: `${who}被上游限流（429），请稍后重试`, retryAfter: 30 };
+  if (upBusy) return busyWhy(getRules(), upBusy.conc, upBusy.wait);
   return { status: 503, result: 'no_account', message: `${who}暂时都不可用，请稍后重试`, retryAfter: 30 };
 }
 

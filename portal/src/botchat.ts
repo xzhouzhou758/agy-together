@@ -166,7 +166,7 @@ export async function siteContext(discordId: string): Promise<string> {
   } catch {}
   const r = getRules(), open = sharedModels();
   out.push(`【大锅饭规则】每人每天次数 = ${r.dailyBase} + ${r.dailyPer} × 自己共享进大锅饭的 Pro/Ultra 号数（出问题的号不算），0 点重置；` +
-    `大锅饭输入上限 ${r.sharedInput ? Math.round(r.sharedInput / 1e4) + ' 万 Token' : '不限'}；单号并发 ${r.accConc}；号主默认自用保留 ${r.reserve}%。` +
+    `大锅饭输入上限 ${r.sharedInput ? Math.round(r.sharedInput / 1e4) + ' 万 Token' : '不限'}；单号并发 ${r.accConc}${r.accRpm ? `、每分钟 ${r.accRpm} 次` : ''}；号主默认自用保留 ${r.reserve}%。` +
     `大锅饭开放的模型：${open ? [...open].join('、') || '无' : '全部'}。小锅饭（自己的号）不受这些限制。个人还能在「个人中心」设输入上限。`);
   try {
     const mine = myAccounts(discordId, await cpa.creds(30000)).replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, (e) => maskEmail(e));

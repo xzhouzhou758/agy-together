@@ -190,6 +190,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS upstreams (
   created_at INTEGER NOT NULL
 )`);
 addCol('upstreams', 'models_allow', 'TEXT'); // JSON array of model ids this upstream may serve, NULL = all
+addCol('upstreams', 'mgmt_key_enc', 'TEXT'); // Optional CPA management key for per-account concurrency/RPM protection
 // Per-user account rotation: stickiness mode and the salt mixed into session keys.
 addCol('users', 'rotation_mode', 'TEXT');
 addCol('users', 'session_salt', 'TEXT');
@@ -264,8 +265,8 @@ export function setSetting(k: string, v: string) {
   run('INSERT INTO settings(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, v);
 }
 
-export type Rules = { keyConc: number; keyRpm: number; accConc: number; reserve: number; dailyBase: number; dailyPer: number; sharedInput: number };
-const DEFAULT_RULES: Rules = { keyConc: 8, keyRpm: 60, accConc: 2, reserve: 30, dailyBase: 200, dailyPer: 500, sharedInput: 500000 }; // sharedInput: 大锅饭 input cap in estimated tokens, 0 = off
+export type Rules = { keyConc: number; keyRpm: number; accConc: number; accRpm: number; reserve: number; dailyBase: number; dailyPer: number; sharedInput: number };
+const DEFAULT_RULES: Rules = { keyConc: 8, keyRpm: 60, accConc: 2, accRpm: 10, reserve: 30, dailyBase: 200, dailyPer: 500, sharedInput: 500000 }; // sharedInput: 大锅饭 input cap in estimated tokens, 0 = off
 let rulesCache: Rules | null = null;
 export function getRules(): Rules {
   if (rulesCache) return rulesCache;

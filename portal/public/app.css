@@ -780,7 +780,7 @@ img.qp-ic{display:block;object-fit:contain}
 .up-row.off{opacity:.55}
 .up-row .u-n strong{font-size:13px;font-weight:600}
 .up-row .sub{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.up-form{display:grid;grid-template-columns:140px minmax(0,1fr) minmax(0,1fr) auto;gap:8px;margin-top:12px}
+.up-form{display:grid;grid-template-columns:120px minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:8px;margin-top:12px}
 .up-form .input.sm{width:100%}
 @media (max-width:760px){.up-row{grid-template-columns:minmax(0,1fr) auto}.up-form{grid-template-columns:1fr}}
 @media (max-width:1100px){.users .tr{grid-template-columns:minmax(0,1fr) 70px repeat(3,46px) 72px 104px}.users .c-n{display:none}}

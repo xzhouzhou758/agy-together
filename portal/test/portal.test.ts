@@ -262,7 +262,8 @@ test('client copies of X-Agy-Allow are stripped (any case)', async () => {
 test('self-use reserve removes a shared account below the threshold', async () => {
   const a2 = (await alice.req('GET', '/api/accounts')).data.find((a: any) => a.id.includes('a2')).id;
   const b1 = (await bob.req('GET', '/api/accounts')).data[0].id;
-  await alice.req('PUT', '/api/admin/rules', { reserve: 50, accConc: 5, keyConc: 8, keyRpm: 1000 });
+  assert.equal((await alice.req('GET', '/api/rules')).data.accRpm, 10);
+  await alice.req('PUT', '/api/admin/rules', { reserve: 50, accConc: 5, accRpm: 0, keyConc: 8, keyRpm: 1000 });
   mock.st.quota = { gp: 0.9, gf: 0.3, cl: 0.1 };
   const q = await alice.req('POST', '/api/accounts/' + encodeURIComponent(a2) + '/quota');
   assert.equal(q.status, 200);
@@ -361,7 +362,7 @@ test('per-account concurrency cap and shared-key concurrency / rate', async () =
   assert.equal(limited.status, 429);
   assert.equal(JSON.parse(limited.text).error.message, '大锅饭限速：每分钟 2 次');
   assert.ok(Number(limited.retryAfter) >= 1 && Number(limited.retryAfter) <= 60);
-  await alice.req('PUT', '/api/admin/rules', { keyConc: 8, keyRpm: 60, accConc: 2, reserve: 30 });
+  await alice.req('PUT', '/api/admin/rules', { keyConc: 8, keyRpm: 60, accConc: 2, accRpm: 0, reserve: 30 });
 });
 
 test('usage rows recorded with tokens; shared callers never see emails', async () => {
@@ -902,6 +903,138 @@ test('external upstream (Tools): takes turns with shared accounts, catches CPA 4
   assert.ok(bk.share > 0 && bk.share <= 100);
   const sh = (await bob.req('GET', '/api/pool/resources')).data.shared; // shared Google accounts, upstreams excluded
   assert.ok(sh.total.n >= 1 && sh.total.t > 0 && sh.since, JSON.stringify(sh));
+});
+
+test('per-account RPM (accRpm): enforces on shared pool, private keys unaffected and counted toward shared avoidance', async () => {
+  const a2 = (await alice.req('GET', '/api/accounts')).data.find((a: any) => a.id.includes('a2')).id;
+  const b1 = (await bob.req('GET', '/api/accounts')).data[0].id;
+  const kc = (await carol.req('POST', '/api/keys', { name: 'rpm-sh', pool: 'shared' })).data.key;
+  const dave = await new Client().login('100009', 'dave');
+  const kd = (await dave.req('GET', '/api/keys')).data[0]?.key || (await dave.req('POST', '/api/keys', { name: 'dp', pool: 'private' })).data.key;
+  const r1 = (await alice.upload('rpm1@example.invalid')).data.results[0].account;
+  const r2 = (await bob.upload('rpm2@example.invalid')).data.results[0].account;
+  let r3 = '';
+  await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(a2), { shared: false });
+  await bob.req('PATCH', '/api/accounts/' + encodeURIComponent(b1), { shared: false });
+  await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(r1), { shared: true });
+  await bob.req('PATCH', '/api/accounts/' + encodeURIComponent(r2), { shared: true });
+  await alice.req('PUT', '/api/admin/rules', { accRpm: 2, accConc: 5, keyConc: 8, keyRpm: 1000, reserve: 0 });
+  try {
+    const served: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const g = await gen(kc);
+      assert.equal(g.status, 200, g.text);
+      served.push(g.served!);
+    }
+    assert.equal(served.filter((x) => x === r1).length, 2);
+    assert.equal(served.filter((x) => x === r2).length, 2);
+    // 5th request hits per-account RPM cap -> 503 with clear message
+    const fifth = await gen(kc);
+    assert.equal(fifth.status, 503, fifth.text);
+    assert.match(JSON.parse(fifth.text).error.message, /每分钟上限/);
+    assert.ok(Number(fifth.retryAfter) >= 1 && Number(fifth.retryAfter) <= 60);
+    // private key (K.bob) still works unrestricted even when all of bob's accounts are at/above accRpm
+    for (let i = 0; i < 3; i++) {
+      const p = await gen(K.bob);
+      assert.equal(p.status, 200, p.text);
+    }
+    // owner self-use counts into the sliding window so shared pool yields to the owner
+    r3 = (await dave.upload('rpm3@example.invalid')).data.results[0].account;
+    await dave.req('PATCH', '/api/accounts/' + encodeURIComponent(r3), { shared: true });
+    assert.equal((await gen(kd)).status, 200);
+    assert.equal((await gen(kd)).status, 200);
+    const afterSelf = await gen(kc);
+    assert.equal(afterSelf.status, 503, 'shared pool yields after owner used 2 RPM on r3');
+    assert.match(JSON.parse(afterSelf.text).error.message, /每分钟上限/);
+    assert.equal((await gen(kd)).status, 200, 'owner private key still unrestricted');
+  } finally {
+    await sleep(300); // let 200ms usage queue drainer attribute r1/r2/r3 before deleting them from mock CPA
+    await alice.req('PUT', '/api/admin/rules', { keyConc: 8, keyRpm: 60, accConc: 2, accRpm: 0, reserve: 30 });
+    await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(a2), { shared: true });
+    await bob.req('PATCH', '/api/accounts/' + encodeURIComponent(b1), { shared: true });
+    if (r1) await alice.req('DELETE', '/api/accounts/' + encodeURIComponent(r1));
+    if (r2) await bob.req('DELETE', '/api/accounts/' + encodeURIComponent(r2));
+    if (r3) await dave.req('DELETE', '/api/accounts/' + encodeURIComponent(r3));
+  }
+});
+
+test('external CPA upstream with mgmtKey: X-Agy-Allow per-account rotation and flood protection', async () => {
+  const poolMock = startMockCPA({ apiKey: 'pool-api-key', mgmtKey: 'pool-mgmt-key' });
+  poolMock.addCred('pool1.json', 'pool1@example.invalid');
+  poolMock.addCred('pool2.json', 'pool2@example.invalid');
+  await new Promise<void>((r) => poolMock.server.listen(0, '127.0.0.1', () => r()));
+  const poolPort = (poolMock.server.address() as AddressInfo).port;
+  const a2 = (await alice.req('GET', '/api/accounts')).data.find((a: any) => a.id.includes('a2')).id;
+  const b1 = (await bob.req('GET', '/api/accounts')).data[0].id;
+  const kc = (await carol.req('POST', '/api/keys', { name: 'up-sh', pool: 'shared' })).data.key;
+
+  const up = await alice.req('POST', '/api/admin/upstreams', {
+    name: '公益池', url: `http://127.0.0.1:${poolPort}`, key: 'pool-api-key', mgmtKey: 'wrong-mgmt',
+  });
+  assert.equal(up.status, 200, JSON.stringify(up.data));
+  assert.equal(up.data.mgmtSet, true);
+  try {
+    // wrong mgmtKey surfaces in /test
+    const badTest = await alice.req('POST', `/api/admin/upstreams/${up.data.id}/test`);
+    assert.equal(badTest.data.ok, false);
+    assert.ok(badTest.data.error);
+    // fix mgmtKey -> /test reports accounts and plugin health; secrets stay hidden
+    const patched = await alice.req('PATCH', `/api/admin/upstreams/${up.data.id}`, { mgmtKey: 'pool-mgmt-key' });
+    assert.equal(patched.data.mgmtSet, true);
+    const listStr = JSON.stringify((await alice.req('GET', '/api/admin/upstreams')).data);
+    assert.ok(!listStr.includes('pool-api-key') && !listStr.includes('pool-mgmt-key'));
+    const okTest = await alice.req('POST', `/api/admin/upstreams/${up.data.id}/test`);
+    assert.deepEqual([okTest.data.ok, okTest.data.accounts, okTest.data.plugin], [true, 2, true]);
+
+    // disable portal shared accounts so requests rely on the external CPA pool
+    await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(a2), { shared: false });
+    await bob.req('PATCH', '/api/accounts/' + encodeURIComponent(b1), { shared: false });
+
+    // 1) accRpm = 1: 2 backup accounts serve 1 request each with scoped X-Agy-Allow, 3rd is refused with 503 before hitting poolMock
+    await alice.req('PUT', '/api/admin/rules', { accRpm: 1, accConc: 5, keyConc: 8, keyRpm: 1000, reserve: 0 });
+    poolMock.st.seenAllow.length = 0;
+    const g1 = await gen(kc);
+    assert.equal(g1.status, 200, g1.text);
+    assert.equal(poolMock.st.seenAllow[0][0], 'pool1.json,pool2.json');
+    const g2 = await gen(kc);
+    assert.equal(g2.status, 200, g2.text);
+    assert.notEqual(g1.served, g2.served, 'second request rotates to the other backup account');
+    assert.deepEqual([g1.served, g2.served].sort(), ['pool1.json', 'pool2.json']);
+    const otherId = g1.served === 'pool1.json' ? 'pool2.json' : 'pool1.json';
+    assert.equal(poolMock.st.seenAllow[1][0], otherId, 'saturated first account is excluded from X-Agy-Allow');
+    const g3 = await gen(kc);
+    assert.equal(g3.status, 503, g3.text);
+    assert.match(JSON.parse(g3.text).error.message, /每分钟上限/);
+    assert.equal(poolMock.st.seenAllow.length, 2, '3rd request must not hit saturated backup CPA');
+
+    // 2) accConc = 1, accRpm = 0: 2 concurrent streams occupy both backup accounts, 3rd is refused with 503
+    await alice.req('PUT', '/api/admin/rules', { accConc: 1, accRpm: 0, keyConc: 8, keyRpm: 1000, reserve: 0 });
+    poolMock.st.seenAllow.length = 0;
+    poolMock.st.holdMs = 600;
+    const s1 = gen(kc, { stream: true });
+    await sleep(150);
+    const s2 = gen(kc, { stream: true });
+    await sleep(150);
+    const s3 = await gen(kc);
+    const [sr1, sr2] = await Promise.all([s1, s2]);
+    poolMock.st.holdMs = 0;
+    assert.equal(sr1.status, 200);
+    assert.equal(sr2.status, 200);
+    assert.deepEqual([sr1.served, sr2.served].sort(), ['pool1.json', 'pool2.json']);
+    assert.equal(s3.status, 503, s3.text);
+    assert.match(JSON.parse(s3.text).error.message, /都在忙/);
+    assert.equal(poolMock.st.seenAllow.length, 2, '3rd concurrent request blocked at gateway');
+    // once inflight releases, backup pool accepts requests again
+    await sleep(30);
+    assert.equal((await gen(kc)).status, 200);
+  } finally {
+    poolMock.st.holdMs = 0;
+    await alice.req('DELETE', '/api/admin/upstreams/' + up.data.id);
+    await alice.req('PATCH', '/api/accounts/' + encodeURIComponent(a2), { shared: true });
+    await bob.req('PATCH', '/api/accounts/' + encodeURIComponent(b1), { shared: true });
+    await alice.req('PUT', '/api/admin/rules', { keyConc: 8, keyRpm: 60, accConc: 2, accRpm: 0, reserve: 30 });
+    poolMock.server.close();
+  }
 });
 
 test('model allowlists (大锅饭 / upstream) and per-account reserve', async () => {
