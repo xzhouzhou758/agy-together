@@ -169,14 +169,28 @@ def safe_url(u):
     return None
 
 
-def start(url=None):
+def clean_urls(urls):
+    if isinstance(urls, str):
+        urls = [urls]
+    if not isinstance(urls, list):
+        return []
+    out = []
+    for x in urls[:5]:
+        u = safe_url(x)
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
+def start(urls=None):
     remove()
     ensure_network()
     apply_firewall()
     args = ["docker", "run", "-d", "--rm", "--name", NAME,
             "--network", NET, "-p", "127.0.0.1:3010:3000",
             "--shm-size=1g", "--memory=900m", "--memory-swap=1400m", "--cpus=2", "--pids-limit=512"]
-    env = dict(SELKIES_ENV, CHROME_CLI="--lang=zh-CN " + (safe_url(url) or START_URL))
+    clean = clean_urls(urls) or [START_URL]
+    env = dict(SELKIES_ENV, CHROME_CLI="--lang=zh-CN " + " ".join(clean))
     for k, v in env.items():
         args += ["-e", f"{k}={v}"]
     args.append(IMAGE)
@@ -186,14 +200,14 @@ def start(url=None):
         raise RuntimeError("browser did not come up in 60s")
 
 
-def open_url(url):
-    """New tab in the running browser: a second chromium hands the URL to the running one and exits."""
-    u = safe_url(url)
-    if not u:
+def open_url(urls):
+    """New tab(s) in the running browser: a second chromium hands the URLs to the running one and exits."""
+    clean = clean_urls(urls)
+    if not clean:
         raise ValueError("url not allowed")
     if not running():
         raise RuntimeError("browser not running")
-    run(["docker", "exec", "-d", "-u", "abc", "-e", "HOME=/config", "-e", "DISPLAY=:1", NAME, "wrapped-chromium", u], check=True)
+    run(["docker", "exec", "-d", "-u", "abc", "-e", "HOME=/config", "-e", "DISPLAY=:1", NAME, "wrapped-chromium", *reversed(clean)], check=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -242,11 +256,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if self.path == "/start":
                     log("start")
-                    start(body.get("url"))
+                    start(body.get("urls") or body.get("url"))
                     log("started")
                 elif self.path == "/open":
                     log("open")
-                    open_url(body.get("url"))
+                    open_url(body.get("urls") or body.get("url"))
                 else:
                     log("stop")
                     remove()

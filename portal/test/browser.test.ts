@@ -207,19 +207,32 @@ test('proxy: only the holder gets through, cookies stripped, upgrades too', asyn
   await closed;
 });
 
-test('open: only the caller\'s own stored link; queued -> browser starts on it, holding -> new tab', async () => {
+test('open: only the caller\'s own stored link; starts login + form tabs, reuses same account, restarts clean on switch/reset', async () => {
   const url = 'https://forms.gle/hGzM9MEUv2azZsrb9';
+  const url2 = 'https://support.google.com/accounts/contact/disabled2';
   db.run('INSERT INTO accounts (auth_id, email, owner_id, created_at, action_url, action_kind) VALUES (?,?,?,?,?,?) ON CONFLICT(auth_id) DO NOTHING', 'al.json', 'al@x', ids.alice, Date.now(), url, 'appeal');
+  db.run('INSERT INTO accounts (auth_id, email, owner_id, created_at, action_url, action_kind) VALUES (?,?,?,?,?,?) ON CONFLICT(auth_id) DO NOTHING', 'al2.json', 'al2@x', ids.alice, Date.now(), url2, 'appeal');
   assert.equal((await call('bob', 'POST', '/xgf/api/browser/open', { id: 'al.json' })).status, 404); // not bob's
   assert.equal((await call('alice', 'POST', '/xgf/api/browser/open', { id: 'nope' })).status, 404);
-  assert.equal((await call('alice', 'POST', '/xgf/api/browser/open', { id: 'al.json' })).status, 200);
+  const r1 = await call('alice', 'POST', '/xgf/api/browser/open', { id: 'al.json' });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.data.email, 'al@x');
   await br.tick();
   assert.equal((await state('alice')).state, 'active');
   assert.deepEqual(calls, ['POST /start']);
-  assert.deepEqual(bodies[0], { url });
+  assert.deepEqual(bodies[0], { urls: ['https://accounts.google.com/ServiceLogin?Email=al%40x', url] });
+  // reopening the same account reuses the running session without restarting
   await call('alice', 'POST', '/xgf/api/browser/open', { id: 'al.json' });
-  assert.deepEqual(calls, ['POST /start', 'POST /open']);
-  assert.deepEqual(bodies[1], { url });
+  assert.deepEqual(calls, ['POST /start']);
+  // switching to another account restarts a clean container while keeping remaining session time
+  T += 30_000;
+  const sw = await call('alice', 'POST', '/xgf/api/browser/open', { id: 'al2.json' });
+  assert.equal(sw.data.state, 'starting');
+  assert.equal(sw.data.remainingSec, 15 * 60 - 30);
+  await br.tick();
+  assert.equal((await state('alice')).state, 'active');
+  assert.deepEqual(calls, ['POST /start', 'POST /start']);
+  assert.deepEqual(bodies[1], { urls: ['https://accounts.google.com/ServiceLogin?Email=al2%40x', url2] });
   await call('bob', 'POST', '/xgf/api/browser/join'); // a plain join starts on the default page
   await call('alice', 'POST', '/xgf/api/browser/leave');
   await br.tick();
