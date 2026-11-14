@@ -19,8 +19,13 @@ const QUEUE_GONE_MS = 60000;   // a queued user not polling for this long loses 
 const ACTIVE_GONE_MS = 90000;  // the holder not polling (and no live stream) for this long ends the session
 const TICK_MS = 5000;
 
-type Active = { userId: number; startedAt: number; expiresAt: number; lastSeen: number };
-type Waiting = { userId: number; joinedAt: number; lastSeen: number; cancelled?: boolean; url?: string }; // url: open this page first
+type Active = { userId: number; startedAt: number; expiresAt: number; lastSeen: number; key?: string; restarting?: boolean; leaving?: boolean };
+type Waiting = { userId: number; joinedAt: number; lastSeen: number; cancelled?: boolean; urls?: string[]; key?: string }; // urls: open these pages first
+
+const normUrls = (u?: string | string[]): string[] | undefined => {
+  const l = (u ? (Array.isArray(u) ? u : [u]) : []).filter(Boolean);
+  return l.length ? l : undefined;
+};
 
 let clock = () => Date.now();
 /** Tests drive time by hand. */
@@ -39,7 +44,7 @@ export function resetBrowser() {
   sockets.clear();
 }
 
-async function helper(path: '/start' | '/stop' | '/open', timeoutMs: number, body?: { url?: string }): Promise<void> {
+async function helper(path: '/start' | '/stop' | '/open', timeoutMs: number, body?: { url?: string; urls?: string[] }): Promise<void> {
   const r = await fetch(config.browserdURL + path, {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + config.browserdToken, ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -67,7 +72,7 @@ async function startNext() {
   const w = queue.shift()!;
   starting = w;
   try {
-    await helper('/start', 90000, w.url ? { url: w.url } : undefined);
+    await helper('/start', 90000, w.urls?.length ? { urls: w.urls } : undefined);
   } catch (e) {
     starting = null;
     failures++;
@@ -84,7 +89,7 @@ async function startNext() {
     return;
   }
   const t = clock();
-  active = { userId: w.userId, startedAt: t, expiresAt: t + config.browserSessionMinutes * 60000, lastSeen: Math.max(w.lastSeen, t) };
+  active = { userId: w.userId, startedAt: t, expiresAt: t + config.browserSessionMinutes * 60000, lastSeen: Math.max(w.lastSeen, t), key: w.key };
   console.log(`[browser] session started for user ${w.userId}`);
 }
 
@@ -93,7 +98,7 @@ async function doTick() {
   queue = queue.filter((q) => t - q.lastSeen <= QUEUE_GONE_MS);
   if (active && sockets.size) active.lastSeen = t; // a live stream counts as presence (e.g. opened in its own window)
   if (active && t >= active.expiresAt) await endSession('expired');
-  else if (active && t - active.lastSeen > ACTIVE_GONE_MS) await endSession('gone');
+  else if (active && !active.restarting && t - active.lastSeen > ACTIVE_GONE_MS) await endSession('gone');
   if (!active && !starting && queue.length && clock() >= retryAt) await startNext();
 }
 
@@ -120,8 +125,9 @@ export type BrowserState = 'idle' | 'queued' | 'starting' | 'active' | 'busy';
 export function viewFor(userId: number) {
   const t = clock();
   const base = { enabled: browserOn(), queueLength: queue.length, minutes: config.browserSessionMinutes };
-  if (active?.userId === userId) {
+  if (active?.userId === userId && !active.leaving) {
     active.lastSeen = t;
+    if (active.restarting) return { ...base, state: 'starting' as BrowserState, remainingSec: remaining(active) };
     return { ...base, state: 'active' as BrowserState, remainingSec: remaining(active) };
   }
   if (starting?.userId === userId && !starting.cancelled) {
@@ -150,34 +156,73 @@ function need() {
   if (!browserOn()) throw new HttpError(404, 'not_found');
 }
 
-export async function join(userId: number, url?: string) {
+function restartHolder(userId: number, urls?: string[], key?: string) {
+  if (!active || active.userId !== userId) return;
+  active.restarting = true;
+  active.key = key;
+  active.lastSeen = clock();
+  for (const x of sockets) x.destroy();
+  sockets.clear();
+  serial(async () => {
+    if (!active || active.userId !== userId || active.leaving) return;
+    try {
+      await helper('/start', 90000, urls?.length ? { urls } : undefined);
+    } catch (e) {
+      console.error(`[browser] restart for user ${userId} failed:`, (e as Error).message);
+      if (active?.userId === userId) await endSession('restart_failed');
+      return;
+    }
+    if (!active || active.userId !== userId || active.leaving) {
+      try { await helper('/stop', 30000); } catch {}
+      return;
+    }
+    active.restarting = false;
+    active.lastSeen = clock();
+  });
+}
+
+export async function join(userId: number, urls?: string | string[], key?: string) {
   need();
+  const list = normUrls(urls);
   const waiting = queue.find((q) => q.userId === userId);
-  if (waiting && url) waiting.url = url;
+  if (waiting) {
+    if (list) waiting.urls = list;
+    if (key !== undefined) waiting.key = key;
+  } else if (starting?.userId === userId && !starting.cancelled) {
+    if (key !== undefined) starting.key = key;
+  }
   const busy = active?.userId === userId || (starting?.userId === userId && !starting.cancelled) || !!waiting;
   if (!busy) {
     const t = clock();
-    queue.push({ userId, joinedAt: t, lastSeen: t, url });
+    queue.push({ userId, joinedAt: t, lastSeen: t, urls: list, key });
     tick();
   }
   return viewFor(userId);
 }
 
-/** Open a page (a Google verify / appeal link the caller already checked) in the user's session: a new tab when
- * they hold the browser, else they join the queue and the browser starts on that page. */
-export async function open(userId: number, url: string) {
+/** Open page(s) (Google login + verify / appeal link) in the user's session: reuses when already open for the same key,
+ * restarts a clean container when switching accounts or resetting (keeping remaining session time), else joins queue. */
+export async function open(userId: number, urls: string | string[], opts?: { key?: string; reset?: boolean }) {
   need();
-  if (active?.userId === userId) {
-    await helper('/open', 30000, { url });
+  const list = normUrls(urls);
+  if (active?.userId === userId && !active.leaving) {
+    if (!opts?.reset && opts?.key && active.key === opts.key) return viewFor(userId);
+    if (opts?.reset || (opts?.key && active.key !== opts.key)) {
+      restartHolder(userId, list, opts?.key);
+      return viewFor(userId);
+    }
+    if (list?.length) await helper('/open', 30000, { urls: list });
     return viewFor(userId);
   }
-  return join(userId, url);
+  return join(userId, list, opts?.key);
 }
 
 export async function leave(userId: number) {
   need();
-  if (active?.userId === userId) await serial(async () => { if (active?.userId === userId) await endSession('left'); });
-  else if (starting?.userId === userId) starting.cancelled = true;
+  if (active?.userId === userId) {
+    active.leaving = true;
+    await serial(async () => { if (active?.userId === userId) await endSession('left'); });
+  } else if (starting?.userId === userId) starting.cancelled = true;
   else queue = queue.filter((q) => q.userId !== userId);
   tick();
   return viewFor(userId);
@@ -201,7 +246,7 @@ export function startBrowser() {
 const HOP = new Set(['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-connection', 'te', 'trailer', 'host', 'cookie', 'authorization', 'content-length']);
 
 function isHolder(req: IncomingMessage): boolean {
-  if (!browserOn() || !active) return false;
+  if (!browserOn() || !active || active.restarting || active.leaving) return false;
   const u = currentUser(req);
   return !!u && u.id === active.userId;
 }

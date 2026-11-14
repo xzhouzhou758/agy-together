@@ -765,15 +765,24 @@ route('POST', '/api/aistudio/:id/check', async (req, _res, p) => aistudio.rechec
 route('DELETE', '/api/aistudio/:id', async (req, _res, p) => aistudio.remove(requireUser(req).id, p.id));
 // ---------- shared remote browser ----------
 route('GET', '/api/browser', (req) => browser.viewFor(requireUser(req).id));
-route('POST', '/api/browser/join', async (req) => browser.join(requireUser(req).id));
+route('POST', '/api/browser/join', async (req) => {
+  const user = requireUser(req);
+  const b = req.headers['content-type']?.includes('json') ? await readJSON(req) : {};
+  return b?.reset === true ? browser.open(user.id, [], { reset: true }) : browser.join(user.id);
+});
 route('POST', '/api/browser/open', async (req) => {
   // only the stored verify / appeal link of one of the caller's own accounts: no URL comes from the client
   const user = requireUser(req);
   const b = await readJSON(req);
-  const row = one('SELECT action_url, action_kind FROM accounts WHERE auth_id = ? AND owner_id = ?', String(b.id || ''), user.id);
+  const row = one('SELECT auth_id, email, action_url, action_kind FROM accounts WHERE auth_id = ? AND owner_id = ?', String(b.id || ''), user.id);
   const a = actionOf(row);
-  if (!a) throw new HttpError(404, 'not_found');
-  return browser.open(user.id, a.url);
+  if (!a || !row) throw new HttpError(404, 'not_found');
+  let email = String(row.email || '').trim();
+  if (!email) email = (await cpa.creds(5000).catch(() => null))?.byId.get(String(row.auth_id))?.email || '';
+  const urls = email.includes('@')
+    ? [`https://accounts.google.com/ServiceLogin?Email=${encodeURIComponent(email)}`, a.url]
+    : [a.url];
+  return { ...(await browser.open(user.id, urls, { key: 'acc:' + row.auth_id, reset: b.reset === true })), email };
 });
 route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req).id));
 route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });

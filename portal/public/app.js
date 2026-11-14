@@ -41,6 +41,7 @@ const ICONS={
   spark:'<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z"/><path d="M19 3v4M17 5h4"/>',
   window:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><path d="M6 6.5h.01M9 6.5h.01"/>',
   pen:'<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  power:'<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
 };
 const DISCORD='<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.32 4.37a19.8 19.8 0 0 0-4.89-1.52.07.07 0 0 0-.08.04c-.21.38-.44.87-.6 1.25a18.3 18.3 0 0 0-5.49 0 12.6 12.6 0 0 0-.62-1.25.08.08 0 0 0-.08-.04 19.7 19.7 0 0 0-4.88 1.52.07.07 0 0 0-.03.03C.53 9.05-.32 13.58.1 18.06a.08.08 0 0 0 .03.05 19.9 19.9 0 0 0 5.99 3.03.08.08 0 0 0 .09-.03c.46-.63.87-1.3 1.22-1.99a.08.08 0 0 0-.04-.1 13.1 13.1 0 0 1-1.87-.9.08.08 0 0 1-.01-.12l.37-.3a.07.07 0 0 1 .08-.01c3.93 1.8 8.18 1.8 12.06 0a.07.07 0 0 1 .08 0l.37.3a.08.08 0 0 1 0 .13c-.6.35-1.22.65-1.88.9a.08.08 0 0 0-.04.1c.36.7.77 1.36 1.23 1.99a.08.08 0 0 0 .08.03 19.8 19.8 0 0 0 6-3.03.08.08 0 0 0 .03-.05c.5-5.18-.84-9.68-3.55-13.66a.06.06 0 0 0-.03-.03ZM8.02 15.33c-1.18 0-2.16-1.08-2.16-2.42 0-1.33.96-2.42 2.16-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.96 2.42-2.16 2.42Zm7.97 0c-1.18 0-2.15-1.08-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21 0 2.18 1.1 2.16 2.42 0 1.34-.94 2.42-2.16 2.42Z"/></svg>';
 const ic=n=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]||''}</svg>`;
@@ -128,9 +129,10 @@ function quotaSlots(a){
   return [['Gemini 3.8','gemini',F.gemini||none,u.gemini],[`Claude ${q.claude55?'5.5':'4.6'} / GPT`,'claude',F.claude||none,u.claude],
     ['Gemini 4 Argon','gemini',F.argon||null,u.argon],['Gemini 4 Carbon','gemini',F.carbon||null,u.carbon]];
 }
+const apBtns=(id,ap)=>{const lab=ap?.kind==='appeal'?'申诉':'验证';return `<span class="aob-btns"><button type="button" data-act="reason:${esc(id)}">查看原因</button>${ap?.url?`<a href="${esc(ap.url)}" target="_blank" rel="noopener noreferrer">${lab}</a>${cfg.browserEnabled?`<button type="button" class="aob-br" data-act="bropen:${esc(id)}" title="内置浏览器打开${lab}" aria-label="内置浏览器打开${lab}">${ic('window')}</button>`:''}`:''}</span>`;};
 function quotaBlock(a,cls=''){
   const q=a.quota;
-  if(a.forbidden)return `<div class="aq-ban"><div class="aq-ban-l"><span class="aq-ban-ico"><span class="aq-lock"></span></span><div class="aq-ban-txt"><span>账号访问受限 (HTTP 403)</span><span class="aq-ban-sub">查看上游返回的错误详情</span></div></div><button type="button" data-act="reason:${esc(a.id)}">查看原因</button></div>`;
+  if(a.forbidden)return `<div class="aq-ban"><div class="aq-ban-l"><span class="aq-ban-ico"><span class="aq-lock"></span></span><div class="aq-ban-txt"><span>账号访问受限 (HTTP 403)</span><span class="aq-ban-sub">${/TOS_VIOLATION|violation of Terms/i.test(a.forbidden)?'违反服务条款':'上游拒绝访问'}${a.autoOff?' · 已自动停用':''}</span></div></div>${apBtns(a.id,a.action)}</div>`;
   if(!q)return `<div class="aq-none">${a.quotaErr?'额度读取失败':'暂无模型额度遥测数据'}</div>`;
   return `<div class="aq-quota ${cls}">${quotaSlots(a).map(x=>gauge(...x)).join('')}</div>`;
 }
@@ -398,10 +400,29 @@ async function setAutoSleep(on){
   if(!on)D.accounts=await api('GET','api/accounts');
   render();toast(on?'已开启闲置自动休眠':'已关闭，休眠中的号已唤醒');
 }
+let qAllRun=null;
+const qBtn=()=>`<button class="btn ${qAllRun?'busy':''}" id="qbtn" data-act="refreshall" ${qAllRun?'disabled':''}>${ic('refresh')}<span>${qAllRun?`刷新中 ${qAllRun.done}/${qAllRun.total}`:'全部刷新'}</span></button>`;
+function syncQBtn(){const b=$('#qbtn');if(b)b.outerHTML=qBtn();}
+async function refreshAllAccs(){
+  if(qAllRun)return;
+  const list=(D.accounts||[]).filter(a=>(a.active||a.forbidden||a.autoOff||a.action)&&(!a.quotaAt||Date.now()-a.quotaAt>=20000));
+  if(!list.length){toast('没有需要刷新的账号（刚刷新过的请稍候）');return;}
+  qAllRun={done:0,total:list.length};syncQBtn();
+  let ok=0,err=0;
+  try{
+    for(const a of list){
+      if(!me)break;
+      try{const v=await api('POST','api/accounts/'+encodeURIComponent(a.id)+'/quota');if(D.accounts)patchAcc(keepAcc(v));v.quotaErr?err++:ok++;}
+      catch(e){err++;}
+      qAllRun.done++;syncQBtn();
+    }
+    if(me)toast(err?`刷新完成：${ok} 成功，${err} 失败`:`已刷新 ${ok} 个账号额度`,!!err&&!ok);
+  }finally{qAllRun=null;syncQBtn();}
+}
 function pageAccounts(){
   const acc=D.accounts,v=accView();
   const seg=acc.length?`<div class="seg" role="radiogroup" aria-label="显示方式"><label><input type="radio" name="accview" value="card" ${v==='card'?'checked':''}><span>卡片</span></label><label><input type="radio" name="accview" value="list" ${v==='list'?'checked':''}><span>列表</span></label></div>`:'';
-  return head('我的凭证',`${acc.length?sleepBar():''}${seg}${acc.length?`<button class="btn" data-act="export">${ic('download')}导出</button>`:''}<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)+
+  return head('我的凭证',`${acc.length?sleepBar():''}${seg}${acc.length?qBtn()+`<button class="btn" data-act="export">${ic('download')}导出</button>`:''}<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)+
     (acc.length?`<div id="acc-body">${accBody()}</div>`
       :`<section class="card glass">${empty('key','还没有凭证',`<button class="btn primary" data-act="add">${ic('plus')}添加凭证</button>`)}</section>`);
 }
@@ -882,12 +903,65 @@ const swRule=(t,k,on,cls='')=>`<div class="rule sw-rule ${cls}"><h3>${t}</h3><bu
 function shopRow(s={}){return `<div class="shop-row"><input class="input sm" data-shop="name" placeholder="名称" maxlength="40" value="${esc(s.name||'')}"><input class="input sm mono" data-shop="url" placeholder="https://" value="${esc(s.url||'')}"><input class="input sm" data-shop="note" placeholder="备注" maxlength="80" value="${esc(s.note||'')}"><button class="btn sm ghost danger icon" data-act="shopdel" aria-label="删除">${ic('trash')}</button></div>`;}
 
 /* ============ 共享浏览器 ============ */
-let brTimer=null,brEnd=0;
+let brTimer=null,brEnd=0,brPop=null,brPopTimer=null,brActiveId=null;
 const mmss=s=>`${pad(Math.floor(s/60))}:${pad(s%60)}`;
+const brLeftTxt=()=>mmss(Math.max(0,Math.round((brEnd-Date.now())/1000)));
 const brLive=()=>['queued','starting','active'].includes(D.br?.state);
+const brPopOpen=()=>!!$('#brpop .brp-dlg');
+function ensureBrLayer(){let el=$('#brpop');if(!el){el=document.createElement('div');el.id='brpop';document.body.append(el);}return el;}
+function closeBrPop(){
+  if(brPopTimer){clearInterval(brPopTimer);brPopTimer=null;}
+  const el=$('#brpop');if(el)el.innerHTML='';
+  if(page==='browser'&&me&&loadState==='idle')render();
+}
+function brPopBar(b){
+  const run=b.state==='active',live=brLive();
+  const st=run?`<span class="chip accent br-left" id="brp-left">${brLeftTxt()}</span>`
+    :b.state==='starting'?`<span class="chip accent"><span class="spin sm"></span>启动中…</span>`
+    :b.state==='queued'?`<span class="chip warn"><span class="dot"></span>排队中</span>`
+    :`<span class="chip"><span class="dot"></span>已结束</span>`;
+  const who=brPop?.email?`<span class="mono brp-mail" title="${esc(brPop.email)}">${esc(brPop.email)}</span><button type="button" class="btn sm ghost" data-act="copymail">${ic('copy')}复制邮箱</button>`:'<b>内置浏览器</b>';
+  return `<div class="brp-l">${st}${who}</div>
+    <div class="hstack">${run?`<button type="button" class="btn sm" data-act="brpopreset" title="清空登录态并重新打开页面">${ic('refresh')}重置</button><a class="btn sm" href="browser/" target="_blank" rel="noopener">${ic('ext')}新窗口</a>`:''}${live?`<button type="button" class="btn sm danger" data-act="brpopstop">${ic('power')}${b.state==='queued'?'取消排队':'结束'}</button>`:''}<button type="button" class="btn icon ghost" data-act="brpopclose" aria-label="收起窗口" title="收起窗口">${ic('x')}</button></div>`;
+}
+function drawBrPop(){
+  const el=$('#brpop');if(!el||!brPop)return;
+  const b=D.br||{state:'starting'},run=b.state==='active';
+  if(run&&el.querySelector('.brp-frame')){const bar=el.querySelector('.brp-bar');if(bar)bar.innerHTML=brPopBar(b);return;}
+  const body=run?`<iframe class="brp-frame" src="browser/" title="内置浏览器" allow="clipboard-read; clipboard-write; fullscreen"></iframe>`
+    :b.state==='starting'?`<div class="brp-wait"><span class="spin"></span><b>正在启动内置 Chrome…</b></div>`
+    :b.state==='queued'?`<div class="brp-wait">${ic('window')}<b>排队中 · 前面 <span id="brp-q">${b.position||1}</span> 人</b></div>`
+    :`<div class="brp-wait">${ic('window')}<b>${b.state==='busy'?'当前有人正在使用':'浏览器会话已结束'}</b><button type="button" class="btn primary" data-act="brpopreset">${ic('play')}${b.state==='busy'?'重新排队':'重新打开'}</button></div>`;
+  el.innerHTML=`<div class="shade brp-shade"><section class="brp-dlg glass" role="dialog" aria-modal="true" aria-label="内置浏览器">
+    <div class="brp-bar">${brPopBar(b)}</div><div class="brp-body">${body}</div></section></div>`;
+}
+function watchBrPop(){
+  if(brPopTimer){clearInterval(brPopTimer);brPopTimer=null;}
+  if(!brPopOpen()||D.br?.state!=='starting')return;
+  brPopTimer=setInterval(async()=>{
+    if(!brPopOpen()){clearInterval(brPopTimer);brPopTimer=null;return;}
+    let v;try{v=await api('GET','api/browser');}catch(e){return;}
+    brSet(v);
+    if(v.state!=='starting'){clearInterval(brPopTimer);brPopTimer=null;drawBrPop();}
+  },1200);
+}
+async function openBrPop(id,reset=false){
+  const x=[...(D.accounts||[]),...(D.admin?.accounts||[])].find(y=>y.id===id);
+  ensureBrLayer();
+  const same=!reset&&D.br?.state==='active'&&brActiveId===id;
+  brPop={id,email:x?.email||brPop?.email||''};
+  if(!same){D.br={...(D.br||{}),state:D.br?.state==='queued'?'queued':'starting'};drawBrPop();}
+  const v=id?await api('POST','api/browser/open',{id,reset}):await api('POST','api/browser/join',reset?{reset:true}:{});
+  if(v.email)brPop.email=v.email;
+  brSet(v);
+  if(v.state==='active')brActiveId=id||null;
+  drawBrPop();
+  watchBrPop();
+}
 function brSet(v){
   D.br=v;
-  if(v?.state==='active')brEnd=Date.now()+v.remainingSec*1000;
+  if(v?.state==='active'){brEnd=Date.now()+v.remainingSec*1000;if(brPop?.id)brActiveId=brPop.id;}
+  else if(v?.state==='idle'||v?.state==='busy')brActiveId=null;
   // 排队 / 启动 / 使用中每 5 秒查一次（心跳）；在本页看着「有人在用」时也查
   const want=brLive()||(page==='browser'&&v?.state==='busy');
   if(want&&!brTimer)brTimer=setInterval(brPoll,5000);
@@ -898,11 +972,12 @@ async function brPoll(){
   const prev=D.br?.state;let v;
   try{v=await api('GET','api/browser');}catch(e){return;}
   brSet(v);
-  if(v.state===prev){const q=$('#br-q');if(q)q.textContent=v.position;return;}
+  if(v.state===prev){$$('#br-q,#brp-q').forEach(q=>q.textContent=v.position);return;}
+  if(brPopOpen()){drawBrPop();watchBrPop();return;}
   if(page==='browser'){if(!dialogOpen()&&loadState==='idle')render();}
-  else if(v.state==='active')toastAct('浏览器已就绪','打开','goto:browser');
+  else if(v.state==='active')toastAct('浏览器已就绪','打开',brPop?'brpopshow':'goto:browser');
 }
-setInterval(()=>{const el=$('#br-left');if(el)el.textContent=mmss(Math.max(0,Math.round((brEnd-Date.now())/1000)));},1000);
+setInterval(()=>{const t=brLeftTxt();$$('#br-left,#brp-left').forEach(el=>el.textContent=t);},1000);
 function pageBrowser(){
   const b=D.br||{state:'idle'};
   if(b.state==='active')return `<div class="br-bar glass"><span class="chip accent br-left" id="br-left">${mmss(Math.max(0,Math.round((brEnd-Date.now())/1000)))}</span>
@@ -1182,7 +1257,7 @@ function openDialog(title,sub,body,foot,wide=false){
   first?.focus();
 }
 function closeDialog(){$('#addtip')?.remove();$('#layer').innerHTML='';flow=null;mdlFor=null;if(lastFocus&&document.contains(lastFocus))lastFocus.focus();lastFocus=null;}
-const dialogOpen=()=>!!$('#layer .dialog');
+const dialogOpen=()=>!!$('#layer .dialog')||brPopOpen();
 
 function toast(text,err=false){
   const t=document.createElement('div');t.className='toast'+(err?' err':'');t.innerHTML=ic(err?'alert':'check')+esc(text);
@@ -1425,8 +1500,14 @@ document.addEventListener('click',act(async e=>{
     case 'navtog':document.body.classList.toggle('nav-open');break;
     case 'admtab':admTab(arg);scrollTo({top:0,behavior:'smooth'});break;
     case 'brjoin':brSet(await api('POST','api/browser/join'));render();break;
-    case 'bropen':brSet(await api('POST','api/browser/open',{id:arg}));go('browser');break;
-    case 'brleave':brSet(await api('POST','api/browser/leave'));render();break;
+    case 'bropen':closeDialog();await openBrPop(arg,false);break;
+    case 'brpopshow':if(brPop){ensureBrLayer();drawBrPop();watchBrPop();}else go('browser');break;
+    case 'brpopclose':closeBrPop();break;
+    case 'brpopreset':if(brPop)await openBrPop(brPop.id,true);break;
+    case 'brpopstop':brSet(await api('POST','api/browser/leave'));brPop=null;brActiveId=null;closeBrPop();if(page==='browser')render();break;
+    case 'brleave':brSet(await api('POST','api/browser/leave'));brPop=null;brActiveId=null;closeBrPop();render();break;
+    case 'copymail':if(brPop?.email)copy(brPop.email);break;
+    case 'refreshall':await refreshAllAccs();break;
     case 'brkick':await api('POST','api/admin/browser/kick');D.admin.br=await api('GET','api/admin/browser');toast('已踢出');render();break;
     case 'close':closeDialog();break;
     case 'reload':reload();break;
@@ -1436,7 +1517,7 @@ document.addEventListener('click',act(async e=>{
     case 'devlogin':
       await api('POST','api/dev-login',{discordId:$('#f-devid').value.trim(),name:$('#f-devname').value.trim()});
       await boot();break;
-    case 'logout':await api('POST','api/logout');me=null;D={};closeDialog();render();break;
+    case 'logout':await api('POST','api/logout');me=null;D={};brPop=null;brActiveId=null;closeBrPop();closeDialog();render();break;
     case 'add':addTipDialog();break;
     case 'tipclose':closeTip();break;
     case 'autosleep':if(me.autoSleep)await setAutoSleep(false);else sleepTipDialog();break;
@@ -1496,10 +1577,10 @@ document.addEventListener('click',act(async e=>{
     case 'apg':ui.acc.page=+arg||1;refreshAcc();$('#acc-body')?.scrollIntoView({block:'start',behavior:'smooth'});break;
     case 'jump':ui.acc.focus=arg;go('accounts');break;
     case 'refreshq':{
-      el.disabled=true;const inDlg=dialogOpen();
+      el.disabled=true;const inDlg=!!$('#layer .dialog');
       try{const v=await api('POST','api/accounts/'+encodeURIComponent(arg)+'/quota');patchAcc(keepAcc(v));if(inDlg)accountDetail(arg);toast(v.quotaErr?'额度读取失败':'额度已刷新',!!v.quotaErr);}
       finally{el.disabled=false;}break;}
-    case 'toggle':{const inDlg=dialogOpen();const x=D.accounts.find(y=>y.id===arg);const v=await api('PATCH','api/accounts/'+encodeURIComponent(arg),{active:!x.active});
+    case 'toggle':{const inDlg=!!$('#layer .dialog');const x=D.accounts.find(y=>y.id===arg);const v=await api('PATCH','api/accounts/'+encodeURIComponent(arg),{active:!x.active});
       patchAcc(keepAcc(v));if(inDlg)accountDetail(arg);toast(v.active?'账号已启用':'账号已停用');break;}
     case 'models':case 'amodels':{
       const x=a==='models'?D.accounts?.find(y=>y.id===arg):D.admin?.accounts?.find(y=>y.id===arg);const label=x?.email||arg;
@@ -1718,6 +1799,7 @@ document.addEventListener('dragleave',e=>{e.target.closest?.('#drop')?.classList
 document.addEventListener('drop',act(async e=>{const d=e.target.closest?.('#drop');if(!d)return;e.preventDefault();await uploadFiles([...e.dataTransfer.files]);}));
 
 document.addEventListener('keydown',e=>{
+  if(brPopOpen())return;
   const dlg=$('#layer .dialog');
   if(e.key==='Escape'){if(closeTip())return;if(dlg)closeDialog();return;}
   if(e.key==='Enter'&&e.target.id==='f-devname'){$('[data-act=devlogin]')?.click();return;}
