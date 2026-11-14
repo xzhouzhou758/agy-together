@@ -6,8 +6,10 @@ import https from 'node:https';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 import { one, all, run, now, type Row } from './db.ts';
 import { seal, unseal } from './util.ts';
+import { config } from './config.ts';
+import { mapCred, type Cred, type Creds } from './cpa.ts';
 
-export type Upstream = { id: number; name: string; base: string; key: string; ownerId: number | null; allow: Set<string> | null };
+export type Upstream = { id: number; name: string; base: string; key: string; mgmtKey: string; ownerId: number | null; allow: Set<string> | null };
 export const isUp = (authId: string | null | undefined) => !!authId && authId.startsWith('up:');
 export const upAuthId = (id: number) => 'up:' + id;
 export function upName(authId: string): string {
@@ -25,7 +27,7 @@ export function normBase(u: string): string {
 function toUp(r: Row): Upstream {
   let allow: Set<string> | null = null;
   try { const v = JSON.parse(r.models_allow || 'null'); if (Array.isArray(v)) allow = new Set(v.map(String)); } catch {}
-  return { id: r.id, name: r.name, base: r.base_url, key: unseal(r.key_enc) || '', ownerId: r.owner_id ?? null, allow };
+  return { id: r.id, name: r.name, base: r.base_url, key: unseal(r.key_enc) || '', mgmtKey: unseal(r.mgmt_key_enc) || '', ownerId: r.owner_id ?? null, allow };
 }
 export function enabledUpstreams(): Upstream[] {
   return all('SELECT * FROM upstreams WHERE enabled = 1 ORDER BY id').map(toUp).filter((u) => u.key);
@@ -37,16 +39,113 @@ export function upstreamById(id: number): Upstream | null {
 export function upstreamRows(): Row[] {
   return all('SELECT * FROM upstreams ORDER BY id');
 }
-export function saveUpstream(id: number | null, f: { name: string; base: string; key?: string; enabled: boolean; models?: string[] | null }, ownerId: number): number {
+export function clearUpCache(id: number) {
+  models.delete(id);
+  upCredCache.delete(id);
+  upCredInflight.delete(id);
+  upPluginCache.delete(id);
+}
+export function saveUpstream(id: number | null, f: { name: string; base: string; key?: string; mgmtKey?: string | null; enabled: boolean; models?: string[] | null }, ownerId: number): number {
   if (id == null) {
-    const r = run('INSERT INTO upstreams(name, base_url, key_enc, enabled, owner_id, created_at) VALUES(?,?,?,?,?,?)', f.name, f.base, seal(f.key || ''), f.enabled ? 1 : 0, ownerId, now());
+    const mgmtEnc = typeof f.mgmtKey === 'string' && f.mgmtKey ? seal(f.mgmtKey) : null;
+    const r = run('INSERT INTO upstreams(name, base_url, key_enc, mgmt_key_enc, enabled, owner_id, created_at) VALUES(?,?,?,?,?,?,?)',
+      f.name, f.base, seal(f.key || ''), mgmtEnc, f.enabled ? 1 : 0, ownerId, now());
     return Number(r.lastInsertRowid);
   }
   run('UPDATE upstreams SET name = ?, base_url = ?, enabled = ? WHERE id = ?', f.name, f.base, f.enabled ? 1 : 0, id);
   if (f.key) run('UPDATE upstreams SET key_enc = ? WHERE id = ?', seal(f.key), id);
+  if (f.mgmtKey === null) run('UPDATE upstreams SET mgmt_key_enc = NULL WHERE id = ?', id);
+  else if (typeof f.mgmtKey === 'string' && f.mgmtKey) run('UPDATE upstreams SET mgmt_key_enc = ? WHERE id = ?', seal(f.mgmtKey), id);
   if (f.models !== undefined) run('UPDATE upstreams SET models_allow = ? WHERE id = ?', f.models == null ? null : JSON.stringify(f.models), id);
-  models.delete(id);
+  clearUpCache(id);
   return id;
+}
+
+// ---------- CPA management queries for external CPA upstreams (cached per upstream id) ----------
+const upCredCache = new Map<number, { at: number; creds: Creds }>();
+const upCredInflight = new Map<number, Promise<Creds>>();
+const upPluginCache = new Map<number, { at: number; ok: boolean }>();
+
+async function upMgmtGet(u: Upstream, path: string, timeoutMs: number): Promise<{ status: number; data: any }> {
+  const res = await fetch(u.base + '/v8/management' + path, {
+    headers: { Authorization: 'Bearer ' + u.mgmtKey },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await res.text();
+  let data: any = text;
+  try { data = text ? JSON.parse(text) : null; } catch {}
+  return { status: res.status, data };
+}
+
+export async function upCreds(u: Upstream, maxAgeMs = 10000): Promise<Creds> {
+  if (!u.mgmtKey) throw new Error('no management key');
+  const cached = upCredCache.get(u.id);
+  if (maxAgeMs > 0 && cached && now() - cached.at <= maxAgeMs) return cached.creds;
+  const inf = upCredInflight.get(u.id);
+  if (inf) return inf;
+  const p = (async () => {
+    const r = await upMgmtGet(u, '/credentials', 8000);
+    if (r.status < 200 || r.status >= 300) {
+      const msg = typeof r.data === 'object' && r.data ? r.data.error || r.data.message : String(r.data || '');
+      throw new Error(String(msg || 'HTTP ' + r.status));
+    }
+    const files: any[] = r.data?.files || [];
+    const list = files.map(mapCred).filter((c) => c.id);
+    const byId = new Map<string, Cred>();
+    const byIndex = new Map<string, string>();
+    for (const c of list) {
+      byId.set(c.id, c);
+      if (c.authIndex) byIndex.set(c.authIndex, c.id);
+    }
+    const creds: Creds = { list, byId, byIndex };
+    upCredCache.set(u.id, { at: now(), creds });
+    return creds;
+  })().finally(() => {
+    upCredInflight.delete(u.id);
+  });
+  upCredInflight.set(u.id, p);
+  return p;
+}
+
+export async function upPluginHealthy(u: Upstream, fresh = false): Promise<boolean> {
+  if (!u.mgmtKey) return false;
+  const cached = upPluginCache.get(u.id);
+  if (!fresh && cached && now() - cached.at < 10000) return cached.ok;
+  let ok = false;
+  try {
+    const r = await upMgmtGet(u, '/plugins', 4000);
+    if (r.status === 200 && r.data && r.data.plugins_enabled !== false) {
+      const p = (r.data.plugins || []).find((x: any) => x?.id === config.pluginID);
+      ok = !!(p && p.registered === true && p.effective_enabled === true);
+    }
+  } catch {
+    ok = false;
+  }
+  upPluginCache.set(u.id, { at: now(), ok });
+  return ok;
+}
+
+export async function upAuthIdForIndex(u: Upstream, index: string): Promise<string | null> {
+  const mem = upCredCache.get(u.id)?.creds.byIndex.get(index);
+  if (mem) return mem;
+  let c = await upCreds(u, 10000);
+  let id = c.byIndex.get(index);
+  if (!id) {
+    c = await upCreds(u, 0);
+    id = c.byIndex.get(index);
+  }
+  return id || null;
+}
+
+export async function upUsableCreds(u: Upstream, model: string): Promise<Cred[]> {
+  const { list } = await upCreds(u);
+  const t = Date.now(), ml = model.toLowerCase();
+  return list.filter((c) => {
+    if (c.disabled || c.status === 'error' || c.unavailable) return false;
+    if (c.nextRetryAfter && Date.parse(c.nextRetryAfter) > t) return false;
+    if ((c.cooldowns || []).some((cd) => cd.retryAt && Date.parse(cd.retryAt) > t && (cd.scope !== 'model' || (ml && cd.model.toLowerCase() === ml)))) return false;
+    return true;
+  });
 }
 
 // ---------- model lists (cached) ----------
@@ -107,12 +206,15 @@ export async function upstreamsFor(model: string): Promise<Upstream[]> {
 // ---------- forwarding ----------
 const HOP = new Set(['host', 'connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length', 'accept-encoding',
   'cookie', 'authorization', 'x-api-key', 'x-goog-api-key', 'x-real-ip', 'forwarded']);
-export function upstreamRequest(u: Upstream, method: string, pathWithQuery: string, client: IncomingHttpHeaders, bodyLen: number) {
+export function upstreamRequest(u: Upstream, method: string, pathWithQuery: string, client: IncomingHttpHeaders, bodyLen: number, extraHeaders?: Record<string, string>) {
   const h: Record<string, string | string[]> = {};
   for (const [k, v] of Object.entries(client)) {
     const lk = k.toLowerCase();
-    if (v === undefined || HOP.has(lk) || lk.startsWith('x-agy') || lk.startsWith('x-forwarded-')) continue;
+    if (v === undefined || HOP.has(lk) || lk.startsWith('x-agy') || lk.startsWith('x-forwarded-') || lk === config.allowHeader.toLowerCase()) continue;
     h[lk] = v;
+  }
+  if (extraHeaders) {
+    for (const [k, v] of Object.entries(extraHeaders)) if (v !== undefined) h[k] = v;
   }
   h.authorization = 'Bearer ' + u.key;
   h['x-api-key'] = u.key;

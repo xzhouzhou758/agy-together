@@ -18,7 +18,7 @@ import { actionOf, clearAction } from './accaction.ts';
 import { readZip, writeZip } from './zip.ts';
 import { testModel } from './modeltest.ts';
 import { dailyFor, sharedModels, setSharedModels, isPaid } from './limits.ts';
-import { isUp, upName, upstreamRows, upstreamById, saveUpstream, normBase, modelsOf, modelInfo, openModels, enabledUpstreams } from './upstream.ts';
+import { isUp, upName, upstreamRows, upstreamById, saveUpstream, clearUpCache, normBase, modelsOf, modelInfo, openModels, enabledUpstreams, upCreds, upPluginHealthy } from './upstream.ts';
 import * as site from './site.ts';
 import { accountProblem, registerCommands, botStatus, connectInteractions, testMessage, postAnnouncement } from './bot.ts';
 import { wakeFor } from './autosleep.ts';
@@ -1085,6 +1085,7 @@ route('PUT', '/api/admin/rules', async (req) => {
     keyConc: b.keyConc === undefined ? cur.keyConc : clampInt(b.keyConc, 1, 200),
     keyRpm: b.keyRpm === undefined ? cur.keyRpm : clampInt(b.keyRpm, 1, 10000),
     accConc: b.accConc === undefined ? cur.accConc : clampInt(b.accConc, 1, 20),
+    accRpm: b.accRpm === undefined ? cur.accRpm : clampInt(b.accRpm, 0, 1000),
     reserve: b.reserve === undefined ? cur.reserve : clampInt(b.reserve, 0, 90),
     dailyBase: b.dailyBase === undefined ? cur.dailyBase : clampInt(b.dailyBase, 0, 1e6),
     dailyPer: b.dailyPer === undefined ? cur.dailyPer : clampInt(b.dailyPer, 0, 1e6),
@@ -1098,7 +1099,7 @@ route('PUT', '/api/admin/rules', async (req) => {
 function upView(r: Row) {
   let allow: string[] | null = null;
   try { const v = JSON.parse(r.models_allow || 'null'); if (Array.isArray(v)) allow = v; } catch {}
-  return { id: r.id, name: r.name, url: r.base_url, enabled: !!r.enabled, keySet: !!r.key_enc, models: modelInfo(r.id), allow,
+  return { id: r.id, name: r.name, url: r.base_url, enabled: !!r.enabled, keySet: !!r.key_enc, mgmtSet: !!r.mgmt_key_enc, models: modelInfo(r.id), allow,
     today: Number(one(`SELECT COUNT(*) AS n FROM usage WHERE auth_id = ? AND ts >= ?`, 'up:' + r.id, dayStart())?.n || 0) };
 }
 function upBody(b: any, needKey: boolean) {
@@ -1107,12 +1108,15 @@ function upBody(b: any, needKey: boolean) {
   try { base = normBase(str(b.url, 300)); } catch { throw new HttpError(400, 'invalid_url'); }
   const key = str(b.key, 300);
   if (needKey && !key) throw new HttpError(400, 'invalid_key');
+  let mgmtKey: string | null | undefined;
+  if (b.mgmtKey === null) mgmtKey = null;
+  else if (typeof b.mgmtKey === 'string' && b.mgmtKey.trim()) mgmtKey = str(b.mgmtKey, 300);
   let models: string[] | null | undefined;
   if (b.models !== undefined) {
     if (b.models !== null && !(Array.isArray(b.models) && b.models.length <= 500 && b.models.every((m: unknown) => typeof m === 'string' && m.length <= 120))) throw new HttpError(400, 'invalid');
     models = b.models;
   }
-  return { name, base, key, enabled: b.enabled !== false, models };
+  return { name, base, key, mgmtKey, enabled: b.enabled !== false, models };
 }
 route('GET', '/api/admin/upstreams', (req) => { requireAdmin(req); return upstreamRows().map(upView); });
 route('POST', '/api/admin/upstreams', async (req) => {
@@ -1130,7 +1134,9 @@ route('PATCH', '/api/admin/upstreams/:id', async (req, _res, p) => {
 });
 route('DELETE', '/api/admin/upstreams/:id', (req, _res, p) => {
   requireAdmin(req);
-  run('DELETE FROM upstreams WHERE id = ?', Number(p.id));
+  const id = Number(p.id);
+  run('DELETE FROM upstreams WHERE id = ?', id);
+  clearUpCache(id);
   return { ok: true };
 });
 route('POST', '/api/admin/upstreams/:id/test', async (req, _res, p) => {
@@ -1140,7 +1146,17 @@ route('POST', '/api/admin/upstreams/:id/test', async (req, _res, p) => {
   const u = upstreamById(r.id)!;
   const ids = await modelsOf(u, true);
   const info = modelInfo(r.id);
-  return { ok: !!ids && !info?.error, count: ids?.size ?? 0, error: info?.error || null, models: ids ? [...ids].slice(0, 200) : [] };
+  let err = info?.error || null;
+  let extra: { accounts?: number; plugin?: boolean } = {};
+  if (u.mgmtKey) {
+    try {
+      const [creds, pluginOk] = await Promise.all([upCreds(u, 0), upPluginHealthy(u, true)]);
+      extra = { accounts: creds.list.filter((c) => !c.disabled).length, plugin: pluginOk };
+    } catch (e) {
+      err = err || '管理密钥错误或不可达：' + (e as Error).message;
+    }
+  }
+  return { ok: !!ids && !err, count: ids?.size ?? 0, error: err, models: ids ? [...ids].slice(0, 200) : [], ...extra };
 });
 
 // ---------- models opened for the 大锅饭 ----------

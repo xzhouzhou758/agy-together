@@ -421,7 +421,7 @@ function modelsDialog(id,label,list){
 
 function rulesRead(r){
   return `<div class="rule"><h3>大锅饭 Key 总并发 / 限速</h3><div class="val">${r.keyConc} 并发 · ${r.keyRpm} 次/分</div></div>
-    <div class="rule"><h3>单号并发上限</h3><div class="val">${r.accConc}</div></div>
+    <div class="rule"><h3>单号并发 / 限速</h3><div class="val">${r.accConc} 并发 · ${r.accRpm?r.accRpm+' 次/分':'不限'}</div></div>
     <div class="rule"><h3>自用保留</h3><div class="val">${reserveText(r.reserve)}</div></div>`;
 }
 /* 大锅饭资源：共享号剩余额度按 Gemini / Claude / Argon 汇总（扣掉各号的自用保留） */
@@ -720,9 +720,9 @@ function pageAdmin(){
     ${swRule('显示买号渠道','shops',A.sw?.shops!==false)}
     <div id="shop-edit">${(A.shops||[]).map(shopRow).join('')}</div>
     <div class="hstack mt"><button class="btn sm" data-act="shopadd">${ic('plus')}添加</button><button class="btn primary sm" data-act="shopsave">保存</button></div>`,false)}`,
-    fwd:()=>`${fold('rules','大锅饭规则',`<span class="fold-sum">${r.dailyBase} + ${r.dailyPer}/号 · ${r.keyConc} 并发 · ${r.keyRpm}/min · 单号 ${r.accConc} · 保留 ${reserveText(r.reserve)} · 输入 ${r.sharedInput?Math.round(r.sharedInput/1e4)+' 万':'不限'}</span>`,`
+    fwd:()=>`${fold('rules','大锅饭规则',`<span class="fold-sum">${r.dailyBase} + ${r.dailyPer}/号 · ${r.keyConc} 并发 · ${r.keyRpm}/min · 单号 ${r.accConc}${r.accRpm?'/'+r.accRpm+'m':''} · 保留 ${reserveText(r.reserve)} · 输入 ${r.sharedInput?Math.round(r.sharedInput/1e4)+' 万':'不限'}</span>`,`
     <div class="rule"><h3>大锅饭 Key 总并发 / 限速</h3><div class="hstack"><input class="input" type="number" min="1" max="200" data-rule="keyConc" value="${r.keyConc}" aria-label="大锅饭 Key 总并发"><small>并发</small><input class="input" type="number" min="1" max="10000" data-rule="keyRpm" value="${r.keyRpm}" aria-label="大锅饭 Key 总限速"><small>次/分</small></div></div>
-    <div class="rule"><h3>单号并发上限</h3><div class="hstack"><input class="input" type="number" min="1" max="20" data-rule="accConc" value="${r.accConc}" aria-label="单号并发上限"></div></div>
+    <div class="rule"><h3>单号并发 / 限速</h3><div class="hstack"><input class="input" type="number" min="1" max="20" data-rule="accConc" value="${r.accConc}" aria-label="单号并发上限"><small>并发</small><input class="input" type="number" min="0" max="1000" data-rule="accRpm" value="${r.accRpm??10}" aria-label="单号每分钟上限"><small>次/分</small></div></div>
     <div class="rule"><div><h3>每日次数</h3><p>每人每天 = 基础 + 共享的 Pro 号数 × 加成；管理员不限</p></div><div class="hstack"><input class="input" type="number" min="0" max="1000000" data-rule="dailyBase" value="${r.dailyBase}" aria-label="基础次数"><small>基础</small><input class="input" type="number" min="0" max="1000000" data-rule="dailyPer" value="${r.dailyPer}" aria-label="每个共享号加成"><small>/ 号</small></div></div>
     <div class="rule"><div><h3>大锅饭输入上限</h3><p>一次请求的输入超过就拦下并在 Discord @ 本人；0 = 不限</p></div><div class="hstack"><input class="input" type="number" min="0" max="10000000" step="10000" data-rule="sharedInput" value="${r.sharedInput??500000}" aria-label="大锅饭输入上限"><small>Token</small></div></div>
     <div class="rule"><div><h3>开放的模型</h3><p>大锅饭 Key 能用、能在模型列表里看到的模型</p></div><div class="hstack"><span class="faint">${A.sharedAllow==null?'全部':A.sharedAllow.length+' 个'}</span><button class="btn sm" data-act="sharedmodels">${ic('layers')}选择</button></div></div>
@@ -763,7 +763,7 @@ function modelPicker(){
 let upEdit=null;
 function upCard(L){
   const e=upEdit;
-  const form=e?`<div class="up-form"><input class="input sm" id="up-name" maxlength="40" placeholder="名称，如 Tools" value="${esc(e.name||'')}"><input class="input sm mono" id="up-url" placeholder="http://127.0.0.1:8045" value="${esc(e.url||'')}"><input class="input sm mono" id="up-key" type="password" autocomplete="off" placeholder="${e.id?'API Key（不改就留空）':'API Key'}"><span class="hstack"><button class="btn sm ghost" data-act="upcancel">取消</button><button class="btn sm primary" data-act="upsave">${e.id?'保存':'添加'}</button></span></div>`
+  const form=e?`<div class="up-form"><input class="input sm" id="up-name" maxlength="40" placeholder="名称，如 Tools" value="${esc(e.name||'')}"><input class="input sm mono" id="up-url" placeholder="http://127.0.0.1:8045" value="${esc(e.url||'')}"><input class="input sm mono" id="up-key" type="password" autocomplete="off" placeholder="${e.id?'API Key（不改就留空）':'API Key'}"><input class="input sm mono" id="up-mgmt" type="password" autocomplete="off" placeholder="${e.mgmtSet?'管理密钥已设（不改留空）':'CPA 管理密钥（可选）'}"><span class="hstack"><button class="btn sm ghost" data-act="upcancel">取消</button><button class="btn sm primary" data-act="upsave">${e.id?'保存':'添加'}</button></span></div>`
     :`<div class="mt"><button class="btn sm" data-act="upnew">${ic('plus')}添加上游</button></div>`;
   const rows=L.map(u=>{const m=u.models,st=!m?['','未检测']:m.error?['bad','连不上：'+m.error]:['good',u.allow?`开放 ${u.allow.length} / ${m.count} 个模型`:`${m.count} 个模型全开放`];
     return `<div class="up-row ${u.enabled?'':'off'}"><span class="u-n"><strong>${esc(u.name)}</strong><span class="sub mono">${esc(u.url)}</span></span>
@@ -1526,12 +1526,12 @@ document.addEventListener('click',act(async e=>{
     case 'upnew':upEdit={};render();$('#up-name')?.focus();break;
     case 'upedit':upEdit={...D.admin.upstreams.find(x=>x.id===+arg)};render();$('#up-name')?.focus();break;
     case 'upcancel':upEdit=null;render();break;
-    case 'upsave':{const b={name:$('#up-name').value.trim(),url:$('#up-url').value.trim()},k=$('#up-key').value.trim();if(k)b.key=k;
+    case 'upsave':{const b={name:$('#up-name').value.trim(),url:$('#up-url').value.trim()},k=$('#up-key').value.trim(),mk=$('#up-mgmt')?.value.trim();if(k)b.key=k;if(mk)b.mgmtKey=mk;
       if(!b.url){toast('填上游地址',true);break;}if(!upEdit.id&&!k){toast('填 API Key',true);break;}
       const r=upEdit.id?await api('PATCH','api/admin/upstreams/'+upEdit.id,b):await api('POST','api/admin/upstreams',b);
       upEdit=null;const t=await api('POST','api/admin/upstreams/'+r.id+'/test').catch(()=>null);
-      toast(t?.ok?`已保存，检测到 ${t.count} 个模型`:'已保存，但连不上：'+(t?.error||'未知错误'),!t?.ok);reload();break;}
-    case 'uptest':{el.disabled=true;try{const t=await api('POST','api/admin/upstreams/'+arg+'/test');toast(t.ok?`连接正常，${t.count} 个模型`:'连不上：'+t.error,!t.ok);reload();}finally{el.disabled=false;}break;}
+      toast(t?.ok?`已保存，检测到 ${t.count} 个模型${t.accounts!=null?` · ${t.accounts} 个账号`:''}`:'已保存，但连不上：'+(t?.error||'未知错误'),!t?.ok);reload();break;}
+    case 'uptest':{el.disabled=true;try{const t=await api('POST','api/admin/upstreams/'+arg+'/test');toast(t.ok?`连接正常，${t.count} 个模型${t.accounts!=null?` · ${t.accounts} 个账号`:''}`:'连不上：'+t.error,!t.ok);reload();}finally{el.disabled=false;}break;}
     case 'uptoggle':{const u=D.admin.upstreams.find(x=>x.id===+arg);await api('PATCH','api/admin/upstreams/'+arg,{enabled:!u.enabled});toast(u.enabled?'已停用':'已启用');reload();break;}
     case 'updel':{const u=D.admin.upstreams.find(x=>x.id===+arg);
       openDialog('删除上游',esc(u.name),'<p class="dim mt">大锅饭不会再转发到这里。</p>',`<button class="btn" data-act="close">取消</button><button class="btn primary" style="background:var(--bad)" data-act="doupdel:${u.id}">删除</button>`);break;}
