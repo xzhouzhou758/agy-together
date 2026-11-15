@@ -1,3 +1,5 @@
+import { seal as sealBotKey } from './util.ts';
+import { botAPISettings, normalizeBotURL } from './botapi.ts';
 // JSON API for the web UI. Every handler does its own server-side authorization.
 import { chatStatus, chatModel, chatSource, chatPrompt, DEFAULT_PROMPT } from './botchat.ts';
 import { kbList, kbAdd, kbDelete, kbFetch } from './kb.ts';
@@ -1250,7 +1252,7 @@ route('GET', '/api/admin/site', (req) => {
 });
 route('GET', '/api/admin/bot', async (req) => {
   requireAdmin(req);
-  return { ...(await botStatus()), chat: { ...chatStatus, model: chatModel() } };
+  return { ...(await botStatus()), chat: { ...chatStatus, model: chatModel(), source: chatSource() } };
 });
 // @ 机器人问答: model and prompt
 route('GET', '/api/admin/botchat', async (req) => {
@@ -1260,24 +1262,39 @@ route('GET', '/api/admin/botchat', async (req) => {
   for (const id of ids) for (const m of await cpa.credentialModels(id).catch(() => [])) if (m?.id) models.add(String(m.id));
   const sources = [{ id: 'cpa', name: '自己的号（CPA）', models: [...models].sort() }];
   for (const u of enabledUpstreams()) sources.push({ id: 'up:' + u.id, name: u.name + '（外部上游）', models: [...((await modelsOf(u).catch(() => null)) || [])].sort() });
-  return { model: chatModel(), source: chatSource(), sources, prompt: chatPrompt(), custom: !!getSetting('bot_llm_prompt'), defaultPrompt: DEFAULT_PROMPT, models: [...models].sort() };
+  return { model: chatModel(), source: chatSource(), external: botAPISettings(), sources, prompt: chatPrompt(), custom: !!getSetting('bot_llm_prompt'), defaultPrompt: DEFAULT_PROMPT, models: [...models].sort() };
 });
 route('PUT', '/api/admin/botchat', async (req) => {
   requireAdmin(req);
   const b = await readJSON(req);
+  // Validate everything before changing saved settings.
+  const changes: [string, string][] = [];
+  const source = b.source === undefined ? chatSource() : b.source;
+  if (source !== 'cpa' && source !== 'external' && !(typeof source === 'string' && /^up:\d+$/.test(source) && upstreamById(Number(source.slice(3))))) throw new HttpError(400, '来源无效');
+  if (b.source !== undefined) changes.push(['bot_llm_source', source]);
   if (b.model !== undefined) {
-    if (typeof b.model !== 'string' || !/^[\w.:\/-]{1,80}$/.test(b.model)) throw new HttpError(400, 'invalid_model');
-    setSetting('bot_llm_model', b.model);
+    if (typeof b.model !== 'string' || !/^[\w.:\/+-]{1,160}$/.test(b.model)) throw new HttpError(400, '模型名无效');
+    changes.push([source === 'external' ? 'bot_api_model' : 'bot_llm_model', b.model]);
   }
-  if (b.source !== undefined) {
-    if (b.source !== 'cpa' && !(typeof b.source === 'string' && /^up:\d+$/.test(b.source) && upstreamById(Number(b.source.slice(3))))) throw new HttpError(400, 'invalid_source');
-    setSetting('bot_llm_source', b.source);
+  let url = botAPISettings().url, keySet = botAPISettings().keySet;
+  if (b.external !== undefined) {
+    if (!b.external || typeof b.external !== 'object' || Array.isArray(b.external)) throw new HttpError(400, 'API 配置无效');
+    if (b.external.url !== undefined) {
+      try { url = normalizeBotURL(b.external.url); } catch { throw new HttpError(400, '请填写有效的 API 地址，例如 https://example.com/v1'); }
+      changes.push(['bot_api_url', url]);
+    }
+    if (b.external.key !== undefined && b.external.key !== '') {
+      if (typeof b.external.key !== 'string' || !b.external.key.trim() || b.external.key.length > 8192 || /[\r\n]/.test(b.external.key)) throw new HttpError(400, 'API 密钥无效');
+      changes.push(['bot_api_key', sealBotKey(b.external.key.trim())]); keySet = true;
+    }
   }
+  if (source === 'external' && (!url || !keySet || !(b.model || botAPISettings().model))) throw new HttpError(400, '请填写 API 地址、密钥和模型名');
   if (b.prompt !== undefined) {
     if (b.prompt !== null && (typeof b.prompt !== 'string' || b.prompt.length > 20000)) throw new HttpError(400, 'invalid_prompt');
-    setSetting('bot_llm_prompt', b.prompt && b.prompt.trim() && b.prompt.trim() !== DEFAULT_PROMPT ? b.prompt.trim() : '');
+    changes.push(['bot_llm_prompt', b.prompt && b.prompt.trim() && b.prompt.trim() !== DEFAULT_PROMPT ? b.prompt.trim() : '']);
   }
-  return { ok: true, model: chatModel(), source: chatSource(), custom: !!getSetting('bot_llm_prompt') };
+  for (const [key, value] of changes) setSetting(key, value);
+  return { ok: true, model: chatModel(), source: chatSource(), external: botAPISettings(), custom: !!getSetting('bot_llm_prompt') };
 });
 // 机器人知识库
 route('GET', '/api/admin/kb', (req) => { requireAdmin(req); return kbList(); });

@@ -852,7 +852,12 @@ function botChatForm(C){
   const opts=srcs.map(s=>{const ms=s.id===C.source&&!s.models.includes(C.model)?[C.model,...s.models]:s.models;
     return `<optgroup label="${esc(s.name)}">${ms.map(m=>`<option value="${esc(s.id+'|'+m)}" ${s.id===C.source&&m===C.model?'selected':''}>${esc(m)}</option>`).join('')||'<option disabled>（读不到模型列表）</option>'}</optgroup>`;}).join('');
   return `<div class="bchat mt-l"><h3>@ 机器人问答</h3>
-    <div class="rule"><div><h3>模型</h3><p>跑在管理员自己的号上，或用外部上游（Tools）</p></div><select class="select" id="bc-model" aria-label="问答模型">${opts}</select></div>
+    <div class="rule"><div><h3>模型</h3><p>选择现有来源，或填写机器人专用的外部 API</p></div><select class="select" id="bc-model" aria-label="问答模型">${opts}<option value="external|" ${C.source==='external'?'selected':''}>独立 API</option></select></div>
+    <div id="bc-external" ${C.source==='external'?'':'hidden'}>
+      <label>API 地址<input class="input" id="bc-url" value="${esc(C.external?.url||'')}" placeholder="https://example.com/v1"></label>
+      <label>API 密钥<input class="input" id="bc-key" type="password" autocomplete="new-password" placeholder="${C.external?.keySet?'已保存，留空保持原密钥':'填写 API Key'}"></label>
+      <label>模型名<input class="input" id="bc-external-model" value="${esc(C.external?.model||'')}" placeholder="填写上游提供的模型名"></label>
+    </div>
     <div class="bc-p"><div class="row"><h3>预设提示词${C.custom?' <span class="chip accent">自定义</span>':' <span class="chip">默认</span>'}</h3>
       <div class="hstack"><label class="btn sm">${ic('upload')}上传 .txt / .md<input type="file" id="f-botprompt" accept=".txt,.md,text/plain,text/markdown" hidden></label><button class="btn sm ghost" data-act="botpromptreset">恢复默认</button></div></div>
       <textarea class="input mono" id="bc-prompt" rows="12" spellcheck="false" aria-label="预设提示词">${esc(C.prompt)}</textarea>
@@ -887,7 +892,7 @@ function botCard(B,s){
     ${D.admin.sw?.mentions!==false?swRule('仅补货通知','stockOnly',!!D.admin.sw?.stockOnly,'sw-sub'):''}
     ${stockBox(D.admin.stock)}
     ${swRule('主动发消息','proactive',!!D.admin.sw?.proactive)}
-    <div class="bsteps">${step(1,B.inGuild,'邀请机器人进服务器',s1)}${step(2,B.inGuild&&!!B.channelId,'选择提醒频道',s2)}${step(3,B.connected,'连接斜杠命令',s3)}${step(4,!!B.chat?.connected,'@ 机器人问答',B.chat?.connected?`<small>已上线，在频道里 @ 机器人问报错或排行（模型 <span class="mono">${esc(B.chat.model)}</span>，跑在管理员自己的号上）</small>`:B.chat?.error?`<small class="bad-t">${esc(B.chat.error)}</small><small class="faint">打开后等几分钟会自动重连</small>`:`<small class="faint">连接中…（需要在 Discord 开发者后台 Bot 页面打开 Message Content Intent）</small>`)}</div>
+    <div class="bsteps">${step(1,B.inGuild,'邀请机器人进服务器',s1)}${step(2,B.inGuild&&!!B.channelId,'选择提醒频道',s2)}${step(3,B.connected,'连接斜杠命令',s3)}${step(4,!!B.chat?.connected,'@ 机器人问答',B.chat?.connected?`<small>已上线，在频道里 @ 机器人问报错或排行（模型 <span class="mono">${esc(B.chat.model)}</span>，${B.chat.source==='external'?'独立 API':B.chat.source?.startsWith('up:')?'外部上游':'管理员自己的号'}）</small>`:B.chat?.error?`<small class="bad-t">${esc(B.chat.error)}</small><small class="faint">打开后等几分钟会自动重连</small>`:`<small class="faint">连接中…（需要在 Discord 开发者后台 Bot 页面打开 Message Content Intent）</small>`)}</div>
     ${B.inGuild&&B.channelId?`<div class="mt-l"><button class="btn sm" data-act="bottest">发一条测试消息</button></div>`:''}
     ${botChatForm(D.admin.botchat)}`,!ready,'号出问题自动 @ 号主；/我的号、/今日榜；每天发日报');
 }
@@ -1736,7 +1741,7 @@ document.addEventListener('click',act(async e=>{
     case 'botrefresh':D.admin.bot=await api('GET','api/admin/bot');render();break;
     case 'botconnect':D.admin.bot=await api('POST','api/admin/bot/connect');render();toast('已连接');break;
     case 'kburl':{const u=$('#kb-url').value.trim();if(!u)return;toast('导入中…');const r=await api('POST','api/admin/kb',{url:u});D.admin.kb=r.list;render();toast('已导入');break;}
-    case 'botchatsave':D.admin.botchat={...D.admin.botchat,...await api('PUT','api/admin/botchat',(()=>{const v=$('#bc-model').value,i=v.indexOf('|');return {source:v.slice(0,i),model:v.slice(i+1),prompt:$('#bc-prompt').value};})())};D.admin.botchat.prompt=$('#bc-prompt').value.trim()||D.admin.botchat.defaultPrompt;toast('问答设置已保存');render();break;
+    case 'botchatsave':D.admin.botchat={...D.admin.botchat,...await api('PUT','api/admin/botchat',(()=>{const v=$('#bc-model').value,i=v.indexOf('|');const external=v.slice(0,i)==='external';return {source:v.slice(0,i),model:external?$('#bc-external-model').value.trim():v.slice(i+1),...(external?{external:{url:$('#bc-url').value.trim(),key:$('#bc-key').value}}:{}),prompt:$('#bc-prompt').value};})())};D.admin.botchat.prompt=$('#bc-prompt').value.trim()||D.admin.botchat.defaultPrompt;toast('问答设置已保存');render();break;
     case 'botpromptreset':$('#bc-prompt').value=D.admin.botchat.defaultPrompt;toast('已填入默认提示词，点保存生效');break;
     case 'kbdel':if(!confirm('删除这篇文档？'))return;D.admin.kb=await api('DELETE','api/admin/kb/'+arg);render();toast('已删除');break;
     case 'stockrefresh':D.admin.stock=await api('GET','api/admin/stock?refresh=1');render();toast('已刷新');break;
@@ -1751,6 +1756,7 @@ document.addEventListener('click',act(async e=>{
 
 document.addEventListener('change',act(async e=>{
   const t=e.target;
+  if(t.id==='bc-model'){$('#bc-external').hidden=t.value!=='external|';return;}
   if(t.id==='f-files'){await uploadFiles([...t.files]);return;}
   if(t.id==='f-kb'){const fs=[...t.files];t.value='';for(const f of fs){if(f.size>600000){toast(`${f.name} 太大，跳过`);continue;}const r=await api('POST','api/admin/kb',{title:f.name.replace(/\.(md|txt)$/i,''),body:await f.text()});D.admin.kb=r.list;}render();toast(`已加入 ${fs.length} 篇`);return;}
   if(t.id==='f-botprompt'){const f=t.files[0];if(!f)return;if(f.size>20000*3){toast('文件太大（最多约 2 万字）');return;}$('#bc-prompt').value=(await f.text()).trim();t.value='';toast('已读入，点保存生效');return;}

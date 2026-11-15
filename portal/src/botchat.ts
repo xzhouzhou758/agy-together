@@ -1,3 +1,4 @@
+import { botAPIPost } from './botapi.ts';
 // Discord bot chat: a gateway (websocket) connection so people can @ the bot in the server and ask
 // about their errors or who is eating the most. The answer comes from a model run on the admins' own
 // accounts through CPA (pinned with the allow header), fed with the asker's recent failures and the
@@ -21,7 +22,7 @@ import { stockForChat, subscribe } from './stock.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
-export const chatModel = () => getSetting('bot_llm_model') || 'gemini-3-flash';
+export const chatModel = () => (chatSource() === 'external' ? getSetting('bot_api_model') : getSetting('bot_llm_model')) || 'gemini-3-flash';
 /** 'cpa' = the admins' own accounts through CPA; 'up:<id>' = an external upstream (Tools) with its own key. */
 export const chatSource = () => getSetting('bot_llm_source') || 'cpa';
 
@@ -268,9 +269,9 @@ export async function fetchImages(atts: any[]): Promise<string[]> {
 
 export async function answer(discordId: string, question: string, previous?: string, quoted?: string, images: string[] = []): Promise<string> {
   const src = chatSource(), upId = isUp(src) ? Number(src.slice(3)) : null;
-  const allow = upId == null ? all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id) : [];
-  if (upId == null && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
-  const send = (b: string) => (upId == null ? cpaPost(b, allow) : upPost(upId, b));
+  const allow = src === 'cpa' ? all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin' ORDER BY a.auth_id`).map((r) => r.auth_id) : [];
+  if (src === 'cpa' && !allow.length) return '站长还没有可用的号，我暂时说不了话 🐶';
+  const send = (b: string) => (src === 'external' ? botAPIPost(b) : upId == null ? cpaPost(b, allow) : upPost(upId, b));
   const titles = kbTitles(), me = one('SELECT id, role FROM users WHERE discord_id = ?', discordId), asker: number | null = me?.id ?? null, isAdmin = me?.role === 'admin';
   const messages: any[] = [{ role: 'system', content: chatPrompt() + '\n\n' + CONTEXT_FACTS + (proactive() || stockOnly() ? STOCK_NOTIFY_HINT : QUIET_HINT) +
     (asker ? '\n\n提问人问自己为什么报错 / 回复不对时，用 inspect_my_request 读他自己最近的请求，看参数、消息结构、预填充、哪条特别长、上游报错原文，定位到具体原因再说怎么改。回答在公开频道：可以点出是哪一部分（比如系统提示词里的某段、第几条消息），但不要大段复述他的聊天内容，引用原文最多一两句，也不要评论他写的内容本身（题材、剧情、人物）。' : '') +
