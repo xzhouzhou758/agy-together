@@ -1,6 +1,12 @@
 // Dedicated bot upstream: never registered with the shared pool.
 import { getSetting } from './db.ts';
 import { unseal } from './util.ts';
+import { searchWeb } from './botsearch.ts';
+export async function botWebSearch(query: string): Promise<string> {
+  const { url } = botAPISettings(), key = unseal(getSetting('bot_api_key'));
+  if (!url || !key) return '尚未配置机器人独立 API，无法联网搜索。';
+  return searchWeb(url, key, query);
+}
 export function botAPISettings() {
   return { url: getSetting('bot_api_url') || '', keySet: !!getSetting('bot_api_key'), model: getSetting('bot_api_model') || '' };
 }
