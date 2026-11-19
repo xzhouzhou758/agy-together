@@ -177,8 +177,8 @@ test('OAuth flow assigns the new credential to the user who started it', async (
   assert.equal((await alice.req('GET', '/api/accounts')).data.length, 3);
 });
 
-test('AI Studio pool is hidden without AISTUDIO_RELAY_KEY', async () => {
-  assert.equal((await new Client().req('GET', '/api/config')).data.aistudio, false);
+test('retired AI Studio pool has no config, endpoints, or keys', async () => {
+  assert.equal((await new Client().req('GET', '/api/config')).data.aistudio, undefined);
   assert.equal((await bob.req('POST', '/api/keys', { name: 'x', pool: 'aistudio' })).status, 400);
   assert.equal((await bob.req('GET', '/api/aistudio')).status, 404);
   assert.equal((await bob.req('POST', '/api/aistudio', { cookies: 'SAPISID=x' })).status, 404);

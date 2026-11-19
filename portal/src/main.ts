@@ -1,28 +1,24 @@
 import http from 'node:http';
 import { startBotChat } from './botchat.ts';
 import { startRestartLog, recordStop } from './restarts.ts';
-import { startStockWatch } from './stock.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, validateConfig } from './config.ts';
-import { handleCpaPanel } from './cpapanel.ts';
 import { handleBrowser, handleBrowserUpgrade, startBrowser } from './browser.ts';
 import './db.ts';
 import { sendError, HttpError } from './util.ts';
 import { handleAPI } from './api.ts';
 import { handleGateway } from './gateway.ts';
 import { discordLogin, discordCallback, startRoleRecheck, pruneSessions } from './auth.ts';
-import { startUsageDrainer, pruneUsage } from './usage.ts';
-import { startQuotaRefresher } from './quota.ts';
+import { pruneUsage } from './usage.ts';
 import { initSetup, setupDone } from './site.ts';
 import { handleInteraction, startBot } from './bot.ts';
-import { startAutoDisable } from './autodisable.ts';
-import { startAutoSleep } from './autosleep.ts';
-import { startAIStudioRecheck } from './aistudio.ts';
-import * as cpa from './cpa.ts';
-import { sfInit } from './sf.ts';
+import { startAIStudio2Recheck } from './aistudio2.ts';
+import { syncUserNodesToMihomo } from './exit.ts';
+import { startFun } from './fun.ts';
+import { startStockWatch } from './stock.ts';
 
 const errs = validateConfig();
 if (errs.length) {
@@ -38,20 +34,18 @@ const SEC = {
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
 };
-const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
+const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2', '.ttf': 'font/ttf' };
 
-// static files are small: load once
 const files = new Map<string, Buffer>();
-for (const f of ['index.html', 'app.js', 'filter.js', 'app.css', 'setup.html', 'setup.js', 'theme.js', 'icons/gemini.svg', 'icons/claude.svg', 'icons/openai.svg', 'icons/openai-dark.svg', 'favicon.png', 'apple-touch-icon.png', 'logo.jpg', 'fonts/manrope-brand.woff2']) {
+for (const f of ['index.html', 'app.js', 'filter.js', 'app.css', 'themes.css', 'setup.html', 'setup.js', 'theme.js', 'games.js', 'games.css', 'icons/gemini.svg', 'icons/claude.svg', 'icons/openai.svg', 'icons/openai-dark.svg', 'favicon.png', 'apple-touch-icon.png', 'logo.jpg', 'fonts/manrope-brand.woff2', 'fonts/maple-cn.ttf']) {
   const p = join(PUBLIC, f);
   if (existsSync(p)) files.set(f, readFileSync(p));
 }
-// version stamp on the page's own scripts / styles, so a deploy is picked up at once instead of after the 5-minute cache
 {
   const v = (f: string) => createHash('sha256').update(files.get(f) || '').digest('hex').slice(0, 10);
   for (const page of ['index.html', 'setup.html']) {
     const html = files.get(page);
-    if (html) files.set(page, Buffer.from(html.toString().replace(/(src|href)="(app\.js|filter\.js|app\.css|theme\.js|setup\.js)"/g, (_m, k, f) => `${k}="${f}?v=${v(f)}"`)));
+    if (html) files.set(page, Buffer.from(html.toString().replace(/(src|href)="(app\.js|filter\.js|app\.css|themes\.css|theme\.js|setup\.js|games\.js|games\.css)"/g, (_m, k, f) => `${k}="${f}?v=${v(f)}"`)));
   }
 }
 function sendStatic(res: http.ServerResponse, name: string) {
@@ -81,7 +75,6 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p.startsWith('/v1/') || p === '/v1' || p.startsWith('/v1beta/')) return await handleGateway(req, res, url);
     if (p.startsWith('/api/')) return await handleAPI(req, res, url);
-    if (p === '/cpa' || p.startsWith('/cpa/')) return await handleCpaPanel(req, res, url);
     if (p === '/browser' || p.startsWith('/browser/')) return await handleBrowser(req, res, url);
     if (p === '/auth/discord/login') return discordLogin(res);
     if (p === '/auth/discord/callback') return await discordCallback(req, res, url);
@@ -95,7 +88,7 @@ const server = http.createServer(async (req, res) => {
       if (setupDone()) throw new HttpError(404, 'not_found');
       return sendStatic(res, 'setup.html');
     }
-    if (p === '/app.js' || p === '/filter.js' || p === '/app.css' || p === '/fonts/manrope-brand.woff2' || p === '/setup.js' || p === '/theme.js' || (p.startsWith('/icons/') && files.has(p.slice(1))) || p === '/favicon.png' || p === '/apple-touch-icon.png' || p === '/logo.jpg') return sendStatic(res, p.slice(1));
+    if (p === '/app.js' || p === '/filter.js' || p === '/app.css' || p === '/themes.css' || p === '/games.js' || p === '/games.css' || p === '/fonts/manrope-brand.woff2' || p === '/fonts/maple-cn.ttf' || p === '/setup.js' || p === '/theme.js' || (p.startsWith('/icons/') && files.has(p.slice(1))) || p === '/favicon.png' || p === '/apple-touch-icon.png' || p === '/logo.jpg') return sendStatic(res, p.slice(1));
     if (p === '/' || p === '/index.html') return sendStatic(res, 'index.html');
     throw new HttpError(404, 'not_found');
   } catch (e) {
@@ -103,28 +96,25 @@ const server = http.createServer(async (req, res) => {
     sendError(res, e);
   }
 });
-// WebSocket upgrades: only the shared browser's stream (holder only); anything else is refused there.
 server.on('upgrade', handleBrowserUpgrade);
 server.headersTimeout = 60000;
-server.requestTimeout = 0; // long streams
+server.requestTimeout = 0;
 server.keepAliveTimeout = 65000;
 
 server.listen(config.port, config.host, () => {
   console.log(`[portal] listening on ${config.host}:${config.port}${config.devLogin ? ' (DEV_LOGIN enabled)' : ''}`);
   initSetup();
-  sfInit();
-  startUsageDrainer();
-  startRoleRecheck();
-  startQuotaRefresher();
-  startBot();
-  startBotChat();
-  startAutoDisable();
-  startAutoSleep();
-  startAIStudioRecheck();
+  if (process.env.DISABLE_DISCORD !== '1') {
+    startRoleRecheck();
+    startBot();
+    startBotChat();
+    startStockWatch();
+  }
+  startAIStudio2Recheck();
+  syncUserNodesToMihomo();
   startRestartLog();
-  startStockWatch();
   startBrowser();
-  cpa.refreshCreds().catch((e) => console.error('[cpa] initial credential list failed:', e.message));
+  startFun();
   setInterval(() => {
     try { pruneSessions(); pruneUsage(); } catch (e) { console.error('[prune]', e); }
   }, 3600000).unref();

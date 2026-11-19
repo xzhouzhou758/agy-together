@@ -1,4 +1,5 @@
 // Runtime configuration, read once from the environment.
+import process from 'node:process';
 
 const env = process.env;
 
@@ -53,10 +54,12 @@ export const config = {
   roleRecheckMinutes: int('ROLE_RECHECK_MINUTES', 30),
   adminDiscordIDs: new Set(list('ADMIN_DISCORD_IDS')),
 
-  // AI Studio relay (aistudio-pg-bridge relay-client-gateway). Empty key = the AI Studio pool is off.
-  aistudioRelayURL: str('AISTUDIO_RELAY_URL', 'http://127.0.0.1:18802').replace(/\/+$/, ''),
-  aistudioRelayKey: str('AISTUDIO_RELAY_KEY'),
-  aistudioRecheckMinutes: int('AISTUDIO_RECHECK_MINUTES', 60), // 0 = off
+  // AI Studio 2 (Mag1cFall/AIStudio2API). Empty key = the AI Studio 2 pool is off.
+  aistudio2URL: str('AISTUDIO2_URL', 'http://127.0.0.1:18803').replace(/\/+$/, ''),
+  aistudio2Key: str('AISTUDIO2_API_KEY'),
+  aistudio2AdminUser: str('AISTUDIO2_ADMIN_USER', 'admin'),
+  aistudio2AdminPass: str('AISTUDIO2_ADMIN_PASSWORD'),
+  aistudio2RecheckMinutes: int('AISTUDIO2_RECHECK_MINUTES', 60), // 0 = off
 
   // Shared remote browser (ops/browserd.py on the host). Empty token = the feature is hidden.
   browserdURL: str('BROWSERD_URL', 'http://127.0.0.1:8330').replace(/\/+$/, ''),
@@ -69,7 +72,8 @@ export const config = {
 
   devLogin: bool('DEV_LOGIN', false),
 
-  maxBodyBytes: int('MAX_BODY_MB', 50) * 1024 * 1024,
+  maxBodyBytes: int('MAX_BODY_MB', 20) * 1024 * 1024,
+  upstreamTimeoutMs: int('UPSTREAM_TIMEOUT_MS', 300_000),
   usageRetentionDays: int('USAGE_RETENTION_DAYS', 90),
 };
 
@@ -79,8 +83,6 @@ export function isLoopback(host: string): boolean {
 
 export function validateConfig(): string[] {
   const errs: string[] = [];
-  if (!config.cpaAPIKey) errs.push('CPA_API_KEY is required');
-  if (!config.cpaMgmtKey) errs.push('CPA_MANAGEMENT_KEY is required');
   if (config.devLogin && !isLoopback(config.host)) errs.push('DEV_LOGIN=1 refuses to start on a non-loopback HOST');
   return errs;
 }

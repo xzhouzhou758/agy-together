@@ -33,6 +33,25 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS exit_bindings (
+  kind TEXT NOT NULL,
+  acc_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, acc_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_exit_nodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  port INTEGER,
+  proxy_url TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS proxies (
   id INTEGER PRIMARY KEY,
   url TEXT NOT NULL UNIQUE,
@@ -57,7 +76,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  pool TEXT NOT NULL CHECK (pool IN ('private','shared','aistudio')),
+  pool TEXT NOT NULL CHECK (pool IN ('private','shared','aistudio2')),
   key_hash TEXT NOT NULL UNIQUE,
   tail TEXT NOT NULL,
   created_at INTEGER NOT NULL,
@@ -175,7 +194,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS kb_docs (id INTEGER PRIMARY KEY, title TEXT 
 // 大锅饭 daily request limit: NULL = rule default, -1 = unlimited, >= 0 = fixed per day.
 addCol('users', 'daily_limit', 'INTEGER');
 addCol('users', 'input_limit', 'INTEGER');
-addCol('users', 'auto_sleep', 'INTEGER'); // 1 = 闲置自动休眠 for this user's 小锅饭 accounts
+addCol('users', 'auto_sleep', 'INTEGER');
+addCol('users', 'ais2_slim', 'INTEGER NOT NULL DEFAULT 1');
+addCol('users', 'ais2_models', 'TEXT');
+addCol('user_exit_nodes', 'purity_json', 'TEXT');
+addCol('users', 'vip_quota', 'INTEGER NOT NULL DEFAULT 0'); // 1 = 闲置自动休眠 for this user's 小锅饭 accounts
 addCol('users', 'bot_quiet', 'INTEGER'); // 1 = the Discord bot never @-mentions this user (/免打扰) // 输入上限 in estimated tokens, NULL = off
 // Per-account self-use reserve chosen by the owner when sharing (NULL = the admin's default rule).
 addCol('accounts', 'reserve', 'INTEGER');
@@ -195,16 +218,17 @@ addCol('upstreams', 'mgmt_key_enc', 'TEXT'); // Optional CPA management key for 
 addCol('users', 'rotation_mode', 'TEXT');
 addCol('users', 'session_salt', 'TEXT');
 
-// AI Studio pool: api_keys.pool may also be 'aistudio'. Older databases have CHECK (pool IN ('private','shared'))
-// baked into the table, which SQLite cannot alter: rebuild the table once with the same columns and rows.
+// AI Studio 2 pool ('aistudio2' backed by AIStudio2API): expand api_keys.pool CHECK constraint if needed.
 {
   const t = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_keys'").get() as { sql: string } | undefined;
-  if (t && !t.sql.includes("'aistudio'")) {
-    const sql = t.sql.replace(/CHECK\s*\(\s*pool\s+IN\s*\(\s*'private'\s*,\s*'shared'\s*\)\s*\)/i, "CHECK (pool IN ('private','shared','aistudio'))");
-    if (sql === t.sql) throw new Error('api_keys: unexpected schema, cannot add the aistudio pool');
+  if (t && (!t.sql.includes("'aistudio2'") || t.sql.includes("'aistudio'"))) {
+    const sql = t.sql.replace(/CHECK\s*\(\s*pool\s+IN\s*\([^)]*\)\s*\)/i, "CHECK (pool IN ('private','shared','aistudio2'))");
+    if (sql === t.sql) throw new Error('api_keys: unexpected schema, cannot add the aistudio2 pool');
     const cols = (db.prepare("SELECT name FROM pragma_table_info('api_keys')").all() as { name: string }[]).map((c) => `"${c.name}"`).join(', ');
+    db.exec('PRAGMA secure_delete = ON');
     db.exec('BEGIN IMMEDIATE');
     try {
+      db.exec("DELETE FROM usage WHERE pool = 'aistudio'; DELETE FROM api_keys WHERE pool = 'aistudio'; DROP TABLE IF EXISTS aistudio_accounts;");
       db.exec(sql.replace(/^CREATE TABLE\s+("?)api_keys\1/i, 'CREATE TABLE api_keys_new'));
       db.exec(`INSERT INTO api_keys_new(${cols}) SELECT ${cols} FROM api_keys`);
       db.exec('DROP TABLE api_keys');
@@ -216,10 +240,9 @@ addCol('users', 'session_salt', 'TEXT');
     }
   }
 }
-// AI Studio accounts uploaded by users. The cookies live only in the relay; the portal keeps who owns which
-// relay account id and whether it still works. status: valid | dead. in_relay = 0 once removed from the relay.
-db.exec(`CREATE TABLE IF NOT EXISTS aistudio_accounts (
+db.exec(`CREATE TABLE IF NOT EXISTS aistudio2_accounts (
   account_id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
   owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   tier TEXT,
   label TEXT,
@@ -229,11 +252,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS aistudio_accounts (
   last_error TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  shared INTEGER NOT NULL DEFAULT 1
+  shared INTEGER NOT NULL DEFAULT 0
 )`);
-db.exec('CREATE INDEX IF NOT EXISTS aistudio_owner ON aistudio_accounts(owner_id, status)');
-// shared = 1: other eligible users may be served by this account; 0: only its owner. Existing rows stay shared.
-addCol('aistudio_accounts', 'shared', 'INTEGER NOT NULL DEFAULT 1');
+db.exec('CREATE INDEX IF NOT EXISTS aistudio2_owner ON aistudio2_accounts(owner_id, status)');
 
 export type Row = Record<string, any>;
 

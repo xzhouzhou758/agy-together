@@ -2,15 +2,19 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from './config.ts';
 import { one, all, run, now, type Row } from './db.ts';
+import { timingSafeEqual } from 'node:crypto';
 import { HttpError, sha256, token, parseCookies, cookie, sleep, checkPassword, hashPassword } from './util.ts';
+function safeEq(a: string, b: string): boolean {
+  const ba = Buffer.from(a), bb = Buffer.from(b);
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
 import { discord, discordReady, adminIds } from './site.ts';
-import * as cpa from './cpa.ts';
 
 const SID = 'agy_sid';
 const OSTATE = 'agy_oauth_state';
 const DAPI = 'https://discord.com/api/v10';
 
-export type User = { id: number; discord_id: string; name: string; handle: string; role: 'admin' | 'user'; active: number; default_pool: string; rotation_mode?: string | null; session_salt?: string | null; input_limit?: number | null; auto_sleep?: number | null };
+export type User = { id: number; discord_id: string; name: string; handle: string; role: 'admin' | 'user'; active: number; default_pool: string; rotation_mode?: string | null; session_salt?: string | null; input_limit?: number | null; auto_sleep?: number | null; ais2_slim?: number | null; ais2_models?: string | null };
 
 export function currentUser(req: IncomingMessage): User | null {
   const sid = parseCookies(req.headers.cookie)[SID];
@@ -112,7 +116,7 @@ export async function discordCallback(req: IncomingMessage, res: ServerResponse,
   const fail = (code: string) => redirect(res, '/?err=' + code, [clear]);
   const state = url.searchParams.get('state') || '';
   const want = parseCookies(req.headers.cookie)[OSTATE];
-  if (!state || !want || state !== want) return fail('state');
+  if (!state || !want || !safeEq(state, want)) return fail('state');
   const code = url.searchParams.get('code');
   if (!code) return fail(url.searchParams.get('error') === 'access_denied' ? 'denied' : 'code');
   if (!discordReady()) return fail('discord_not_configured');
@@ -143,18 +147,35 @@ const loginFails = new Map<string, { n: number; until: number }>();
 const DUMMY_HASH = hashPassword(token(12));
 export function passwordLogin(req: IncomingMessage, res: ServerResponse, body: any) {
   const ip = String((config.trustProxy && req.headers['x-real-ip']) || req.socket.remoteAddress || '');
-  const f = loginFails.get(ip);
-  if (f && f.n >= 8 && f.until > now()) throw new HttpError(429, 'too_many_attempts');
   const username = String(body?.username || '').trim().toLowerCase();
   const password = String(body?.password || '');
+  if (password.length > 128) throw new HttpError(400, 'bad_credentials');
+  const tNow = now();
+  if (loginFails.size > 500) {
+    for (const [k, v] of loginFails) if (v.until <= tNow) loginFails.delete(k);
+    while (loginFails.size > 2000) {
+      const first = loginFails.keys().next().value;
+      if (first === undefined) break;
+      loginFails.delete(first);
+    }
+  }
+  const ipKey = `ip:${ip}`;
+  const fIp = loginFails.get(ipKey);
+  if (fIp && fIp.n >= 25 && fIp.until > tNow) throw new HttpError(429, 'too_many_attempts');
+  const failKey = `${ip}:${username}`;
+  const f = loginFails.get(failKey);
+  if (f && f.n >= 8 && f.until > tNow) throw new HttpError(429, 'too_many_attempts');
   const u = username ? one('SELECT * FROM users WHERE username = ?', username) : undefined;
   const ok = checkPassword(password, u?.pass_hash || DUMMY_HASH) && !!u;
   if (!ok) {
-    const cur = f && f.until > now() ? f : { n: 0, until: 0 };
-    loginFails.set(ip, { n: cur.n + 1, until: now() + 15 * 60000 });
+    const cur = f && f.until > tNow ? f : { n: 0, until: 0 };
+    loginFails.set(failKey, { n: cur.n + 1, until: tNow + 15 * 60000 });
+    const curIp = fIp && fIp.until > tNow ? fIp : { n: 0, until: 0 };
+    loginFails.set(ipKey, { n: curIp.n + 1, until: tNow + 15 * 60000 });
     throw new HttpError(401, 'bad_credentials');
   }
-  loginFails.delete(ip);
+  loginFails.delete(failKey);
+  loginFails.delete(ipKey);
   if (!u!.active) throw new HttpError(403, 'disabled');
   run('UPDATE users SET last_login = ? WHERE id = ?', now(), u!.id);
   startSession(res, u!.id);
@@ -178,28 +199,8 @@ export async function setUserActive(userId: number, active: boolean, reason: 'ad
   if (!active) {
     run('UPDATE users SET active = 0, disabled_reason = ? WHERE id = ?', reason, userId);
     run('DELETE FROM sessions WHERE user_id = ?', userId);
-    const c = await cpa.creds(0).catch(() => null);
-    for (const a of all('SELECT auth_id FROM accounts WHERE owner_id = ?', userId)) {
-      const cred = c?.byId.get(a.auth_id);
-      if (cred && !cred.disabled) {
-        try {
-          await cpa.setDisabled(a.auth_id, true);
-          run('UPDATE accounts SET suspended = 1 WHERE auth_id = ?', a.auth_id);
-        } catch (e) {
-          console.error('[suspend] failed to disable', a.auth_id, (e as Error).message);
-        }
-      }
-    }
   } else {
     run('UPDATE users SET active = 1, disabled_reason = NULL WHERE id = ?', userId);
-    for (const a of all('SELECT auth_id FROM accounts WHERE owner_id = ? AND suspended = 1', userId)) {
-      try {
-        await cpa.setDisabled(a.auth_id, false);
-        run('UPDATE accounts SET suspended = 0 WHERE auth_id = ?', a.auth_id);
-      } catch (e) {
-        console.error('[unsuspend] failed to enable', a.auth_id, (e as Error).message);
-      }
-    }
   }
 }
 

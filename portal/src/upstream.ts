@@ -223,11 +223,11 @@ export function upstreamRequest(u: Upstream, method: string, pathWithQuery: stri
 }
 
 // ---------- token usage from a passing response (OpenAI / Anthropic / Gemini, stream or not) ----------
-export type Tok = { in: number; out: number; think: number; cache: number; cacheWrite: number };
+export type Tok = { in: number; out: number; think: number; cache: number; cacheWrite: number; total?: number };
 export function usageSniffer() {
-  const t: Tok = { in: 0, out: 0, think: 0, cache: 0, cacheWrite: 0 };
+  const t: Tok = { in: 0, out: 0, think: 0, cache: 0, cacheWrite: 0, total: 0 };
   let rest = '', whole = '', wholeOK = true;
-  const max = (k: keyof Tok, v: unknown) => { const n = Number(v); if (Number.isFinite(n) && n > t[k]) t[k] = n; };
+  const max = (k: keyof Tok, v: unknown) => { const n = Number(v); if (Number.isFinite(n) && n > (t[k] || 0)) t[k] = n; };
   const take = (j: any) => {
     if (!j || typeof j !== 'object') return;
     if (Array.isArray(j)) return j.forEach(take);
@@ -236,14 +236,15 @@ export function usageSniffer() {
       const cr = Number(a.cache_read_input_tokens || 0), cw = Number(a.cache_creation_input_tokens || 0);
       if (a.input_tokens != null) max('in', Number(a.input_tokens) + cr + cw);
       max('cache', cr); max('cacheWrite', cw); max('out', a.output_tokens);
-    } else if (j.usage) { // OpenAI chat / responses
-      const u = j.usage;
+    } else if (j.usage || (j.type === 'response.completed' && j.response?.usage)) { // OpenAI chat / responses
+      const u = j.usage || j.response.usage;
       max('in', u.prompt_tokens ?? u.input_tokens); max('out', u.completion_tokens ?? u.output_tokens);
       max('cache', u.prompt_tokens_details?.cached_tokens ?? u.input_tokens_details?.cached_tokens);
       max('think', u.completion_tokens_details?.reasoning_tokens ?? u.output_tokens_details?.reasoning_tokens);
+      max('total', u.total_tokens);
     }
     const g = j.usageMetadata || j.response?.usageMetadata;
-    if (g) { max('in', g.promptTokenCount); max('out', g.candidatesTokenCount); max('think', g.thoughtsTokenCount); max('cache', g.cachedContentTokenCount); }
+    if (g) { max('in', g.promptTokenCount); max('out', g.candidatesTokenCount); max('think', g.thoughtsTokenCount); max('cache', g.cachedContentTokenCount); max('total', g.totalTokenCount); }
   };
   const line = (l: string) => {
     const m = /^data:\s?(.*)$/.exec(l.trim());
@@ -253,7 +254,10 @@ export function usageSniffer() {
   return {
     feed(c: Buffer) {
       const s = c.toString('utf8');
-      if (wholeOK) { whole += s; if (whole.length > 4 << 20) { wholeOK = false; whole = ''; } }
+      if (wholeOK) {
+        if (/^\s*(data:|event:)/m.test(s)) { wholeOK = false; whole = ''; }
+        else { whole += s; if (whole.length > 4 << 20) { wholeOK = false; whole = ''; } }
+      }
       const parts = (rest + s).split('\n');
       rest = parts.pop() || '';
       if (rest.length > 1 << 20) rest = '';

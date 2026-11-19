@@ -26,6 +26,7 @@ export function publicURL(): string {
 }
 
 export function discord(): Discord {
+  if (process.env.DISABLE_DISCORD === '1') return { clientId: '', clientSecret: '', redirectOverride: '', redirectURI: '', guildId: '', roleIds: [], botToken: '' };
   const override = s('discord_redirect_uri', config.discordRedirectURI);
   const base = publicURL();
   return {
@@ -45,6 +46,7 @@ export function discordReady(): boolean {
 }
 
 export function bot(): { channelId: string; publicKey: string; dailyHour: number } {
+  if (process.env.DISABLE_DISCORD === '1') return { channelId: '', publicKey: '', dailyHour: -1 };
   const h = Number(s('bot_daily_hour', '23'));
   return { channelId: s('bot_channel_id'), publicKey: s('discord_public_key'), dailyHour: Number.isInteger(h) && h >= -1 && h <= 23 ? h : 23 };
 }

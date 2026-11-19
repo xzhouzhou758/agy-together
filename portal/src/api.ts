@@ -1,34 +1,27 @@
+import { basename, join } from 'node:path';
+// JSON API for the web UI (AI Studio slimmed edition). Every handler does its own server-side authorization.
 import { seal as sealBotKey } from './util.ts';
 import { botAPISettings, normalizeBotURL } from './botapi.ts';
-// JSON API for the web UI. Every handler does its own server-side authorization.
 import { chatStatus, chatModel, chatSource, chatPrompt, DEFAULT_PROMPT } from './botchat.ts';
 import { kbList, kbAdd, kbDelete, kbFetch } from './kb.ts';
-import { existsSync } from 'node:fs';
-import { poolResources } from './poolres.ts';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from './config.ts';
-import { one, all, run, now, getRules, setRules, getSetting, setSetting, type Row } from './db.ts';
-import { HttpError, sendJSON, readJSON, readBody, sha256, token, seal, unseal, str, clampInt, hashPassword, maskSecrets } from './util.ts';
+import { one, all, run, now, getSetting, setSetting, type Row } from './db.ts';
+import { HttpError, sendJSON, readJSON, sha256, token, seal, unseal, str, clampInt, hashPassword } from './util.ts';
 import { requireUser, requireAdmin, currentUser, devLogin, passwordLogin, logout, setUserActive, type User } from './auth.ts';
-import * as cpa from './cpa.ts';
-import { refreshQuota, storedQuota, lastQuotaAt, normalizeTier, famView, famState } from './quota.ts';
-import { breakerState, resetBreaker, accountInflight, userRotation } from './gateway.ts';
+import { userRotation, fetchAIS2ModelIds } from './gateway.ts';
 import { MODES, newSalt } from './routing.ts';
 import { reasonText } from './reason.ts';
-import { errText, activeCooldowns, type CooldownView } from './accerr.ts';
-import { actionOf, clearAction } from './accaction.ts';
-import { readZip, writeZip } from './zip.ts';
-import { testModel } from './modeltest.ts';
-import { dailyFor, sharedModels, setSharedModels, isPaid } from './limits.ts';
-import { isUp, upName, upstreamRows, upstreamById, saveUpstream, clearUpCache, normBase, modelsOf, modelInfo, openModels, enabledUpstreams, upCreds, upPluginHealthy } from './upstream.ts';
 import * as site from './site.ts';
-import { accountProblem, registerCommands, botStatus, connectInteractions, testMessage, postAnnouncement } from './bot.ts';
-import { wakeFor } from './autosleep.ts';
+import { registerCommands, botStatus, connectInteractions, testMessage, postAnnouncement } from './bot.ts';
 import { stockAdmin, setWatched } from './stock.ts';
-import * as aistudio from './aistudio.ts';
+import * as aistudio2 from './aistudio2.ts';
 import * as browser from './browser.ts';
-import { sfView, sfUpdate, sfTest } from './sf.ts';
-
+import * as cpa from './cpa.ts';
+import { writeZip } from './zip.ts';
+import * as exit from './exit.ts';
+import * as fun from './fun.ts';
 
 type Handler = (req: IncomingMessage, res: ServerResponse, p: Record<string, string>, url: URL) => Promise<unknown> | unknown;
 const routes: { method: string; re: RegExp; keys: string[]; h: Handler }[] = [];
@@ -40,8 +33,12 @@ function route(method: string, path: string, h: Handler) {
 
 export async function handleAPI(req: IncomingMessage, res: ServerResponse, url: URL) {
   const method = req.method || 'GET';
-  // CSRF: state-changing calls must carry a custom header (forces a CORS preflight cross-site).
-  if (method !== 'GET' && method !== 'HEAD' && req.headers['x-portal-csrf'] !== '1') throw new HttpError(403, 'csrf');
+  if (method !== 'GET' && method !== 'HEAD') {
+    if (req.headers['x-portal-csrf'] !== '1') throw new HttpError(403, 'csrf');
+    if (req.headers.origin && req.headers.host) {
+      try { if (new URL(String(req.headers.origin)).host !== req.headers.host) throw new HttpError(403, 'csrf_origin'); } catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(403, 'csrf_origin'); }
+    }
+  }
   for (const r of routes) {
     if (r.method !== method) continue;
     const m = r.re.exec(url.pathname);
@@ -55,93 +52,18 @@ export async function handleAPI(req: IncomingMessage, res: ServerResponse, url: 
   throw new HttpError(404, 'not_found');
 }
 
-// ---------- helpers ----------
-function dayStart(): number {
+function dayStart() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
 
-function maskProxy(u: string): string {
-  try {
-    const x = new URL(u);
-    return `${x.protocol}//${x.username || x.password ? '••••@' : ''}${x.hostname}${x.port ? ':' + x.port : ''}`;
-  } catch {
-    return '••••';
-  }
-}
-
-type AccState = { state: 'active' | 'cooldown' | 'error' | 'off'; reason?: string; retryAt?: string | null; detail?: string; cooldowns: CooldownView[] };
-function accState(c: cpa.Cred | undefined): AccState {
-  if (!c) return { state: 'error', reason: 'missing', cooldowns: [] };
-  if (c.disabled) return { state: 'off', cooldowns: [] };
-  const cds = activeCooldowns(c.cooldowns);
-  const authCd = cds.find((x) => x.scope !== 'model');
-  const retry = c.nextRetryAfter && Date.parse(c.nextRetryAfter) > Date.now() ? c.nextRetryAfter : authCd?.retryAt || null;
-  const detail = (c.statusMessage ? errText(c.statusMessage, authCd?.status) : authCd?.text) || undefined;
-  if (c.status === 'error' && !retry) return { state: 'error', reason: c.statusMessage || 'error', detail: detail || '异常', cooldowns: cds };
-  if (retry || c.unavailable) return { state: 'cooldown', reason: c.statusMessage || '', retryAt: retry, detail, cooldowns: cds };
-  return { state: 'active', cooldowns: cds };
-}
-
-function ensureRow(authId: string, email: string): Row {
-  run('INSERT INTO accounts(auth_id, email, created_at) VALUES(?,?,?) ON CONFLICT(auth_id) DO NOTHING', authId, email, now());
-  return one('SELECT * FROM accounts WHERE auth_id = ?', authId)!;
-}
-
-async function ownAccount(user: User, id: string): Promise<{ row: Row; cred: cpa.Cred }> {
-  const row = one('SELECT * FROM accounts WHERE auth_id = ? AND owner_id = ?', id, user.id);
-  if (!row) throw new HttpError(404, 'not_found');
-  const cred = (await cpa.creds(5000)).byId.get(id);
-  if (!cred) throw new HttpError(404, 'not_found');
-  return { row, cred };
-}
-
-function accountView(row: Row, cred: cpa.Cred | undefined) {
-  const q = storedQuota(row);
-  const proxy = row.proxy_id ? one('SELECT url FROM proxies WHERE id = ?', row.proxy_id)?.url : null;
-  return {
-    id: row.auth_id,
-    name: cred?.note || '',
-    email: cred?.email || row.email || '',
-    tier: normalizeTier(q?.tier), // enterprise / standard read as FREE, older snapshots included
-    active: !!cred && !cred.disabled,
-    createdAt: Number(row.created_at) || 0,
-    asleep: !!row.sleep_at,
-    shared: !!row.shared,
-    reserve: row.reserve ?? null, // NULL = the admin's default (/api/rules reserve)
-    proxy: proxy ? maskProxy(proxy) : null,
-    ...accState(cred),
-    quota: q ? { credits: q.credits, groups: q.groups, windows: q.windows || null, argon: q.argon ?? null,
-      fams: famView(q), argonState: famState(q, 'argon'), carbonState: famState(q, 'carbon'), claude55: !!q.claude55 } : null,
-    quotaAt: row.quota_at || null,
-    quotaErr: row.quota_err || null,
-    forbidden: forbiddenOf(row), // Google's 403 words (quota read or auto-disable), shown as the red 403 bar
-    problem: accountProblem(row, cred),
-    autoOff: row.auto_disabled_at ? { at: Number(row.auto_disabled_at), reason: String(row.auto_disabled_reason || '') } : null, // autodisable.ts: when and Google's own words
-    action: actionOf(row), // Google's verify / appeal link from the last 403 (cleared once the account works)
-  };
-}
-
-/** The upstream 403 text behind an account, or null: the last quota read failed with 403, or autodisable switched it off on a 403. */
-function forbiddenOf(row: Row): string | null {
-  const qe = String(row.quota_err || '');
-  if (/\b403\b/.test(qe)) return qe;
-  const ar = String(row.auto_disabled_reason || '');
-  if (row.auto_disabled_at && /^403\b/.test(ar)) return ar;
-  return null;
-}
-
-/** Anonymous label for an account in another user's shared-pool records. */
 function anonLabel(authId: string): string {
-  if (isUp(authId)) return upName(authId);
-  if (aistudio.isAIS(authId)) return aistudio.aisAnon(authId);
-  const r = one('SELECT rowid AS n FROM accounts WHERE auth_id = ?', authId);
-  return '#' + String(r?.n || 0).padStart(2, '0');
+  if (aistudio2.isAIS2(authId)) return aistudio2.ais2Anon(authId);
+  return '#00';
 }
 
 // ---------- public ----------
-// a site logo is optional: drop public/logo.jpg (plus favicon.png / apple-touch-icon.png) in to replace the letter mark
 const HAS_LOGO = existsSync(new URL('../public/logo.jpg', import.meta.url));
 route('GET', '/api/config', (req) => ({
   devLogin: config.devLogin,
@@ -149,7 +71,7 @@ route('GET', '/api/config', (req) => ({
   setup: !site.setupDone(),
   logo: HAS_LOGO,
   signedIn: !!currentUser(req),
-  aistudio: aistudio.aistudioOn(),
+  aistudio2: aistudio2.aistudio2On(),
   browserEnabled: browser.browserOn(),
 }));
 
@@ -186,12 +108,14 @@ route('POST', '/api/setup', async (req) => {
 
 // ---------- me ----------
 route('GET', '/api/me', (req) => {
-  const u = requireUser(req);
+  const u = requireUser(req) as User & { username?: string | null };
   return {
-    id: u.id, name: u.name, handle: u.handle, discordId: u.discord_id, role: u.role, realRole: currentUser(req)?.role || u.role, defaultPool: u.default_pool,
+    id: u.id, name: u.name, handle: u.handle, discordId: u.discord_id, username: u.username || null, role: u.role, realRole: currentUser(req)?.role || u.role, defaultPool: 'aistudio2',
     rotation: userRotation(u.id).mode,
     inputLimit: u.input_limit ?? null,
-    autoSleep: !!u.auto_sleep,
+    ais2Slim: (u.ais2_slim ?? 1) !== 0,
+    oldAccounts: Number(one('SELECT COUNT(*) AS n FROM accounts WHERE owner_id = ?', u.id)?.n || 0),
+    ais2Models: (() => { try { const a = u.ais2_models ? JSON.parse(String(u.ais2_models)) : null; return Array.isArray(a) && a.length ? a : null; } catch { return null; } })(),
     baseURL: (site.publicURL() || '') + '/v1',
   };
 });
@@ -199,19 +123,24 @@ route('GET', '/api/me', (req) => {
 route('PATCH', '/api/me', async (req) => {
   const u = requireUser(req);
   const b = await readJSON(req);
-  if (b.defaultPool === undefined && b.rotation === undefined && b.inputLimit === undefined && b.autoSleep === undefined) throw new HttpError(400, 'invalid_body');
+  if (b.rotation === undefined && b.inputLimit === undefined && b.ais2Slim === undefined && b.ais2Models === undefined) throw new HttpError(400, 'invalid_body');
   if (b.inputLimit !== undefined) {
     if (b.inputLimit !== null && !(Number.isInteger(b.inputLimit) && b.inputLimit >= 1000 && b.inputLimit <= 10_000_000)) throw new HttpError(400, 'invalid_input_limit');
     run('UPDATE users SET input_limit = ? WHERE id = ?', b.inputLimit, u.id);
   }
-  if (b.autoSleep !== undefined) {
-    if (typeof b.autoSleep !== 'boolean') throw new HttpError(400, 'invalid');
-    run('UPDATE users SET auto_sleep = ? WHERE id = ?', b.autoSleep ? 1 : 0, u.id);
-    if (!b.autoSleep) await wakeFor(u.id);
+  if (b.ais2Slim !== undefined) {
+    if (typeof b.ais2Slim !== 'boolean') throw new HttpError(400, 'invalid');
+    run('UPDATE users SET ais2_slim = ? WHERE id = ?', b.ais2Slim ? 1 : 0, u.id);
   }
-  if (b.defaultPool !== undefined) {
-    if (b.defaultPool !== 'private' && b.defaultPool !== 'shared') throw new HttpError(400, 'invalid_pool');
-    run('UPDATE users SET default_pool = ? WHERE id = ?', b.defaultPool, u.id);
+  if (b.ais2Models !== undefined) {
+    if (b.ais2Models === null) {
+      run('UPDATE users SET ais2_models = NULL WHERE id = ?', u.id);
+    } else if (Array.isArray(b.ais2Models)) {
+      const clean = [...new Set(b.ais2Models.map((x: unknown) => String(x || '').trim()).filter((x: string) => x.length > 0 && x.length <= 120))].slice(0, 200);
+      run('UPDATE users SET ais2_models = ? WHERE id = ?', clean.length ? JSON.stringify(clean) : null, u.id);
+    } else {
+      throw new HttpError(400, 'invalid_models');
+    }
   }
   if (b.rotation !== undefined) {
     if (!MODES.includes(b.rotation)) throw new HttpError(400, 'invalid_rotation');
@@ -219,6 +148,13 @@ route('PATCH', '/api/me', async (req) => {
   }
   return { ok: true };
 });
+
+route('POST', '/api/me/sessions/reset', (req) => {
+  const u = requireUser(req);
+  run('UPDATE users SET session_salt = ? WHERE id = ?', newSalt(), u.id);
+  return { ok: true };
+});
+
 // ---------- announcements ----------
 function annView(r: Row) {
   return { id: r.id, title: r.title, body: r.body, level: r.level, pinned: !!r.pinned, created: r.created_at, updated: r.updated_at };
@@ -233,11 +169,11 @@ route('POST', '/api/announcements/seen', (req) => {
   const u = requireUser(req);
   const top = Number(one('SELECT MAX(id) AS m FROM announcements')?.m || 0);
   run('UPDATE users SET ann_seen = ? WHERE id = ?', top, u.id);
-  return { ok: true };
+  return { seen: top };
 });
 function annBody(b: any) {
-  const title = str(b.title, 80), body = str(b.body, 4000);
-  if (!title) throw new HttpError(400, 'invalid_title');
+  const title = str(b.title, 100), body = str(b.body, 5000);
+  if (!title) throw new HttpError(400, 'invalid_title', '请填写公告标题');
   if (b.level !== undefined && b.level !== 'info' && b.level !== 'important') throw new HttpError(400, 'invalid');
   return { title, body, level: b.level === 'important' ? 'important' : 'info', pinned: b.pinned ? 1 : 0 };
 }
@@ -245,17 +181,21 @@ route('POST', '/api/admin/announcements', async (req) => {
   const u = requireAdmin(req);
   const b = await readJSON(req);
   const a = annBody(b);
-  const r = run('INSERT INTO announcements(title, body, level, pinned, author_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?)', a.title, a.body, a.level, a.pinned, u.id, now(), now());
+  const r = run('INSERT INTO announcements(title, body, level, pinned, author_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?)',
+    a.title, a.body, a.level, a.pinned, u.id, now(), now());
   let discord: boolean | null = null;
   if (b.discord === true) discord = await postAnnouncement(a.title, a.body, site.publicURL() ? site.publicURL() + '/' : '');
   return { ...annView(one('SELECT * FROM announcements WHERE id = ?', r.lastInsertRowid)!), discord };
 });
 route('PATCH', '/api/admin/announcements/:id', async (req, _res, p) => {
   requireAdmin(req);
-  if (!one('SELECT 1 FROM announcements WHERE id = ?', Number(p.id))) throw new HttpError(404, 'not_found');
-  const a = annBody(await readJSON(req));
-  run('UPDATE announcements SET title = ?, body = ?, level = ?, pinned = ?, updated_at = ? WHERE id = ?', a.title, a.body, a.level, a.pinned, now(), Number(p.id));
-  return annView(one('SELECT * FROM announcements WHERE id = ?', Number(p.id))!);
+  const id = Number(p.id);
+  const cur = one('SELECT * FROM announcements WHERE id = ?', id);
+  if (!cur) throw new HttpError(404, 'not_found');
+  const b = await readJSON(req);
+  const a = annBody({ title: cur.title, body: cur.body, level: cur.level, pinned: !!cur.pinned, ...b });
+  run('UPDATE announcements SET title = ?, body = ?, level = ?, pinned = ?, updated_at = ? WHERE id = ?', a.title, a.body, a.level, a.pinned, now(), id);
+  return annView(one('SELECT * FROM announcements WHERE id = ?', id)!);
 });
 route('DELETE', '/api/admin/announcements/:id', (req, _res, p) => {
   requireAdmin(req);
@@ -263,455 +203,201 @@ route('DELETE', '/api/admin/announcements/:id', (req, _res, p) => {
   return { ok: true };
 });
 
-// 「清除会话绑定」: a new per-user salt, so every session of this user binds afresh.
-route('POST', '/api/me/sessions/reset', (req) => {
-  const u = requireUser(req);
-  run('UPDATE users SET session_salt = ? WHERE id = ?', newSalt(), u.id);
-  return { ok: true };
-});
+// ---------- overview (AI Studio only) ----------
+
+const AIS2_MODELS_ORDER = [
+  'gemini-4-argon',
+  'gemini-4-carbon',
+  'gemini-4-hydrogen',
+  'gemini-3.1-pro-preview',
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3-flash-preview',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+] as const;
+
+type TierRule = { req: number | null; tok: number | null; unknown?: boolean } | null;
+const AIS2_TIER_QUOTA: Record<'FREE' | 'PRO' | 'ULTRA', Record<string, TierRule>> = {
+  FREE: {
+    'gemini-4-argon': null,
+    'gemini-4-carbon': null,
+    'gemini-4-hydrogen': { req: 50, tok: 10_000_000 },
+    'gemini-3.1-pro-preview': null,
+    'gemini-3.8-flash': { req: 50, tok: 5_000_000 },
+    'gemini-3.6-flash': { req: 50, tok: 5_000_000 },
+    'gemini-3-flash-preview': { req: 50, tok: 5_000_000 },
+    'gemini-3.5-flash-lite': { req: 50, tok: 5_000_000 },
+    'gemini-3.1-flash-lite': { req: 50, tok: 5_000_000 },
+  },
+  PRO: {
+    'gemini-4-argon': { req: 50, tok: 15_000_000 },
+    'gemini-4-carbon': null,
+    'gemini-4-hydrogen': { req: 100, tok: 25_000_000 },
+    'gemini-3.1-pro-preview': { req: 50, tok: 13_000_000 },
+    'gemini-3.8-flash': { req: 150, tok: 25_000_000 },
+    'gemini-3.6-flash': { req: 150, tok: 25_000_000 },
+    'gemini-3-flash-preview': { req: 150, tok: 25_000_000 },
+    'gemini-3.5-flash-lite': { req: 150, tok: 25_000_000 },
+    'gemini-3.1-flash-lite': { req: 150, tok: 25_000_000 },
+  },
+  ULTRA: {
+    'gemini-4-argon': { req: 200, tok: null },
+    'gemini-4-carbon': { req: 200, tok: null },
+    'gemini-4-hydrogen': { req: null, tok: null, unknown: true },
+    'gemini-3.1-pro-preview': { req: 100, tok: null },
+    'gemini-3.8-flash': { req: 200, tok: null },
+    'gemini-3.6-flash': { req: 200, tok: null },
+    'gemini-3-flash-preview': { req: 200, tok: null },
+    'gemini-3.5-flash-lite': { req: 200, tok: null },
+    'gemini-3.1-flash-lite': { req: 200, tok: null },
+  },
+};
+
+function quotaPeriodStart(t = now()): number {
+  const bj = t + 8 * 3600e3;
+  const dayStartBj = bj - (bj % 86400e3);
+  let resetBj = dayStartBj + 16 * 3600e3;
+  if (bj < resetBj) resetBj -= 86400e3;
+  return resetBj - 8 * 3600e3;
+}
+
+function normQuotaModel(raw: string): string {
+  let m = String(raw || '').trim().toLowerCase().replace(/^models\//, '');
+  m = m.replace(/\([^)]*\)$/, '').replace(/-(?:minimal|low|medium|high|xhigh|extra[_-]high|max)(?:-search)?$/, '').replace(/-search$/, '').trim();
+  return m;
+}
 
 route('GET', '/api/overview', async (req) => {
   const u = requireUser(req);
-  const c = await cpa.creds(10000);
-  const rows = all('SELECT * FROM accounts WHERE owner_id = ?', u.id).filter((r) => c.byId.has(r.auth_id));
+  const admin = u.role === 'admin';
   const since = dayStart();
-  const mine = one(`SELECT SUM(pool='private') AS p, SUM(pool='shared') AS s FROM usage WHERE user_id = ? AND ts >= ?`, u.id, since);
-  const served = all(`SELECT auth_id, COUNT(*) AS n FROM usage WHERE owner_id = ? AND pool = 'shared' AND (user_id IS NULL OR user_id != ?) AND ts >= ? GROUP BY auth_id`, u.id, u.id, since);
-  const servedMap = Object.fromEntries(served.map((r) => [r.auth_id, r.n]));
+  const mineAccs = aistudio2.listFor(u.id);
+  const validMine = mineAccs.filter((a: any) => a.status === 'valid').length;
+  const keysCount = Number(one('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ? AND revoked_at IS NULL', u.id)?.n || 0);
+  const exitData = await exit.getUserExits(u.id).catch(() => null);
+  const exitMap = new Map<string, string>((exitData?.accounts || []).map((x: any) => [x.id, x.nodeId || '']));
+  const nodeName = new Map<string, string>();
+  for (const n of exitData?.publicNodes || []) nodeName.set(n.id, n.name);
+  for (const n of exitData?.userNodes || []) nodeName.set(n.nodeId, n.name);
+  const boundCount = mineAccs.filter((a: any) => !!exitMap.get(a.id)).length;
+
+  const myToday = one(
+    `SELECT COUNT(*) AS n, SUM(result = 'ok') AS ok, SUM(COALESCE(in_tok,0)) AS in_t, SUM(COALESCE(out_tok,0) + COALESCE(reasoning_tok,0)) AS out_t,
+     SUM(COALESCE(total_tok,0)) AS tok, AVG(CASE WHEN result='ok' THEN latency_ms END) AS avg_lat, AVG(CASE WHEN result='ok' THEN COALESCE(cpa_ttft_ms, ttfb_ms) END) AS avg_ttft
+     FROM usage WHERE user_id = ? AND pool = 'aistudio2' AND ts >= ?`,
+    u.id, since,
+  );
+
+  const tzMs = 8 * 3600e3;
+  const hours = Array.from({ length: 24 }, () => ({ ok: 0, err: 0, tok: 0 }));
+  for (const r of all(
+    `SELECT CAST((ts + ?) / 3600000 AS INTEGER) % 24 AS h, SUM(result='ok') AS ok, SUM(result!='ok') AS err, SUM(COALESCE(total_tok,0)) AS tok
+     FROM usage WHERE user_id = ? AND pool = 'aistudio2' AND ts >= ? GROUP BY h`,
+    tzMs, u.id, since,
+  )) {
+    const h = Number(r.h);
+    if (h >= 0 && h < 24) hours[h] = { ok: Number(r.ok || 0), err: Number(r.err || 0), tok: Number(r.tok || 0) };
+  }
+
+  const models = all(
+    `SELECT COALESCE(NULLIF(requested_model,''), NULLIF(model,''), '—') AS m, COUNT(*) AS req, SUM(result='ok') AS ok, SUM(COALESCE(total_tok,0)) AS tok
+     FROM usage WHERE user_id = ? AND pool = 'aistudio2' AND ts >= ? GROUP BY m ORDER BY req DESC, tok DESC LIMIT 6`,
+    u.id, since,
+  ).map((r) => ({ name: String(r.m), req: Number(r.req), ok: Number(r.ok || 0), tok: Number(r.tok || 0) }));
+
+  const recent = all(
+    `SELECT ts, auth_id, owner_id, COALESCE(requested_model, model) AS model, status, result, reason, latency_ms, COALESCE(cpa_ttft_ms, ttfb_ms) AS ttft
+     FROM usage WHERE pool = 'aistudio2' ${admin ? '' : 'AND user_id = ' + Number(u.id)} ORDER BY ts DESC, id DESC LIMIT 30`,
+  ).reverse().map((r) => ({
+    ts: Number(r.ts),
+    account: r.auth_id ? (admin || r.owner_id === u.id ? aistudio2.ais2Email(r.auth_id) || r.auth_id : anonLabel(r.auth_id)) : '',
+    model: String(r.model || ''),
+    status: Number(r.status),
+    failed: r.result !== 'ok',
+    error: r.result !== 'ok' ? String(r.reason || r.result || '') : '',
+    ttft: r.ttft == null ? null : Number(r.ttft),
+    latency: Number(r.latency_ms) || null,
+  }));
+
   return {
-    accounts: rows.length,
-    enabled: rows.filter((r) => !c.byId.get(r.auth_id)!.disabled).length,
-    shared: rows.filter((r) => r.shared).map((r) => ({ id: r.auth_id, name: c.byId.get(r.auth_id)!.note || '', email: c.byId.get(r.auth_id)!.email, today: servedMap[r.auth_id] || 0 })),
-    today: { private: Number(mine?.p || 0), shared: Number(mine?.s || 0) },
-    servedToday: served.reduce((n, r) => n + Number(r.n), 0),
-    pool: await poolSummary(u),
-    shops: getSetting('shops_on') === '0' ? [] : shopLinks(),
-    daily: await dailyFor(u.id),
-    dash: dashboard(u, c),
+    accounts: mineAccs.length,
+    valid: validMine,
+    keys: keysCount,
+    bound: boundCount,
+    today: {
+      req: Number(myToday?.n || 0),
+      ok: Number(myToday?.ok || 0),
+      inTok: Number(myToday?.in_t || 0),
+      outTok: Number(myToday?.out_t || 0),
+      tok: Number(myToday?.tok || 0),
+      avgLat: Math.round(Number(myToday?.avg_lat || 0)),
+      avgTtft: Math.round(Number(myToday?.avg_ttft || 0)),
+    },
+    hours,
+    models,
+    accountList: mineAccs.map((a: any) => ({
+      id: a.id,
+      label: a.label || a.id,
+      tier: a.tier || null,
+      status: a.status,
+      exitName: nodeName.get(exitMap.get(a.id) || '') || '本机直连',
+    })),
+    recent,
+    quota: (() => {
+      const qSince = quotaPeriodStart();
+      const activeAccs = mineAccs.filter((a: any) => a.status === 'valid');
+      const poolAccs = activeAccs;
+      const tiers = poolAccs.map((a: any) => {
+        const t = String(a.tier || 'FREE').toUpperCase();
+        return (t.includes('ULTRA') ? 'ULTRA' : t.includes('PRO') ? 'PRO' : 'FREE') as 'FREE' | 'PRO' | 'ULTRA';
+      });
+      const usedMap = new Map<string, { req: number; tok: number }>();
+      const activeIds = activeAccs.map((a: any) => String(a.id || '')).filter(Boolean);
+      const usageRows = activeIds.length ? all(
+        `SELECT COALESCE(NULLIF(upstream_model,''), NULLIF(model,''), NULLIF(requested_model,''), '') AS m, COUNT(*) AS n, SUM(COALESCE(total_tok,0)) AS tok
+         FROM usage WHERE user_id = ? AND pool = 'aistudio2' AND result = 'ok' AND ts >= ? AND auth_id IN (${activeIds.map(() => '?').join(',')}) GROUP BY m`,
+        u.id, qSince, ...activeIds,
+      ) : [];
+      for (const r of usageRows) {
+        const nm = normQuotaModel(String(r.m || ''));
+        if (!nm) continue;
+        const cur = usedMap.get(nm) || { req: 0, tok: 0 };
+        cur.req += Number(r.n || 0);
+        cur.tok += Number(r.tok || 0);
+        usedMap.set(nm, cur);
+      }
+      const models = AIS2_MODELS_ORDER.map((m) => {
+        let reqLimit = 0, tokLimit = 0, hasTokLimit = false, supported = false, hasUnknown = false;
+        for (const tier of tiers) {
+          const rule = AIS2_TIER_QUOTA[tier][m];
+          if (!rule) continue;
+          supported = true;
+          if (rule.unknown) hasUnknown = true;
+          if (rule.req != null) reqLimit += rule.req;
+          if (rule.tok != null) { tokLimit += rule.tok; hasTokLimit = true; }
+        }
+        const used = usedMap.get(m) || { req: 0, tok: 0 };
+        return {
+          model: m,
+          supported,
+          unknown: hasUnknown && reqLimit === 0,
+          partialUnknown: hasUnknown && reqLimit > 0,
+          usedReq: used.req,
+          reqLimit: supported && reqLimit > 0 ? reqLimit : null,
+          usedTok: used.tok,
+          tokLimit: supported && hasTokLimit && !tiers.some((t) => AIS2_TIER_QUOTA[t][m] && AIS2_TIER_QUOTA[t][m]!.tok == null) ? tokLimit : null,
+        };
+      });
+      return { resetAt: qSince + 86400e3, tiers, models };
+    })(),
   };
 });
 
-// ---------- 仪表盘 (same layout as agy-me): quota per model family, health, risk dots, recent requests ----------
-// Scope: a user's own credentials; an admin (not viewing as a user) sees every credential.
-type DashStatus = 'ok' | 'cooldown' | 'banned' | 'disabled';
-type FamW = { frac: number; reset: string | null } | null;
-function dashboard(u: User, c: Awaited<ReturnType<typeof cpa.creds>>) {
-  const admin = u.role === 'admin';
-  const rows = (admin ? all('SELECT * FROM accounts ORDER BY created_at') : all('SELECT * FROM accounts WHERE owner_id = ? ORDER BY created_at', u.id)).filter((r) => c.byId.has(r.auth_id));
-  const t = Date.now();
-  const n = { total: 0, ok: 0, cooldown: 0, banned: 0, disabled: 0 };
-  const dots: { id: string; email: string; status: DashStatus; reason: string; mine: boolean }[] = [];
-  const famKeys = ['gemini', 'claude', 'argon', 'carbon'] as const;
-  const acc = Object.fromEntries(famKeys.map((k) => [k, { total: 0, withQuota: 0, h5: [] as number[], week: [] as number[], earliest: null as number | null }]));
-  const live = (b: FamW): FamW => (b ? (b.reset && Date.parse(b.reset) <= t ? { frac: 1, reset: null } : b) : null);
-  for (const r of rows) {
-    const cred = c.byId.get(r.auth_id)!;
-    const s = accState(cred), prob = accountProblem(r, cred);
-    const status: DashStatus = cred.disabled ? 'disabled' : prob || s.state === 'error' ? 'banned' : s.state === 'cooldown' ? 'cooldown' : 'ok';
-    n.total++; n[status]++;
-    dots.push({ id: r.auth_id, email: cred.email || r.email || '', status, reason: prob?.label || s.detail || '', mine: r.owner_id === u.id });
-    if (status === 'disabled' || status === 'banned') continue;
-    const F = famView(storedQuota(r), t);
-    for (const k of famKeys) {
-      const f = F[k];
-      if (!f) continue;
-      const A = acc[k], h5 = live(f.h5), wk = live(f.week);
-      A.total++;
-      if (h5) A.h5.push(h5.frac);
-      if (wk) A.week.push(wk.frac);
-      const empty = [h5, wk].filter((b) => b && b.frac <= 0) as { frac: number; reset: string | null }[];
-      if (!empty.length) { A.withQuota++; continue; }
-      // back when the last of its empty windows refills
-      const back = empty.map((b) => (b.reset ? Date.parse(b.reset) : NaN)).filter(Number.isFinite);
-      if (back.length) { const b = Math.max(...back); if (A.earliest == null || b < A.earliest) A.earliest = b; }
-    }
-  }
-  const avg = (l: number[]) => (l.length ? l.reduce((x, y) => x + y, 0) / l.length : null);
-  const fam = Object.fromEntries(famKeys.map((k) => { const A = acc[k]; return [k, { total: A.total, withQuota: A.withQuota, h5: avg(A.h5), week: avg(A.week), earliest: A.earliest == null ? null : new Date(A.earliest).toISOString() }]; }));
-  // last 30 requests served by these credentials (admin: every request)
-  const recent = all(`SELECT ts, auth_id, COALESCE(requested_model, model) AS model, status, result, reason, latency_ms, COALESCE(cpa_ttft_ms, ttfb_ms) AS ttft FROM usage
-    ${admin ? '' : 'WHERE owner_id = ' + Number(u.id)} ORDER BY ts DESC, id DESC LIMIT 30`).reverse()
-    .map((r) => ({ ts: Number(r.ts), account: r.auth_id ? (isUp(r.auth_id) ? upName(r.auth_id) : c.byId.get(r.auth_id)?.email || '') : '', model: String(r.model || ''),
-      status: Number(r.status), failed: r.result !== 'ok', error: r.result !== 'ok' ? String(r.reason || r.result || '') : '', ttft: r.ttft == null ? null : Number(r.ttft), latency: Number(r.latency_ms) || null }));
-  return { scope: admin ? 'all' : 'mine', counts: n, fam, dots, recent };
-}
-
-// ---------- 买号渠道 (admin-curated links shown on every user's home) ----------
-type Shop = { name: string; url: string; note: string };
-function shopLinks(): Shop[] {
-  try { return JSON.parse(getSetting('shop_links') || '[]'); } catch { return []; }
-}
-// 总开关: Discord @ 人, 机器人主动发消息 (off by default), 买号渠道 shown to users
-const switches = () => ({ mentions: getSetting('bot_mentions') !== '0', proactive: getSetting('bot_proactive') === '1', stockOnly: getSetting('bot_stock_only') === '1', shops: getSetting('shops_on') !== '0' });
-route('GET', '/api/admin/switches', (req) => { requireAdmin(req); return switches(); });
-route('PUT', '/api/admin/switches', async (req) => {
-  requireAdmin(req);
-  const b = await readJSON(req);
-  for (const [k, key] of [['mentions', 'bot_mentions'], ['proactive', 'bot_proactive'], ['stockOnly', 'bot_stock_only'], ['shops', 'shops_on']] as const) {
-    if (b[k] === undefined) continue;
-    if (typeof b[k] !== 'boolean') throw new HttpError(400, 'invalid');
-    setSetting(key, b[k] ? '1' : '0');
-  }
-  return switches();
-});
-// 补货监控: the shop's items (cached; refresh=1 fetches them now) and the ticked ones
-route('GET', '/api/admin/stock', async (req, _res, _p, url) => {
-  requireAdmin(req);
-  try { return await stockAdmin(url.searchParams.get('refresh') === '1'); } catch (e) { throw new HttpError(502, 'shop_unreachable: ' + (e as Error).message); }
-});
-route('PUT', '/api/admin/stock', async (req) => {
-  requireAdmin(req);
-  const b = await readJSON(req);
-  if (!Array.isArray(b.watched)) throw new HttpError(400, 'invalid');
-  return { watched: setWatched(b.watched) };
-});
-route('GET', '/api/admin/shops', (req) => {
-  requireAdmin(req);
-  return shopLinks();
-});
-route('PUT', '/api/admin/shops', async (req) => {
-  requireAdmin(req);
-  const b = await readJSON(req);
-  if (!Array.isArray(b.shops) || b.shops.length > 50) throw new HttpError(400, 'invalid_shops');
-  const out: Shop[] = b.shops.map((x: any) => {
-    const url = String(x?.url || '').trim();
-    if (!/^https?:\/\/\S+$/i.test(url) || url.length > 500) throw new HttpError(400, 'invalid_url');
-    return { name: str(x?.name, 40) || new URL(url).hostname, url, note: str(x?.note, 80) };
-  });
-  setSetting('shop_links', JSON.stringify(out));
-  return { shops: out };
-});
-
-async function poolSummary(u: User) {
-  const c = await cpa.creds(10000);
-  const rows = all(`SELECT a.auth_id, a.owner_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE a.shared = 1 AND u.active = 1`)
-    .filter((r) => c.byId.get(r.auth_id) && !c.byId.get(r.auth_id)!.disabled);
-  const privateUsable = all('SELECT auth_id FROM accounts WHERE owner_id = ?', u.id).filter((r) => c.byId.get(r.auth_id) && !c.byId.get(r.auth_id)!.disabled).length;
-  return { contributors: new Set(rows.map((r) => r.owner_id)).size, accounts: rows.length, privateAccounts: privateUsable };
-}
-route('GET', '/api/pool/summary', async (req) => poolSummary(requireUser(req)));
-// 大锅饭 remaining resources: totals for everyone, per-account rows for admins
-route('GET', '/api/pool/resources', async (req) => poolResources(requireUser(req).role === 'admin'));
-route('GET', '/api/rules', (req) => { requireUser(req); return getRules(); });
-
-// ---------- accounts ----------
-/** Last 20 request outcomes on an account (newest last) plus success / failure totals. Status only, no callers. */
-function requestStrip(authId: string) {
-  const recent = all('SELECT result FROM usage WHERE auth_id = ? ORDER BY ts DESC, id DESC LIMIT 20', authId).map((r) => (r.result === 'ok' ? 1 : 0)).reverse();
-  const t = one(`SELECT SUM(result = 'ok') AS ok, SUM(result != 'ok') AS bad FROM usage WHERE auth_id = ?`, authId);
-  return { recent, ok: Number(t?.ok || 0), fail: Number(t?.bad || 0) };
-}
-/** Tokens this account has served: last 5 hours, since local midnight, last 7 days, all time (kept usage only). */
-function tokenUse(authId: string) {
-  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
-  const tok = 'COALESCE(total_tok, COALESCE(in_tok,0) + COALESCE(out_tok,0) + COALESCE(reasoning_tok,0))';
-  const r = one(`SELECT SUM(CASE WHEN ts >= ? THEN ${tok} END) AS h5, SUM(CASE WHEN ts >= ? THEN ${tok} END) AS today,
-    SUM(CASE WHEN ts >= ? THEN ${tok} END) AS week, SUM(${tok}) AS total FROM usage WHERE auth_id = ?`,
-    now() - 5 * 3600e3, midnight.getTime(), now() - 7 * 86400e3, authId);
-  // per quota window family (matches retrieveUserQuotaSummary groups: Gemini vs Claude/GPT)
-  const fam = { gemini: { h5: 0, week: 0 }, claude: { h5: 0, week: 0 }, argon: { h5: 0, week: 0 }, carbon: { h5: 0, week: 0 } };
-  // same order as agy-me usedKeyOf: Argon, Carbon, Claude / GPT, then Gemini
-  for (const x of all(`SELECT CASE WHEN lower(COALESCE(requested_model, model)) LIKE '%argon%' THEN 'argon'
-    WHEN lower(COALESCE(requested_model, model)) LIKE '%carbon%' THEN 'carbon'
-    WHEN lower(COALESCE(requested_model, model)) LIKE 'claude%' OR lower(COALESCE(requested_model, model)) LIKE 'gpt%' THEN 'claude' ELSE 'gemini' END AS f,
-    SUM(CASE WHEN ts >= ? THEN ${tok} END) AS h5, SUM(${tok}) AS week FROM usage WHERE auth_id = ? AND ts >= ? GROUP BY f`, now() - 5 * 3600e3, authId, now() - 7 * 86400e3)) {
-    fam[x.f as 'gemini' | 'claude' | 'argon' | 'carbon'] = { h5: Number(x.h5 || 0), week: Number(x.week || 0) };
-  }
-  return { h5: Number(r?.h5 || 0), today: Number(r?.today || 0), week: Number(r?.week || 0), total: Number(r?.total || 0), fam };
-}
-
-route('GET', '/api/accounts', async (req) => {
-  const u = requireUser(req);
-  const c = await cpa.creds(5000);
-  return all('SELECT * FROM accounts WHERE owner_id = ? ORDER BY created_at', u.id)
-    .filter((r) => c.byId.has(r.auth_id))
-    .map((r) => ({ ...accountView(r, c.byId.get(r.auth_id)), requests: requestStrip(r.auth_id), tokens: tokenUse(r.auth_id) }));
-});
-
-// Models a credential supports (CPA registry). Owner only; admins may look at any credential.
-route('GET', '/api/accounts/:id/models', async (req, _res, p) => {
-  const u = requireUser(req);
-  if (u.role === 'admin') {
-    if (!(await cpa.creds(5000)).byId.has(p.id)) throw new HttpError(404, 'not_found');
-  } else await ownAccount(u, p.id);
-  return (await cpa.credentialModels(p.id)).map((m: any) => ({ id: String(m?.id || ''), name: String(m?.display_name || ''), type: String(m?.type || m?.owned_by || '') })).filter((m) => m.id);
-});
-
-route('POST', '/api/accounts/:id/models/test', async (req, _res, p) => {
-  const u = requireUser(req);
-  if (u.role === 'admin') {
-    if (!(await cpa.creds(5000)).byId.has(p.id)) throw new HttpError(404, 'not_found');
-  } else await ownAccount(u, p.id);
-  const b = await readJSON(req);
-  const model = str(b.model, 120);
-  if (!(await cpa.credentialModels(p.id)).some((m: any) => String(m?.id || '') === model)) throw new HttpError(400, 'unknown_model');
-  return testModel(u.id, p.id, model);
-});
-
-route('PATCH', '/api/accounts/:id', async (req, _res, p) => {
-  const u = requireUser(req);
-  const { row, cred } = await ownAccount(u, p.id);
-  const b = await readJSON(req);
-  if (b.name !== undefined) await cpa.patchFields(row.auth_id, { note: str(b.name, 40) });
-  if (b.active !== undefined) {
-    if (typeof b.active !== 'boolean') throw new HttpError(400, 'invalid');
-    if (b.active === cred.disabled) await cpa.setDisabled(row.auth_id, !b.active);
-    run('UPDATE accounts SET auto_disabled_at = NULL, auto_disabled_reason = NULL, sleep_at = NULL WHERE auth_id = ?', row.auth_id); // owner decides now; autodisable.ts / autosleep.ts let go
-    clearAction(row.auth_id); // a stale verify link would linger otherwise; the next 403 brings it back
-  }
-  if (b.reserve !== undefined) {
-    if (b.reserve !== null && !(Number.isInteger(b.reserve) && b.reserve >= 0 && b.reserve <= 90)) throw new HttpError(400, 'invalid');
-    run('UPDATE accounts SET reserve = ? WHERE auth_id = ?', b.reserve, row.auth_id);
-  }
-  if (b.shared !== undefined) {
-    if (typeof b.shared !== 'boolean') throw new HttpError(400, 'invalid');
-    run('UPDATE accounts SET shared = ? WHERE auth_id = ?', b.shared ? 1 : 0, row.auth_id);
-  }
-  const c = await cpa.creds(5000);
-  return accountView(one('SELECT * FROM accounts WHERE auth_id = ?', row.auth_id)!, c.byId.get(row.auth_id));
-});
-
-route('DELETE', '/api/accounts/:id', async (req, _res, p) => {
-  const u = requireUser(req);
-  const { row } = await ownAccount(u, p.id);
-  run('UPDATE accounts SET shared = 0 WHERE auth_id = ?', row.auth_id); // leave the shared pool first
-  await cpa.deleteCredential(row.auth_id);
-  run('DELETE FROM accounts WHERE auth_id = ?', row.auth_id);
-  return { ok: true };
-});
-
-route('POST', '/api/accounts/:id/quota', async (req, _res, p) => {
-  const u = requireUser(req);
-  const { row } = await ownAccount(u, p.id);
-  if (Date.now() - lastQuotaAt(row.auth_id) < 20000) throw new HttpError(429, 'too_soon');
-  try {
-    await refreshQuota(row.auth_id);
-  } catch {
-    // error is stored on the row and shown as stale data
-  }
-  const c = await cpa.creds(5000);
-  return accountView(one('SELECT * FROM accounts WHERE auth_id = ?', row.auth_id)!, c.byId.get(row.auth_id));
-});
-
-// --- add via Google OAuth (CPA management OAuth flow) ---
-route('POST', '/api/accounts/oauth', async (req) => {
-  const u = requireUser(req);
-  const pendingN = one(`SELECT COUNT(*) AS n FROM oauth_flows WHERE user_id = ? AND status = 'pending' AND created_at > ?`, u.id, now() - 600000)?.n || 0;
-  if (pendingN >= 3) throw new HttpError(429, 'too_many_pending');
-  const c = await cpa.creds(0);
-  const snapshot = Object.fromEntries(c.list.map((x) => [x.id, x.updatedAt]));
-  const { url, state } = await cpa.oauthStart();
-  run('INSERT INTO oauth_flows(state, user_id, created_at, snapshot) VALUES(?,?,?,?)', state, u.id, now(), JSON.stringify(snapshot));
-  return { url, state };
-});
-
-function ownFlow(u: User, state: string): Row {
-  const f = one('SELECT * FROM oauth_flows WHERE state = ? AND user_id = ?', state, u.id);
-  if (!f) throw new HttpError(404, 'not_found');
-  return f;
-}
-
-route('POST', '/api/accounts/oauth/callback', async (req) => {
-  const u = requireUser(req);
-  const b = await readJSON(req);
-  const cb = str(b.url, 4000);
-  let st = '';
-  try { st = new URL(cb).searchParams.get('state') || ''; } catch { throw new HttpError(400, 'invalid_callback'); }
-  if (!st || st !== String(b.state || '')) throw new HttpError(400, 'state_mismatch');
-  ownFlow(u, st);
-  const r = await cpa.oauthCallback(cb);
-  if (!r.ok) throw new HttpError(400, 'callback_rejected', r.error);
-  return { ok: true };
-});
-
-route('GET', '/api/accounts/oauth/:state', async (req, _res, p) => {
-  const u = requireUser(req);
-  const f = ownFlow(u, p.state);
-  if (f.status !== 'pending') return { status: f.status, account: f.auth_id, message: f.message };
-  const s = await cpa.oauthStatus(p.state);
-  if (s.status === 'wait') return { status: 'wait' };
-  if (s.status === 'error') {
-    run(`UPDATE oauth_flows SET status = 'error', message = ? WHERE state = ?`, s.error || '', p.state);
-    return { status: 'error', message: s.error };
-  }
-  // ok: find the credential the flow wrote (new file, or an existing file rewritten for the same email).
-  // Serialize finalization so two flows finishing together cannot claim each other's file.
-  const run1 = finalizeLock.then(() => finalizeOAuth(u, p.state));
-  finalizeLock = run1.catch(() => {});
-  return run1;
-});
-
-let finalizeLock: Promise<unknown> = Promise.resolve();
-async function finalizeOAuth(u: User, state: string) {
-  const f = one('SELECT * FROM oauth_flows WHERE state = ?', state)!;
-  if (f.status !== 'pending') return { status: f.status, account: f.auth_id, message: f.message };
-  await cpa.refreshCreds();
-  const c = await cpa.creds(0);
-  const snap: Record<string, string> = JSON.parse(f.snapshot);
-  const changed = c.list.filter((x) => x.type === 'antigravity' && !x.id.startsWith('antigravity-rt-') && (!(x.id in snap) || snap[x.id] !== x.updatedAt));
-  let result: { status: string; account?: string; message?: string };
-  const fresh = changed.filter((x) => !one('SELECT owner_id FROM accounts WHERE auth_id = ? AND owner_id IS NOT NULL', x.id));
-  const mineChanged = changed.filter((x) => one('SELECT 1 FROM accounts WHERE auth_id = ? AND owner_id = ?', x.id, u.id));
-  if (fresh.length === 1) {
-    const x = fresh[0];
-    const dupe = c.list.find((y) => y.id !== x.id && y.email && y.email.toLowerCase() === x.email.toLowerCase());
-    if (dupe) result = { status: 'duplicate' };
-    else {
-      ensureRow(x.id, x.email);
-      run('UPDATE accounts SET owner_id = ?, email = ? WHERE auth_id = ?', u.id, x.email, x.id);
-      result = { status: 'ok', account: x.id };
-    }
-  } else if (fresh.length === 0 && mineChanged.length === 1) {
-    result = { status: 'ok', account: mineChanged[0].id, message: 'reauthorized' };
-  } else if (fresh.length === 0 && changed.length) {
-    result = { status: 'duplicate' };
-  } else {
-    result = { status: 'error', message: fresh.length ? 'ambiguous' : 'not_found' };
-  }
-  run('UPDATE oauth_flows SET status = ?, auth_id = ?, message = ? WHERE state = ?', result.status, result.account || null, result.message || null, f.state);
-  return result;
-}
-
-// --- add via upload (JSON or ZIP) ---
-type UploadResult = { name: string; ok: boolean; error?: string; account?: string; email?: string };
-function sanitizeEmail(e: string) {
-  return e.replace(/[^A-Za-z0-9@._+-]/g, '_').slice(0, 120);
-}
-async function uploadOne(u: User, name: string, data: Buffer): Promise<UploadResult> {
-  let j: any;
-  try { j = JSON.parse(data.toString('utf8')); } catch { return { name, ok: false, error: 'invalid' }; }
-  if (!j || typeof j !== 'object' || j.type !== 'antigravity' || typeof j.email !== 'string' || !j.email.includes('@') || !(j.refresh_token || j.access_token)) {
-    return { name, ok: false, error: 'invalid' };
-  }
-  const email = j.email.trim().toLowerCase();
-  const c = await cpa.creds(0);
-  if (c.list.some((x) => x.email && x.email.toLowerCase() === email) || one('SELECT 1 FROM accounts WHERE lower(email) = ?', email)) {
-    return { name, ok: false, error: 'duplicate', email };
-  }
-  // never let a client set portal-controlled fields
-  delete j.proxy_url; delete j.disabled; delete j.priority; delete j.prefix; delete j.base_url; delete j.headers;
-  const id = `antigravity-${sanitizeEmail(email)}.json`;
-  if (c.byId.has(id)) return { name, ok: false, error: 'duplicate', email };
-  await cpa.uploadCredential(id, Buffer.from(JSON.stringify(j)));
-  ensureRow(id, email);
-  run('UPDATE accounts SET owner_id = ?, email = ? WHERE auth_id = ?', u.id, email, id);
-  return { name, ok: true, account: id, email };
-}
-
-route('POST', '/api/accounts/upload', async (req, _res, _p, url) => {
-  const u = requireUser(req);
-  const name = (url.searchParams.get('name') || 'upload').slice(0, 120);
-  const buf = await readBody(req, 5 * 1024 * 1024);
-  const results: UploadResult[] = [];
-  if (buf.length >= 4 && buf.readUInt32LE(0) === 0x04034b50) {
-    let entries;
-    try { entries = readZip(buf); } catch { throw new HttpError(400, 'invalid_zip'); }
-    for (const e of entries.filter((x) => x.name.toLowerCase().endsWith('.json'))) results.push(...(await uploadMany(u, e.name, e.data)));
-    if (!results.length) throw new HttpError(400, 'empty_zip');
-  } else {
-    results.push(...(await uploadMany(u, name, buf)));
-  }
-  return { results };
-});
-// A file may hold one credential or a JSON array of them (what the export writes for a single file).
-async function uploadMany(u: User, name: string, data: Buffer): Promise<UploadResult[]> {
-  let j: any;
-  try { j = JSON.parse(data.toString('utf8')); } catch { return [{ name, ok: false, error: 'invalid' }]; }
-  if (!Array.isArray(j)) return [await uploadOne(u, name, data)];
-  const out: UploadResult[] = [];
-  for (const [i, x] of j.slice(0, 200).entries()) out.push(await uploadOne(u, `${name} #${i + 1}`, Buffer.from(JSON.stringify(x))));
-  return out;
-}
-
-// --- export: the owner's own credential files, one JSON (array) or a ZIP of files ---
-route('POST', '/api/accounts/export', async (req, res) => {
-  const u = requireUser(req);
-  const b = await readJSON(req);
-  const ids: string[] = Array.isArray(b.ids) ? [...new Set(b.ids.map(String))].slice(0, 200) as string[] : [];
-  if (!ids.length) throw new HttpError(400, 'invalid');
-  const files: { name: string; data: Buffer }[] = [];
-  for (const id of ids) {
-    const { row } = await ownAccount(u, id);
-    const j = await cpa.downloadCredential(row.auth_id);
-    if (!j || typeof j !== 'object') continue;
-    // portal-controlled fields stay here: the admin's proxy, enable state, routing extras
-    delete j.proxy_url; delete j.disabled; delete j.priority; delete j.prefix; delete j.base_url; delete j.headers;
-    files.push({ name: row.auth_id, data: Buffer.from(JSON.stringify(j, null, 2)) });
-  }
-  if (!files.length) throw new HttpError(404, 'not_found');
-  const day = new Date().toISOString().slice(0, 10);
-  const zip = b.format === 'zip' || (b.format !== 'json' && files.length > 1);
-  const out = zip ? writeZip(files) : files.length === 1 ? files[0].data : Buffer.from(JSON.stringify(files.map((f) => JSON.parse(f.data.toString())), null, 2));
-  const fname = zip ? `xgf-credentials-${day}.zip` : files.length === 1 ? files[0].name : `xgf-credentials-${day}.json`;
-  res.writeHead(200, {
-    'Content-Type': zip ? 'application/zip' : 'application/json',
-    'Content-Disposition': `attachment; filename="${fname.replace(/[^\w.@+-]/g, '_')}"`,
-    'Content-Length': out.length, 'Cache-Control': 'no-store',
-  });
-  res.end(out);
-});
-
-// --- add via a Google refresh token: CPA exchanges it, Google's userinfo names the account ---
-const RT_RE = /^1\/\/[A-Za-z0-9_\-]{20,400}$/;
-async function importRefreshToken(u: User, rt: string): Promise<UploadResult> {
-  const name = rt.slice(0, 6) + '…' + rt.slice(-4);
-  if (!RT_RE.test(rt)) return { name, ok: false, error: 'invalid_token' };
-  const tmp = `antigravity-rt-${token(6)}.json`;
-  try {
-    await cpa.uploadCredential(tmp, Buffer.from(JSON.stringify({ type: 'antigravity', refresh_token: rt, disabled: true })));
-    if (!(await cpa.refreshCredential(tmp)).ok) return { name, ok: false, error: 'invalid_token' };
-    await cpa.refreshCreds();
-    const t = (await cpa.creds(0)).byId.get(tmp);
-    if (!t) return { name, ok: false, error: 'failed' };
-    const ui = await cpa.apiCall(t.authIndex, 'GET', 'https://www.googleapis.com/oauth2/v2/userinfo', { Authorization: 'Bearer $TOKEN$' });
-    let email = '';
-    try { email = String(JSON.parse(ui.body)?.email || '').trim().toLowerCase(); } catch {}
-    if (ui.status !== 200 || !email.includes('@')) return { name, ok: false, error: 'invalid_token' };
-    const c = await cpa.creds(0);
-    if (c.list.some((x) => x.id !== tmp && x.email && x.email.toLowerCase() === email) || one('SELECT 1 FROM accounts WHERE lower(email) = ?', email)) {
-      return { name, ok: false, error: 'duplicate', email };
-    }
-    const id = `antigravity-${sanitizeEmail(email)}.json`;
-    if (c.byId.has(id)) return { name, ok: false, error: 'duplicate', email };
-    const j = await cpa.downloadCredential(tmp); // refreshed access token, project_id, capability hints
-    if (!j || typeof j !== 'object' || !j.refresh_token) return { name, ok: false, error: 'failed' };
-    delete j.proxy_url; delete j.disabled; delete j.priority; delete j.prefix; delete j.base_url; delete j.headers; delete j.note;
-    j.type = 'antigravity';
-    j.email = email;
-    await cpa.uploadCredential(id, Buffer.from(JSON.stringify(j)));
-    ensureRow(id, email);
-    run('UPDATE accounts SET owner_id = ?, email = ? WHERE auth_id = ?', u.id, email, id);
-    return { name, ok: true, account: id, email };
-  } catch (e) {
-    console.error('[rt-import]', (e as Error).message);
-    return { name, ok: false, error: 'failed' };
-  } finally {
-    await cpa.deleteCredential(tmp).catch(() => {});
-  }
-}
-
-let rtLock: Promise<unknown> = Promise.resolve();
-route('POST', '/api/accounts/refresh-token', async (req) => {
-  const u = requireUser(req);
-  const b = await readJSON(req);
-  const list = [...new Set(String(b.tokens ?? '').split(/[\s,;]+/).map((x) => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean))];
-  if (!list.length) throw new HttpError(400, 'invalid_token');
-  if (list.length > 20) throw new HttpError(400, 'too_many');
-  // one import at a time: each one briefly holds a temporary credential in CPA
-  const job = rtLock.then(async () => {
-    const results: UploadResult[] = [];
-    for (const rt of list) results.push(await importRefreshToken(u, rt));
-    return { results };
-  });
-  rtLock = job.catch(() => {});
-  return job;
-});
-
-// ---------- keys ----------
+// ---------- API keys (AI Studio only) ----------
 function keyView(k: Row) {
   return { id: k.id, name: k.name, pool: k.pool, tail: k.tail, key: unseal(k.key_enc), created: k.created_at, lastUsed: k.last_used_at };
 }
-const keyPool = (p: unknown) => (p === 'private' || p === 'shared' || (p === 'aistudio' && aistudio.aistudioOn()) ? p : null);
 route('GET', '/api/keys', (req) => {
   const u = requireUser(req);
   return all('SELECT * FROM api_keys WHERE user_id = ? AND revoked_at IS NULL ORDER BY id', u.id).map(keyView);
@@ -719,12 +405,11 @@ route('GET', '/api/keys', (req) => {
 route('POST', '/api/keys', async (req) => {
   const u = requireUser(req);
   const b = await readJSON(req);
-  const pool = keyPool(b.pool);
-  if (!pool) throw new HttpError(400, 'invalid_pool');
+  if (!aistudio2.aistudio2On()) throw new HttpError(400, 'aistudio_disabled');
   if ((one('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ? AND revoked_at IS NULL', u.id)?.n || 0) >= 20) throw new HttpError(400, 'too_many_keys');
   const plain = 'sk-agy-' + token(30);
   const r = run('INSERT INTO api_keys(user_id, name, pool, key_hash, key_enc, tail, created_at) VALUES(?,?,?,?,?,?,?)',
-    u.id, str(b.name, 40) || 'API Key', pool, sha256(plain), seal(plain), plain.slice(-4), now());
+    u.id, str(b.name, 40) || 'AI Studio Key', 'aistudio2', sha256(plain), seal(plain), plain.slice(-4), now());
   return keyView(one('SELECT * FROM api_keys WHERE id = ?', r.lastInsertRowid)!);
 });
 route('PATCH', '/api/keys/:id', async (req, _res, p) => {
@@ -733,10 +418,6 @@ route('PATCH', '/api/keys/:id', async (req, _res, p) => {
   if (!k) throw new HttpError(404, 'not_found');
   const b = await readJSON(req);
   if (b.name !== undefined) run('UPDATE api_keys SET name = ? WHERE id = ?', str(b.name, 40) || k.name, k.id);
-  if (b.pool !== undefined) {
-    if (!keyPool(b.pool)) throw new HttpError(400, 'invalid_pool');
-    run('UPDATE api_keys SET pool = ? WHERE id = ?', b.pool, k.id);
-  }
   return keyView(one('SELECT * FROM api_keys WHERE id = ?', k.id)!);
 });
 route('DELETE', '/api/keys/:id', (req, _res, p) => {
@@ -746,101 +427,51 @@ route('DELETE', '/api/keys/:id', (req, _res, p) => {
   return { ok: true };
 });
 
-// ---------- AI Studio pool ----------
-const aiOn = () => { if (!aistudio.aistudioOn()) throw new HttpError(404, 'not_found'); };
-route('GET', '/api/aistudio', (req) => { const u = requireUser(req); aiOn(); return aistudio.listFor(u.id); });
-route('POST', '/api/aistudio', async (req) => {
-  const u = requireUser(req);
-  aiOn();
-  const b = await readJSON(req, 256 * 1024);
-  if (typeof b.cookies !== 'string') throw new HttpError(400, 'aistudio_cookie', '请粘贴 Cookie');
-  return aistudio.upload(u.id, b.cookies, b.shared !== false);
+// ---------- AI Studio 2 pool ----------
+const ai2On = () => { if (!aistudio2.aistudio2On()) throw new HttpError(404, 'not_found'); };
+route('GET', '/api/aistudio2/models', async (req) => { requireUser(req); ai2On(); return { models: await fetchAIS2ModelIds() }; });
+route('GET', '/api/aistudio2', (req) => { const u = requireUser(req); ai2On(); return aistudio2.listFor(u.id); });
+route('POST', '/api/aistudio2', async (req) => {
+  const u = requireUser(req); ai2On();
+  const b = await readJSON(req);
+  if (typeof b.cookies !== 'string') throw new HttpError(400, 'aistudio_cookie', '请粘贴 Cookie 或账号 JSON');
+  const res = await aistudio2.upload(u.id, b.cookies, false);
+  if (res && typeof (res as any).email === 'string') await exit.reapplyAccountProxy((res as any).email);
+  else if (Array.isArray((res as any)?.accounts)) for (const a of (res as any).accounts) if (a?.email) await exit.reapplyAccountProxy(a.email);
+  return res;
 });
-route('POST', '/api/aistudio/:id/share', async (req, _res, p) => {
-  const u = requireUser(req);
-  aiOn();
-  const b = await readJSON(req, 4096);
-  if (typeof b.shared !== 'boolean') throw new HttpError(400, 'invalid_request');
-  return aistudio.setShared(u.id, p.id, b.shared);
-});
-route('POST', '/api/aistudio/:id/check', async (req, _res, p) => aistudio.recheck(requireUser(req).id, p.id));
-route('DELETE', '/api/aistudio/:id', async (req, _res, p) => aistudio.remove(requireUser(req).id, p.id));
-// ---------- shared remote browser ----------
+route('POST', '/api/aistudio2/:id/check', async (req, _res, p) => aistudio2.recheck(requireUser(req).id, p.id));
+route('DELETE', '/api/aistudio2/:id', async (req, _res, p) => aistudio2.remove(requireUser(req).id, p.id));
+
+route('GET', '/api/admin/aistudio2', (req) => { requireAdmin(req); return aistudio2.aistudio2On() ? aistudio2.listAll() : []; });
+route('POST', '/api/admin/aistudio2/recheck', async (req) => { requireAdmin(req); ai2On(); return aistudio2.sweep(); });
+route('DELETE', '/api/admin/aistudio2/:id', async (req, _res, p) => aistudio2.remove(requireAdmin(req).id, p.id, true));
+
+// ---------- Shared Browser ----------
 route('GET', '/api/browser', (req) => browser.viewFor(requireUser(req).id));
 route('POST', '/api/browser/join', async (req) => {
   const user = requireUser(req);
   const b = req.headers['content-type']?.includes('json') ? await readJSON(req) : {};
   return b?.reset === true ? browser.open(user.id, [], { reset: true }) : browser.join(user.id);
 });
-route('POST', '/api/browser/open', async (req) => {
-  // only the stored verify / appeal link of one of the caller's own accounts: no URL comes from the client
-  const user = requireUser(req);
-  const b = await readJSON(req);
-  const row = one('SELECT auth_id, email, action_url, action_kind FROM accounts WHERE auth_id = ? AND owner_id = ?', String(b.id || ''), user.id);
-  const a = actionOf(row);
-  if (!a || !row) throw new HttpError(404, 'not_found');
-  let email = String(row.email || '').trim();
-  if (!email) email = (await cpa.creds(5000).catch(() => null))?.byId.get(String(row.auth_id))?.email || '';
-  const urls = email.includes('@')
-    ? [`https://accounts.google.com/ServiceLogin?Email=${encodeURIComponent(email)}`, a.url]
-    : [a.url];
-  return { ...(await browser.open(user.id, urls, { key: 'acc:' + row.auth_id, reset: b.reset === true })), email };
-});
 route('POST', '/api/browser/leave', async (req) => browser.leave(requireUser(req).id));
 route('GET', '/api/admin/browser', (req) => { requireAdmin(req); return browser.adminView(); });
 route('POST', '/api/admin/browser/kick', async (req) => { requireAdmin(req); return browser.kick(); });
 
-// Embedding / Rerank 中转（pool-gw 读同一份配置）
-route('GET', '/api/admin/sf', (req) => { requireAdmin(req); return sfView(); });
-route('PUT', '/api/admin/sf', async (req) => { requireAdmin(req); return sfUpdate(await readJSON(req)); });
-route('POST', '/api/admin/sf/test', async (req) => { requireAdmin(req); return sfTest(await readJSON(req)); });
-route('GET', '/api/admin/aistudio', (req) => { requireAdmin(req); return aistudio.aistudioOn() ? aistudio.listAll() : []; });
-route('POST', '/api/admin/aistudio/recheck', async (req) => { requireAdmin(req); aiOn(); return aistudio.sweep(); });
-route('DELETE', '/api/admin/aistudio/:id', async (req, _res, p) => aistudio.remove(requireAdmin(req).id, p.id, true));
-
-// ---------- usage ----------
+// ---------- usage & traffic ----------
 route('GET', '/api/usage/requests', async (req, _res, _p, url) => {
   const u = requireUser(req);
-  const pool = url.searchParams.get('pool');
   const limit = clampInt(url.searchParams.get('limit') || 100, 1, 500);
-  const rows = pool === 'private' || pool === 'shared' || pool === 'aistudio'
-    ? all('SELECT * FROM usage WHERE user_id = ? AND pool = ? ORDER BY ts DESC LIMIT ?', u.id, pool, limit)
-    : all('SELECT * FROM usage WHERE user_id = ? ORDER BY ts DESC LIMIT ?', u.id, limit);
-  const c = await cpa.creds(30000);
+  const rows = all("SELECT * FROM usage WHERE user_id = ? AND pool = 'aistudio2' ORDER BY ts DESC LIMIT ?", u.id, limit);
   return rows.map((r) => {
     let account: string | null = null;
     if (r.auth_id) {
-      // Own accounts by note; anyone else's account only as an anonymous number. Never an email.
-      account = r.owner_id === u.id ? (aistudio.isAIS(r.auth_id) ? r.auth_id : c.byId.get(r.auth_id)?.note || '') : anonLabel(r.auth_id);
+      account = r.owner_id === u.id ? (aistudio2.isAIS2(r.auth_id) ? aistudio2.ais2Email(r.auth_id) : r.auth_id) : anonLabel(r.auth_id);
     }
     return { ts: r.ts, model: r.model, pool: r.pool, account, own: r.owner_id === u.id, result: r.result, status: r.status, latency: r.latency_ms, tokens: r.total_tok };
   });
 });
 
-route('GET', '/api/usage/contributions', async (req, _res, _p, url) => {
-  const u = requireUser(req);
-  const days = clampInt(url.searchParams.get('days') || 1, 1, 90);
-  const since = days === 1 ? dayStart() : now() - days * 86400000;
-  const c = await cpa.creds(30000);
-  const rows = all(`SELECT auth_id, model, COUNT(*) AS n, SUM(COALESCE(total_tok,0)) AS t FROM usage
-    WHERE owner_id = ? AND pool = 'shared' AND (user_id IS NULL OR user_id != ?) AND ts >= ? GROUP BY auth_id, model`, u.id, u.id, since);
-  const accs = all('SELECT auth_id FROM accounts WHERE owner_id = ? AND (shared = 1 OR auth_id IN (SELECT DISTINCT auth_id FROM usage WHERE owner_id = ? AND pool = \'shared\' AND ts >= ?))', u.id, u.id, since);
-  return accs.map((a) => {
-    const mine = rows.filter((r) => r.auth_id === a.auth_id);
-    return {
-      id: a.auth_id,
-      name: c.byId.get(a.auth_id)?.note || '',
-      email: c.byId.get(a.auth_id)?.email || '',
-      count: mine.reduce((n, r) => n + Number(r.n), 0),
-      tokens: mine.reduce((n, r) => n + Number(r.t), 0),
-      models: Object.fromEntries(mine.map((r) => [r.model || '—', Number(r.n)])),
-    };
-  });
-});
-
-// ---------- traffic log ----------
-// Any signed-in user. Non-admins are forced to their own rows (in SQL), see their own key names,
-// their own accounts by email and everyone else's shared accounts only as "#NN". Bodies are never stored.
 const FAMILY: Record<string, string> = { claude: '%claude%', gemini: '%gemini%', flash: '%flash%', pro: '%pro%', image: '%image%' };
 const likeEsc = (s: string) => s.replace(/[\\%_]/g, (c) => '\\' + c);
 async function traffic(u: User, url: URL) {
@@ -848,17 +479,16 @@ async function traffic(u: User, url: URL) {
   const sp = url.searchParams;
   const size = clampInt(sp.get('size') || 50, 1, 100);
   const page = clampInt(sp.get('page') || 1, 1, 1e6);
-  const where: string[] = [], args: any[] = [];
+  const where: string[] = ["u.pool = 'aistudio2'"], args: any[] = [];
   if (!admin) { where.push('u.user_id = ?'); args.push(u.id); }
   else if (sp.get('user')) { where.push('u.user_id = ?'); args.push(clampInt(sp.get('user'), 0, 1e12)); }
   const acc = (sp.get('account') || '').trim();
   if (acc) {
-    // a non-admin may only filter by an account they own
-    if (!admin && !one('SELECT 1 FROM accounts WHERE auth_id = ? AND owner_id = ?', acc, u.id) && !one('SELECT 1 FROM aistudio_accounts WHERE account_id = ? AND owner_id = ?', acc, u.id)) where.push('0');
+    if (!admin && !one('SELECT 1 FROM aistudio2_accounts WHERE account_id = ? AND owner_id = ?', acc, u.id)) where.push('0');
     else { where.push('u.auth_id = ?'); args.push(acc); }
   }
   const pool = sp.get('pool');
-  if (pool === 'private' || pool === 'shared' || pool === 'aistudio') { where.push('u.pool = ?'); args.push(pool); }
+  if (pool === 'aistudio2') { where.push('u.pool = ?'); args.push(pool); }
   if (sp.get('errorsOnly') === '1' || sp.get('errorsOnly') === 'true') where.push(`u.result != 'ok'`);
   const fam = FAMILY[sp.get('family') || ''];
   if (fam) { where.push(`(lower(u.model) LIKE ? OR lower(COALESCE(u.upstream_model, '')) LIKE ?)`); args.push(fam, fam); }
@@ -875,13 +505,11 @@ async function traffic(u: User, url: URL) {
   const rows = all(`SELECT u.*, k.name AS key_name, us.name AS user_name FROM usage u
     LEFT JOIN api_keys k ON k.id = u.key_id LEFT JOIN users us ON us.id = u.user_id
     ${w} ORDER BY u.ts DESC, u.id DESC LIMIT ? OFFSET ?`, ...args, size, (page - 1) * size);
-  const c = await cpa.creds(30000);
-  const email = (id: string) => (isUp(id) ? upName(id) : aistudio.isAIS(id) ? id : c.byId.get(id)?.email || one('SELECT email FROM accounts WHERE auth_id = ?', id)?.email || '');
+  const email = (id: string) => (aistudio2.isAIS2(id) ? aistudio2.ais2Email(id) : id);
   const list = rows.map((r) => {
     let account: string | null = null, accountId: string | null = null;
     if (r.auth_id) {
-      if (admin) { account = email(r.auth_id) || r.auth_id; accountId = r.auth_id; }
-      else if (r.owner_id === u.id) { account = email(r.auth_id); accountId = r.auth_id; }
+      if (admin || r.owner_id === u.id) { account = email(r.auth_id) || r.auth_id; accountId = r.auth_id; }
       else account = '共享账号 ' + anonLabel(r.auth_id);
     }
     return {
@@ -894,30 +522,16 @@ async function traffic(u: User, url: URL) {
       latency: r.latency_ms, ttfb: r.cpa_ttft_ms ?? r.ttfb_ms, upLatency: r.cpa_latency_ms ?? null,
     };
   });
-  const accounts = (admin ? all('SELECT auth_id, email FROM accounts ORDER BY email') : all('SELECT auth_id, email FROM accounts WHERE owner_id = ? ORDER BY email', u.id))
-    .filter((r) => c.byId.has(r.auth_id)).map((r) => ({ id: r.auth_id, email: c.byId.get(r.auth_id)!.email || r.email }));
+  const accounts = (admin ? all('SELECT account_id AS id, email FROM aistudio2_accounts ORDER BY email') : all('SELECT account_id AS id, email FROM aistudio2_accounts WHERE owner_id = ? ORDER BY email', u.id))
+    .map((r) => ({ id: r.id, email: r.email || r.id }));
   const users = admin ? all('SELECT id, name FROM users ORDER BY name').map((x) => ({ id: x.id, name: x.name })) : undefined;
   return { rows: list, total, ok, error: total - ok, page, size, admin, accounts, users };
 }
 route('GET', '/api/traffic', async (req, _res, _p, url) => traffic(requireUser(req), url));
-
-// Full message for one request: admin only, read from CPA's request log, credentials masked.
-const LOG_MAX = 2 * 1024 * 1024;
-route('GET', '/api/admin/traffic/:id/log', async (req, _res, p) => {
-  requireAdmin(req);
-  const row = one('SELECT request_id FROM usage WHERE id = ?', Number(p.id));
-  if (!row) throw new HttpError(404, 'not_found');
-  if (!row.request_id) return { found: false };
-  const text = await cpa.requestLog(String(row.request_id));
-  if (text === null) return { found: false };
-  const masked = maskSecrets(text);
-  return { found: true, truncated: masked.length > LOG_MAX, text: masked.slice(0, LOG_MAX) };
-});
 route('GET', '/api/admin/traffic', async (req, _res, _p, url) => traffic(requireAdmin(req), url));
+route('GET', '/api/admin/traffic/:id/log', (req) => { requireAdmin(req); return { found: false }; });
 
 // ---------- token stats ----------
-// Aggregates only. Non-admins (and admins with scope=mine) see their own requests; accounts they
-// don't own show up as "#NN". tz = client's UTC offset in minutes, so hour/day buckets match its clock.
 const RANGES: Record<string, [number, number]> = { '24h': [86400e3, 3600e3], '7d': [7 * 86400e3, 86400e3], '30d': [30 * 86400e3, 86400e3], '90d': [90 * 86400e3, 86400e3] };
 const TOK = 'COALESCE(total_tok, COALESCE(in_tok,0) + COALESCE(out_tok,0) + COALESCE(reasoning_tok,0))';
 route('GET', '/api/stats', async (req, _res, _p, url) => {
@@ -928,7 +542,7 @@ route('GET', '/api/stats', async (req, _res, _p, url) => {
   const [span, step] = RANGES[range];
   const tz = clampInt(sp.get('tz') || 0, -840, 840) * 60e3;
   const t = now(), since = Math.floor((t + tz) / step) * step - tz - span + step;
-  const scope = all_ ? '' : 'AND user_id = ' + Number(u.id);
+  const scope = "AND pool = 'aistudio2'" + (all_ ? '' : ' AND user_id = ' + Number(u.id));
   const w = `WHERE ts >= ? ${scope}`;
   const tot = one(`SELECT COUNT(*) AS req, SUM(result = 'ok') AS ok, SUM(COALESCE(in_tok,0)) AS i, SUM(COALESCE(out_tok,0)) AS o,
     SUM(COALESCE(reasoning_tok,0)) AS r, SUM(COALESCE(cache_tok,0)) AS c, SUM(${TOK}) AS tok,
@@ -947,26 +561,23 @@ route('GET', '/api/stats', async (req, _res, _p, url) => {
     b.by[key] = (b.by[key] || 0) + Number(r.tok || 0);
     b.req += Number(r.req);
   }
-  // Rhythm (hour of day) and heat map (last 91 days) ignore the range picker.
-  const hours = Array(24).fill(0);
-  for (const r of all(`SELECT CAST((ts + ?) / 3600000 AS INTEGER) % 24 AS h, SUM(${TOK}) AS tok FROM usage WHERE ts >= ? ${scope} GROUP BY h`, tz, t - 30 * 86400e3)) hours[Number(r.h)] = Number(r.tok || 0);
+  const hours = Array(24).fill(0), hoursReq = Array(24).fill(0);
+  for (const r of all(`SELECT CAST((ts + ?) / 3600000 AS INTEGER) % 24 AS h, SUM(${TOK}) AS tok, COUNT(*) AS n FROM usage WHERE ts >= ? ${scope} GROUP BY h`, tz, t - 30 * 86400e3)) { hours[Number(r.h)] = Number(r.tok || 0); hoursReq[Number(r.h)] = Number(r.n || 0); }
   const day0 = Math.floor((t + tz) / 86400e3) - 90;
-  const heat = Array(91).fill(0);
-  for (const r of all(`SELECT CAST((ts + ?) / 86400000 AS INTEGER) AS d, SUM(${TOK}) AS tok FROM usage WHERE ts >= ? ${scope} GROUP BY d`, tz, day0 * 86400e3 - tz)) {
+  const heat = Array(91).fill(0), heatReq = Array(91).fill(0);
+  for (const r of all(`SELECT CAST((ts + ?) / 86400000 AS INTEGER) AS d, SUM(${TOK}) AS tok, COUNT(*) AS n FROM usage WHERE ts >= ? ${scope} GROUP BY d`, tz, day0 * 86400e3 - tz)) {
     const k = Number(r.d) - day0;
-    if (k >= 0 && k < 91) heat[k] = Number(r.tok || 0);
+    if (k >= 0 && k < 91) { heat[k] = Number(r.tok || 0); heatReq[k] = Number(r.n || 0); }
   }
-  const c = await cpa.creds(30000);
   const accRows = all(`SELECT auth_id, MAX(owner_id) AS owner, COUNT(*) AS req, SUM(${TOK}) AS tok FROM usage ${w} AND auth_id IS NOT NULL GROUP BY auth_id ORDER BY tok DESC LIMIT 30`, since);
   const byAccount = accRows.map((r) => {
     const mine = admin || r.owner === u.id;
-    const email = mine ? (isUp(r.auth_id) ? upName(r.auth_id) : c.byId.get(r.auth_id)?.email || one('SELECT email FROM accounts WHERE auth_id = ?', r.auth_id)?.email || r.auth_id) : '';
-    return { name: mine ? email : '共享账号 ' + anonLabel(r.auth_id), own: r.owner === u.id, req: Number(r.req), tok: Number(r.tok || 0) };
+    const name = mine ? (aistudio2.isAIS2(r.auth_id) ? aistudio2.ais2Email(r.auth_id) : r.auth_id) : '共享账号 ' + anonLabel(r.auth_id);
+    return { name, own: r.owner === u.id, req: Number(r.req), tok: Number(r.tok || 0) };
   });
   const byUser = all_ ? all(`SELECT us.name AS name, COUNT(*) AS req, SUM(${TOK.replace(/(total_tok|in_tok|out_tok|reasoning_tok)/g, 'u.$1')}) AS tok
-    FROM usage u LEFT JOIN users us ON us.id = u.user_id WHERE u.ts >= ? GROUP BY u.user_id ORDER BY tok DESC LIMIT 30`, since)
+    FROM usage u LEFT JOIN users us ON us.id = u.user_id WHERE u.ts >= ? AND u.pool = 'aistudio2' GROUP BY u.user_id ORDER BY tok DESC LIMIT 30`, since)
     .map((r) => ({ name: r.name || '—', req: Number(r.req), tok: Number(r.tok || 0) })) : undefined;
-  // Efficiency: successful requests only. Output speed counts generation time after the first token.
   const pf = one(`SELECT COUNT(*) AS n, AVG(COALESCE(cpa_ttft_ms, ttfb_ms)) AS ttft, AVG(latency_ms) AS lat,
     SUM(CASE WHEN COALESCE(cpa_ttft_ms, ttfb_ms) > 0 AND latency_ms > COALESCE(cpa_ttft_ms, ttfb_ms) THEN COALESCE(out_tok,0) + COALESCE(reasoning_tok,0) END) AS gtok,
     SUM(CASE WHEN COALESCE(cpa_ttft_ms, ttfb_ms) > 0 AND latency_ms > COALESCE(cpa_ttft_ms, ttfb_ms) THEN latency_ms - COALESCE(cpa_ttft_ms, ttfb_ms) END) AS gms
@@ -978,7 +589,7 @@ route('GET', '/api/stats', async (req, _res, _p, url) => {
     totals: { req: num(tot?.req), ok: num(tot?.ok), in: num(tot?.i), out: num(tot?.o), think: num(tot?.r), cache: num(tot?.c), tok: num(tot?.tok), accounts: num(tot?.accounts), models: num(tot?.models), users: num(tot?.users) },
     models: byModel.map((r) => ({ name: r.m, req: num(r.req), in: num(r.i), out: num(r.o), think: num(r.r), cache: num(r.c), tok: num(r.tok) })),
     series: [...top, ...(byModel.length > 5 ? ['其他'] : [])],
-    trend, hours, heat, heatStart: day0 * 86400e3 - tz, byAccount, byUser, perf,
+    trend, hours, hoursReq, heat, heatReq, heatStart: day0 * 86400e3 - tz, byAccount, byUser, perf,
   };
 });
 
@@ -986,17 +597,9 @@ route('GET', '/api/stats', async (req, _res, _p, url) => {
 route('GET', '/api/admin/users', async (req) => {
   requireAdmin(req);
   const since = dayStart();
-  const rules = getRules(), cr = await cpa.creds(10000);
-  const valid = new Map<number, number>();
-  for (const r of all('SELECT * FROM accounts WHERE owner_id IS NOT NULL AND shared = 1 AND suspended = 0')) {
-    const c = cr.byId.get(r.auth_id);
-    if (c && !c.disabled && !accountProblem(r, c) && isPaid(r)) valid.set(r.owner_id, (valid.get(r.owner_id) || 0) + 1);
-  }
-  const sharedToday = new Map(all(`SELECT user_id, COUNT(*) AS n FROM usage WHERE pool = 'shared' AND ts >= ? AND result NOT IN ('daily_limit', 'input_limit') GROUP BY user_id`, since).map((r) => [r.user_id, Number(r.n)]));
-  const acc = new Map(all('SELECT owner_id, COUNT(*) AS n, SUM(shared) AS s FROM accounts GROUP BY owner_id').map((r) => [r.owner_id, r]));
+  const acc = new Map(all('SELECT owner_id, COUNT(*) AS n, SUM(shared) AS s FROM aistudio2_accounts GROUP BY owner_id').map((r) => [r.owner_id, r]));
   const keys = new Map(all('SELECT user_id, COUNT(*) AS n FROM api_keys WHERE revoked_at IS NULL GROUP BY user_id').map((r) => [r.user_id, r.n]));
-  const reqs = new Map(all(`SELECT user_id, COUNT(*) AS n, SUM(ts >= ?) AS today, SUM(COALESCE(total_tok,0)) AS tok, MAX(ts) AS last FROM usage WHERE user_id IS NOT NULL GROUP BY user_id`, since).map((r) => [r.user_id, r]));
-  const served = new Map(all(`SELECT owner_id, COUNT(*) AS n FROM usage WHERE pool = 'shared' AND owner_id IS NOT NULL AND (user_id IS NULL OR user_id != owner_id) GROUP BY owner_id`).map((r) => [r.owner_id, r.n]));
+  const reqs = new Map(all(`SELECT user_id, COUNT(*) AS n, SUM(ts >= ?) AS today, SUM(COALESCE(total_tok,0)) AS tok, MAX(ts) AS last FROM usage WHERE user_id IS NOT NULL AND pool = 'aistudio2' GROUP BY user_id`, since).map((r) => [r.user_id, r]));
   return all('SELECT * FROM users ORDER BY id').map((u) => {
     const a = acc.get(u.id), r = reqs.get(u.id);
     const shared = Number(a?.s || 0), accounts = Number(a?.n || 0);
@@ -1004,13 +607,12 @@ route('GET', '/api/admin/users', async (req) => {
       id: u.id, name: u.name, handle: u.handle, discordId: u.username ? '' : u.discord_id, username: u.username || null,
       role: u.role, active: !!u.active, reason: u.disabled_reason,
       accounts, shared, private: accounts - shared, keys: Number(keys.get(u.id) || 0),
-      reqToday: Number(r?.today || 0), reqTotal: Number(r?.n || 0), tokens: Number(r?.tok || 0), served: Number(served.get(u.id) || 0),
+      reqToday: Number(r?.today || 0), reqTotal: Number(r?.n || 0), tokens: Number(r?.tok || 0), served: 0,
       lastActive: Math.max(Number(r?.last || 0), Number(u.last_login || 0)) || null, created: u.created_at,
-      dailyUsed: sharedToday.get(u.id) || 0, dailyOverride: u.daily_limit ?? null,
-      dailyLimit: u.daily_limit != null ? (u.daily_limit < 0 ? null : u.daily_limit) : u.role === 'admin' ? null : rules.dailyBase + rules.dailyPer * (valid.get(u.id) || 0),
     };
   });
 });
+
 function checkNewPassword(pw: unknown): string {
   const s = typeof pw === 'string' ? pw : '';
   if (s.length < 8 || s.length > 128) throw new HttpError(400, 'weak_password');
@@ -1035,10 +637,6 @@ route('PATCH', '/api/admin/users/:id', async (req, _res, p) => {
   const b = await readJSON(req);
   if (typeof b.active === 'boolean') await setUserActive(id, b.active, 'admin');
   if (b.role === 'admin' || b.role === 'user') run('UPDATE users SET role = ? WHERE id = ?', b.role, id);
-  if (b.dailyLimit !== undefined) {
-    if (b.dailyLimit !== null && !(Number.isInteger(b.dailyLimit) && b.dailyLimit >= -1 && b.dailyLimit <= 1e6)) throw new HttpError(400, 'invalid');
-    run('UPDATE users SET daily_limit = ? WHERE id = ?', b.dailyLimit, id);
-  }
   if (b.password !== undefined) {
     if (!one('SELECT 1 FROM users WHERE id = ? AND username IS NOT NULL', id)) throw new HttpError(400, 'not_password_user');
     run('UPDATE users SET pass_hash = ? WHERE id = ?', hashPassword(checkNewPassword(b.password)), id);
@@ -1047,231 +645,53 @@ route('PATCH', '/api/admin/users/:id', async (req, _res, p) => {
   return { ok: true };
 });
 
-route('GET', '/api/admin/accounts', async (req) => {
-  requireAdmin(req);
-  const c = await cpa.creds(3000);
-  const rows = new Map(all('SELECT * FROM accounts').map((r) => [r.auth_id, r]));
-  const users = new Map(all('SELECT id, name FROM users').map((u) => [u.id, u.name]));
-  return c.list.map((cred) => {
-    const r = rows.get(cred.id) || { auth_id: cred.id, shared: 0, proxy_id: null, owner_id: null };
-    return {
-      id: cred.id, email: cred.email, type: cred.type, name: cred.note,
-      ownerId: r.owner_id, owner: r.owner_id ? users.get(r.owner_id) || '' : null,
-      shared: !!r.shared, proxyId: r.proxy_id, active: !cred.disabled, asleep: !!r.sleep_at, inflight: accountInflight(cred.id),
-      ...accState(cred),
-      action: actionOf(r),
-    };
-  });
-});
-route('PATCH', '/api/admin/accounts/:id', async (req, _res, p) => {
-  requireAdmin(req);
-  const c = await cpa.creds(0);
-  const cred = c.byId.get(p.id);
-  if (!cred) throw new HttpError(404, 'not_found');
-  ensureRow(cred.id, cred.email);
-  const b = await readJSON(req);
-  if (typeof b.active === 'boolean' && b.active === cred.disabled) {
-    await cpa.setDisabled(cred.id, !b.active);
-    clearAction(cred.id);
-  }
-  if (b.ownerId !== undefined) throw new HttpError(400, 'owner_fixed'); // an account always belongs to whoever added it
-  if (b.proxyId !== undefined) {
-    let url = '';
-    if (b.proxyId !== null) {
-      const px = one('SELECT * FROM proxies WHERE id = ?', Number(b.proxyId));
-      if (!px) throw new HttpError(400, 'invalid_proxy');
-      const used = one('SELECT auth_id FROM accounts WHERE proxy_id = ? AND auth_id != ?', px.id, cred.id);
-      if (used) throw new HttpError(409, 'proxy_in_use');
-      url = px.url;
-    }
-    await cpa.patchFields(cred.id, { proxy_url: url });
-    run('UPDATE accounts SET proxy_id = ? WHERE auth_id = ?', b.proxyId === null ? null : Number(b.proxyId), cred.id);
-  }
-  return { ok: true };
-});
-
-route('GET', '/api/admin/proxies', (req) => {
-  requireAdmin(req);
-  return all('SELECT p.id, p.url, a.auth_id FROM proxies p LEFT JOIN accounts a ON a.proxy_id = p.id ORDER BY p.id')
-    .map((p) => ({ id: p.id, url: maskProxy(p.url), account: p.auth_id || null }));
-});
-route('POST', '/api/admin/proxies', async (req) => {
-  requireAdmin(req);
-  const b = await readJSON(req);
-  const url = str(b.url, 500);
-  let u: URL;
-  try { u = new URL(url); } catch { throw new HttpError(400, 'invalid_proxy'); }
-  if (!/^(socks5h?|https?):$/.test(u.protocol) || !u.hostname) throw new HttpError(400, 'invalid_proxy');
-  try { run('INSERT INTO proxies(url, created_at) VALUES(?,?)', url, now()); } catch { throw new HttpError(409, 'duplicate'); }
-  return { ok: true };
-});
-route('DELETE', '/api/admin/proxies/:id', async (req, _res, p) => {
-  requireAdmin(req);
-  const used = one('SELECT auth_id FROM accounts WHERE proxy_id = ?', Number(p.id));
-  if (used) throw new HttpError(409, 'proxy_in_use');
-  run('DELETE FROM proxies WHERE id = ?', Number(p.id));
-  return { ok: true };
-});
-
-route('PUT', '/api/admin/rules', async (req) => {
-  requireAdmin(req);
-  const b = await readJSON(req);
-  const cur = getRules();
-  const r = {
-    keyConc: b.keyConc === undefined ? cur.keyConc : clampInt(b.keyConc, 1, 200),
-    keyRpm: b.keyRpm === undefined ? cur.keyRpm : clampInt(b.keyRpm, 1, 10000),
-    accConc: b.accConc === undefined ? cur.accConc : clampInt(b.accConc, 1, 20),
-    accRpm: b.accRpm === undefined ? cur.accRpm : clampInt(b.accRpm, 0, 1000),
-    reserve: b.reserve === undefined ? cur.reserve : clampInt(b.reserve, 0, 90),
-    dailyBase: b.dailyBase === undefined ? cur.dailyBase : clampInt(b.dailyBase, 0, 1e6),
-    dailyPer: b.dailyPer === undefined ? cur.dailyPer : clampInt(b.dailyPer, 0, 1e6),
-    sharedInput: b.sharedInput === undefined ? cur.sharedInput : clampInt(b.sharedInput, 0, 1e7),
-  };
-  setRules(r);
-  return r;
-});
-
-// ---------- external upstreams (Tools) ----------
-function upView(r: Row) {
-  let allow: string[] | null = null;
-  try { const v = JSON.parse(r.models_allow || 'null'); if (Array.isArray(v)) allow = v; } catch {}
-  return { id: r.id, name: r.name, url: r.base_url, enabled: !!r.enabled, keySet: !!r.key_enc, mgmtSet: !!r.mgmt_key_enc, models: modelInfo(r.id), allow,
-    today: Number(one(`SELECT COUNT(*) AS n FROM usage WHERE auth_id = ? AND ts >= ?`, 'up:' + r.id, dayStart())?.n || 0) };
-}
-function upBody(b: any, needKey: boolean) {
-  const name = str(b.name, 40) || 'Tools';
-  let base = '';
-  try { base = normBase(str(b.url, 300)); } catch { throw new HttpError(400, 'invalid_url'); }
-  const key = str(b.key, 300);
-  if (needKey && !key) throw new HttpError(400, 'invalid_key');
-  let mgmtKey: string | null | undefined;
-  if (b.mgmtKey === null) mgmtKey = null;
-  else if (typeof b.mgmtKey === 'string' && b.mgmtKey.trim()) mgmtKey = str(b.mgmtKey, 300);
-  let models: string[] | null | undefined;
-  if (b.models !== undefined) {
-    if (b.models !== null && !(Array.isArray(b.models) && b.models.length <= 500 && b.models.every((m: unknown) => typeof m === 'string' && m.length <= 120))) throw new HttpError(400, 'invalid');
-    models = b.models;
-  }
-  return { name, base, key, mgmtKey, enabled: b.enabled !== false, models };
-}
-route('GET', '/api/admin/upstreams', (req) => { requireAdmin(req); return upstreamRows().map(upView); });
-route('POST', '/api/admin/upstreams', async (req) => {
-  const u = requireAdmin(req);
-  const id = saveUpstream(null, upBody(await readJSON(req), true), u.id);
-  return upView(one('SELECT * FROM upstreams WHERE id = ?', id)!);
-});
-route('PATCH', '/api/admin/upstreams/:id', async (req, _res, p) => {
-  const u = requireAdmin(req);
-  const r = one('SELECT * FROM upstreams WHERE id = ?', Number(p.id));
-  if (!r) throw new HttpError(404, 'not_found');
-  const b = await readJSON(req);
-  saveUpstream(r.id, upBody({ name: r.name, url: r.base_url, enabled: !!r.enabled, ...b }, false), u.id);
-  return upView(one('SELECT * FROM upstreams WHERE id = ?', r.id)!);
-});
-route('DELETE', '/api/admin/upstreams/:id', (req, _res, p) => {
-  requireAdmin(req);
-  const id = Number(p.id);
-  run('DELETE FROM upstreams WHERE id = ?', id);
-  clearUpCache(id);
-  return { ok: true };
-});
-route('POST', '/api/admin/upstreams/:id/test', async (req, _res, p) => {
-  requireAdmin(req);
-  const r = one('SELECT * FROM upstreams WHERE id = ?', Number(p.id));
-  if (!r) throw new HttpError(404, 'not_found');
-  const u = upstreamById(r.id)!;
-  const ids = await modelsOf(u, true);
-  const info = modelInfo(r.id);
-  let err = info?.error || null;
-  let extra: { accounts?: number; plugin?: boolean } = {};
-  if (u.mgmtKey) {
-    try {
-      const [creds, pluginOk] = await Promise.all([upCreds(u, 0), upPluginHealthy(u, true)]);
-      extra = { accounts: creds.list.filter((c) => !c.disabled).length, plugin: pluginOk };
-    } catch (e) {
-      err = err || '管理密钥错误或不可达：' + (e as Error).message;
-    }
-  }
-  return { ok: !!ids && !err, count: ids?.size ?? 0, error: err, models: ids ? [...ids].slice(0, 200) : [], ...extra };
-});
-
-// ---------- models opened for the 大锅饭 ----------
-route('GET', '/api/admin/shared-models', async (req) => {
-  requireAdmin(req);
-  const c = await cpa.creds(10000);
-  const src = new Map<string, Set<string>>();
-  const addM = (m: string, from: string) => { if (!src.has(m)) src.set(m, new Set()); src.get(m)!.add(from); };
-  const ids = all('SELECT auth_id FROM accounts WHERE shared = 1').map((r) => r.auth_id).filter((id) => c.byId.has(id));
-  await Promise.all(ids.map(async (id) => {
-    for (const m of await cpa.credentialModels(id).catch(() => [])) if (m?.id) addM(String(m.id), 'google');
-  }));
-  for (const u of enabledUpstreams()) for (const m of await openModels(u)) addM(m, u.name);
-  const allow = sharedModels();
-  for (const m of allow || []) if (!src.has(m)) src.set(m, new Set());
-  return { all: [...src.keys()].sort().map((id) => ({ id, from: [...src.get(id)!] })), allow: allow ? [...allow] : null };
-});
-route('PUT', '/api/admin/shared-models', async (req) => {
-  requireAdmin(req);
-  const b = await readJSON(req);
-  if (b.allow !== null && !(Array.isArray(b.allow) && b.allow.length <= 500 && b.allow.every((m: unknown) => typeof m === 'string' && m.length <= 120))) throw new HttpError(400, 'invalid');
-  setSharedModels(b.allow);
-  return { allow: b.allow };
-});
-
-// 最大等待时长: CPA routing.retry.max-retry-interval (CPA hot-reloads it, no restart).
-route('GET', '/api/admin/retry', async (req) => {
-  requireAdmin(req);
-  return cpa.retryConfig();
-});
-route('PUT', '/api/admin/retry', async (req) => {
-  requireAdmin(req);
-  const b = await readJSON(req);
-  await cpa.setMaxRetryInterval(clampInt(b.maxWait, 0, 300));
-  return cpa.retryConfig();
-});
-
 route('GET', '/api/admin/usage', (req) => {
   requireAdmin(req);
-  const t = one(`SELECT COUNT(*) AS total, SUM(pool='private') AS p, SUM(pool='shared') AS s, SUM(result='no_account') AS na,
-    SUM(COALESCE(total_tok,0)) AS tok FROM usage WHERE ts >= ?`, dayStart());
-  return {
-    total: Number(t?.total || 0), private: Number(t?.p || 0), shared: Number(t?.s || 0), rejected: Number(t?.na || 0), tokens: Number(t?.tok || 0),
-    breaker: breakerState(),
-    alarms: all('SELECT ts, kind, detail FROM alarms ORDER BY id DESC LIMIT 20'),
-  };
-});
-route('POST', '/api/admin/breaker/reset', (req) => {
-  requireAdmin(req);
-  resetBreaker();
-  return { ok: true };
+  const t = one(`SELECT COUNT(*) AS total, SUM(result='no_account') AS na, SUM(COALESCE(total_tok,0)) AS tok FROM usage WHERE pool = 'aistudio2' AND ts >= ?`, dayStart());
+  return { total: Number(t?.total || 0), rejected: Number(t?.na || 0), tokens: Number(t?.tok || 0) };
 });
 
 route('GET', '/api/admin/site', (req) => {
   requireAdmin(req);
   return site.siteView();
 });
+const switches = () => ({ mentions: getSetting('bot_mentions') !== '0', proactive: getSetting('bot_proactive') === '1', stockOnly: getSetting('bot_stock_only') === '1', shops: getSetting('shops_on') !== '0' });
+route('GET', '/api/admin/switches', (req) => { requireAdmin(req); return switches(); });
+route('PUT', '/api/admin/switches', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  for (const [k, key] of [['mentions', 'bot_mentions'], ['proactive', 'bot_proactive'], ['stockOnly', 'bot_stock_only'], ['shops', 'shops_on']] as const) {
+    if (b[k] === undefined) continue;
+    if (typeof b[k] !== 'boolean') throw new HttpError(400, 'invalid');
+    setSetting(key, b[k] ? '1' : '0');
+  }
+  return switches();
+});
+route('GET', '/api/admin/stock', async (req, _res, _p, url) => {
+  requireAdmin(req);
+  try { return await stockAdmin(url.searchParams.get('refresh') === '1'); } catch (e) { throw new HttpError(502, 'shop_unreachable: ' + (e as Error).message); }
+});
+route('PUT', '/api/admin/stock', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  if (!Array.isArray(b.watched)) throw new HttpError(400, 'invalid');
+  return { watched: setWatched(b.watched) };
+});
+
 route('GET', '/api/admin/bot', async (req) => {
   requireAdmin(req);
   return { ...(await botStatus()), chat: { ...chatStatus, model: chatModel(), source: chatSource() } };
 });
-// @ 机器人问答: model and prompt
 route('GET', '/api/admin/botchat', async (req) => {
   requireAdmin(req);
-  const ids = all(`SELECT a.auth_id FROM accounts a JOIN users u ON u.id = a.owner_id WHERE u.role = 'admin'`).map((r) => r.auth_id);
-  const models = new Set<string>();
-  for (const id of ids) for (const m of await cpa.credentialModels(id).catch(() => [])) if (m?.id) models.add(String(m.id));
-  const sources = [{ id: 'cpa', name: '自己的号（CPA）', models: [...models].sort() }];
-  for (const u of enabledUpstreams()) sources.push({ id: 'up:' + u.id, name: u.name + '（外部上游）', models: [...((await modelsOf(u).catch(() => null)) || [])].sort() });
-  return { model: chatModel(), source: chatSource(), external: botAPISettings(), sources, prompt: chatPrompt(), custom: !!getSetting('bot_llm_prompt'), defaultPrompt: DEFAULT_PROMPT, models: [...models].sort() };
+  return { model: chatModel(), source: 'external', external: botAPISettings(), sources: [], prompt: chatPrompt(), custom: !!getSetting('bot_llm_prompt'), defaultPrompt: DEFAULT_PROMPT, models: [] };
 });
 route('PUT', '/api/admin/botchat', async (req) => {
   requireAdmin(req);
   const b = await readJSON(req);
-  // Validate everything before changing saved settings.
   const changes: [string, string][] = [];
   const source = b.source === undefined ? chatSource() : b.source;
-  if (source !== 'cpa' && source !== 'external' && !(typeof source === 'string' && /^up:\d+$/.test(source) && upstreamById(Number(source.slice(3))))) throw new HttpError(400, '来源无效');
-  if (b.source !== undefined) changes.push(['bot_llm_source', source]);
+  if (b.source !== undefined) changes.push(['bot_llm_source', String(source)]);
   if (b.model !== undefined) {
     if (typeof b.model !== 'string' || !/^[\w.:\/+-]{1,160}$/.test(b.model)) throw new HttpError(400, '模型名无效');
     changes.push([source === 'external' ? 'bot_api_model' : 'bot_llm_model', b.model]);
@@ -1288,7 +708,7 @@ route('PUT', '/api/admin/botchat', async (req) => {
       changes.push(['bot_api_key', sealBotKey(b.external.key.trim())]); keySet = true;
     }
   }
-  if (source === 'external' && (!url || !keySet || !(b.model || botAPISettings().model))) throw new HttpError(400, '请填写 API 地址、密钥和模型名');
+  if ((b.source !== undefined || b.model !== undefined || b.external !== undefined) && source === 'external' && (!url || !keySet || !(b.model || botAPISettings().model))) throw new HttpError(400, '请填写 API 地址、密钥和模型名');
   if (b.prompt !== undefined) {
     if (b.prompt !== null && (typeof b.prompt !== 'string' || b.prompt.length > 20000)) throw new HttpError(400, 'invalid_prompt');
     changes.push(['bot_llm_prompt', b.prompt && b.prompt.trim() && b.prompt.trim() !== DEFAULT_PROMPT ? b.prompt.trim() : '']);
@@ -1296,7 +716,6 @@ route('PUT', '/api/admin/botchat', async (req) => {
   for (const [key, value] of changes) setSetting(key, value);
   return { ok: true, model: chatModel(), source: chatSource(), external: botAPISettings(), custom: !!getSetting('bot_llm_prompt') };
 });
-// 机器人知识库
 route('GET', '/api/admin/kb', (req) => { requireAdmin(req); return kbList(); });
 route('POST', '/api/admin/kb', async (req) => {
   requireAdmin(req);
@@ -1329,4 +748,112 @@ route('PUT', '/api/admin/site', async (req) => {
   try { site.updateSite(b); } catch (e) { throw new HttpError(400, (e as Error).message); }
   registerCommands().catch(() => {});
   return site.siteView();
+});
+
+// ---------- Exit routing ----------
+route('GET', '/api/admin/exits', (req) => { requireAdmin(req); return exit.getOverview(); });
+route('POST', '/api/admin/exits/toggle', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  return exit.setEnabled(b.enabled !== false);
+});
+route('POST', '/api/admin/exits/test', async (req) => { requireAdmin(req); return { results: await exit.testNodes() }; });
+route('POST', '/api/admin/exits/bind', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  return exit.bindAccount(b.kind, String(b.id || ''), String(b.nodeId || ''));
+});
+route('POST', '/api/admin/exits/distribute', async (req) => {
+  requireAdmin(req);
+  const b = await readJSON(req);
+  return exit.autoDistribute(b.scope === 'unbound' ? 'unbound' : 'all');
+});
+
+// ---------- User self-service exit routing & subscription import ----------
+route('POST', '/api/exits/test', (req) => { requireUser(req); return exit.triggerPublicDelayTest(); });
+route('GET', '/api/exits', (req) => exit.getUserExits(requireUser(req).id));
+route('POST', '/api/exits/bind', async (req) => {
+  const u = requireUser(req);
+  const b = await readJSON(req);
+  return exit.bindUserAccount(u.id, String(b.id || ''), String(b.nodeId || ''));
+});
+route('POST', '/api/exits/sub/preview', async (req) => {
+  const u = requireUser(req);
+  const b = await readJSON(req);
+  return exit.previewSubscription(u.id, String(b.url || ''));
+});
+route('POST', '/api/exits/sub/save', async (req) => {
+  const u = requireUser(req);
+  const b = await readJSON(req);
+  return exit.saveSubscriptionNodes(u.id, String(b.parseId || ''), Array.isArray(b.indices) ? b.indices : []);
+});
+route('POST', '/api/exits/node/:id/check', async (req, _res, p) => {
+  const u = requireUser(req);
+  return exit.checkUserNodePurity(u.id, Number(p.id));
+});
+route('POST', '/api/exits/proxy', async (req) => {
+  const u = requireUser(req);
+  const b = await readJSON(req);
+  return exit.addDirectProxy(u.id, String(b.name || ''), String(b.url || ''));
+});
+route('DELETE', '/api/exits/nodes/:id', (req, _res, p) => exit.deleteUserNode(requireUser(req).id, Number(p.id)));
+
+// ---------- Argon 乐园 (游乐场) ----------
+route('GET', '/api/fun', (req) => fun.overview(requireUser(req)));
+route('POST', '/api/fun/claim', (req) => fun.claim(requireUser(req)));
+route('POST', '/api/fun/borrow', async (req) => { const u = requireUser(req); return fun.borrow(u, Number((await readJSON(req))?.n)); });
+route('POST', '/api/fun/repay', (req) => fun.repay(requireUser(req)));
+route('POST', '/api/fun/inf', (req) => fun.toggleInf(requireUser(req)));
+route('POST', '/api/fun/slots/boost', async (req) => fun.boostSlots(requireUser(req)));
+route('POST', '/api/fun/slots', async (req) => { const u = requireUser(req); return fun.slots(u, Number((await readJSON(req))?.bet)); });
+route('POST', '/api/fun/vip-redeem', async (req) => {
+  const u = requireUser(req);
+  const b = await readJSON(req);
+  return fun.redeemVip(u, Number(b?.count ?? 1));
+});
+route('POST', '/api/fun/g4a', async (req) => { const u = requireUser(req); return fun.g4a(u, (await readJSON(req))?.n); });
+route('GET', '/api/fun/stream', (req, res) => { requireUser(req); fun.stream(req, res); });
+route('POST', '/api/fun/lotto/buy', async (req) => { const u = requireUser(req); const b = await readJSON(req); return fun.lottoBuy(u, b?.nums, b?.sp, b?.mult ?? 1); });
+route('POST', '/api/fun/lotto/draw', (req) => { requireAdmin(req); return fun.lottoDrawNow(); });
+route('POST', '/api/fun/race', async (req) => { const u = requireUser(req); return fun.raceCreate(u, await readJSON(req)); });
+route('GET', '/api/fun/race/:id', (req, _res, p) => fun.raceGet(requireUser(req).id, Number(p.id)));
+route('POST', '/api/fun/race/:id/join', (req, _res, p) => fun.raceJoin(requireUser(req), Number(p.id)));
+route('POST', '/api/fun/race/:id/dog', async (req, _res, p) => { const u = requireUser(req); return fun.raceDog(u, Number(p.id), (await readJSON(req))?.dog); });
+route('POST', '/api/fun/race/:id/leave', (req, _res, p) => fun.raceLeave(requireUser(req), Number(p.id)));
+route('POST', '/api/fun/race/:id/ready', (req, _res, p) => fun.raceReady(requireUser(req), Number(p.id)));
+
+// ---------- Legacy credential export (read-only from CPA) ----------
+route('POST', '/api/me/export-accounts', async (req, res) => {
+  const u = requireUser(req);
+  const b = req.headers['content-type']?.includes('json') ? await readJSON(req) : {};
+  const rows = all('SELECT auth_id FROM accounts WHERE owner_id = ? ORDER BY created_at', u.id);
+  if (!rows.length) throw new HttpError(404, 'no_old_accounts', '你名下没有可导出的旧凭证');
+  const files: { name: string; data: Buffer }[] = [];
+  let cpaErr = false;
+  for (const row of rows) {
+    try {
+      const safeName = basename(String(row.auth_id || ''));
+      if (!safeName || safeName === '.' || safeName === '..' || !safeName.endsWith('.json')) continue;
+      const fp = join('/cpa-auths', safeName);
+      const j = existsSync(fp) && lstatSync(fp).isFile() ? JSON.parse(readFileSync(fp, 'utf8')) : await cpa.downloadCredential(safeName);
+      if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
+      delete j.proxy_url; delete j.disabled; delete j.priority; delete j.prefix; delete j.base_url; delete j.headers;
+      files.push({ name: safeName, data: Buffer.from(JSON.stringify(j, null, 2)) });
+    } catch { cpaErr = true; }
+  }
+  if (!files.length) {
+    if (cpaErr) throw new HttpError(503, 'cpa_unreachable', '当前环境未连接旧凭证库，搬回正式站后即可一键导出');
+    throw new HttpError(404, 'no_old_accounts', '未找到可导出的凭证文件');
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  const zip = b?.format === 'zip' || (b?.format !== 'json' && files.length > 1);
+  const out = zip ? writeZip(files) : files.length === 1 ? files[0].data : Buffer.from(JSON.stringify(files.map((f) => JSON.parse(f.data.toString())), null, 2));
+  const fname = zip ? `xgf-credentials-${day}.zip` : files.length === 1 ? files[0].name : `xgf-credentials-${day}.json`;
+  res.writeHead(200, {
+    'Content-Type': zip ? 'application/zip' : 'application/json',
+    'Content-Disposition': `attachment; filename="${fname.replace(/[^\w.@+-]/g, '_')}"`,
+    'Content-Length': out.length,
+    'Cache-Control': 'no-store',
+  });
+  res.end(out);
 });

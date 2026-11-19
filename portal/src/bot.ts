@@ -16,6 +16,10 @@ import { dailyWith } from './limits.ts';
 import { forbiddenReason, disableForbidden } from './autodisable.ts';
 import { classify } from './accerr.ts';
 import { actionOf } from './accaction.ts';
+import * as dcRace from './discordrace.ts';
+import * as dcBones from './discordbones.ts';
+import * as dcLotto from './discordlotto.ts';
+import { FEES, RACE_SIZES, LOAN_STEP, LOT_MULTS, TICKET } from './fun.ts';
 
 const DAPI = 'https://discord.com/api/v10';
 const GRACE = 10 * 60e3;           // a problem must persist this long before anyone is pinged
@@ -143,7 +147,7 @@ export async function postAnnouncement(title: string, body: string, url: string)
   return post(`📢 **${title}**\n${body}${url ? `\n${url}` : ''}`, [], true);   // the admin ticked "post to Discord"
 }
 export async function testMessage(): Promise<boolean> {
-  return post('🐶 小锅饭机器人已就位：号出问题会在这里 @ 号主，每天发日报。试试 `/我的号` 和 `/今日榜`', [], true);
+  return post('🐶 小锅饭机器人已就位：号出问题会在这里 @ 号主，每天发日报。试试 `/我的号`、`/今日榜`、`/赛狗`、`/骨头`、`/借骨头`、`/还骨头` 和 `/彩票`', [], true);
 }
 
 export async function registerCommands(): Promise<void> {
@@ -154,6 +158,23 @@ export async function registerCommands(): Promise<void> {
     { name: '今日榜', description: '今天到现在的用量排行', type: 1 },
     { name: '免打扰', description: '机器人发消息时不再 @ 我（号出问题照样会说，只是不 @）', type: 1,
       options: [{ name: '开启', description: '开启 = 不 @ 我；关闭 = 恢复 @ 我。不填就是切换', type: 5, required: false }] },
+    { name: '赛狗', description: '开一场真人赛狗（不填参数就进最新一个等人的房）', type: 1,
+      options: [
+        { name: '人数', description: '几个人比', type: 4, required: false, choices: Array.from({ length: RACE_SIZES[1] - RACE_SIZES[0] + 1 }, (_, k) => ({ name: `${RACE_SIZES[0] + k} 人`, value: RACE_SIZES[0] + k })) },
+        { name: '发车', description: '什么时候发车', type: 3, required: false, choices: [{ name: '人齐就跑', value: 'full' }, { name: '全员准备', value: 'ready' }] },
+        { name: '入场费', description: '每人交多少骨头', type: 4, required: false, choices: FEES.map((f) => ({ name: `${f} 根`, value: f })) },
+      ] },
+    { name: '骨头', description: '看看我有多少骨头、欠狗哥多少（只有你看得到）', type: 1 },
+    { name: '借骨头', description: '找狗哥借红骨头（只能玩游戏，每小时 10% 利滚利）', type: 1,
+      options: [{ name: '金额', description: '借多少', type: 4, required: true, choices: LOAN_STEP.map((n) => ({ name: `${n} 根`, value: n })) }] },
+    { name: '还骨头', description: '还狗哥的债，能还多少还多少', type: 1 },
+    { name: '彩票', description: `买一注每小时彩票（${TICKET} 根/注，不填号码就机选）`, type: 1,
+      options: [
+        { name: '号码1', description: '第 1 位（0-9）', type: 4, required: false, min_value: 0, max_value: 9 },
+        { name: '号码2', description: '第 2 位（0-9）', type: 4, required: false, min_value: 0, max_value: 9 },
+        { name: '特码', description: '特码（0-9）', type: 4, required: false, min_value: 0, max_value: 9 },
+        { name: '倍数', description: '倍投', type: 4, required: false, choices: LOT_MULTS.map((m) => ({ name: `×${m}`, value: m })) },
+      ] },
   ];
   try {
     const r = await fetch(`${DAPI}/applications/${d.clientId}/guilds/${d.guildId}/commands`, {
@@ -306,7 +327,7 @@ export async function watchUsage(): Promise<void> {
     // 小锅饭 running out of quota (429, then "你的账号暂时都不可用" while they cool down) is the owner's own accounts
     // doing what they should: not counted, and it doesn't break a streak either
     const last = all(`SELECT id, result, status, reason FROM usage WHERE user_id = ? AND ts < ? AND status != 499
-      AND NOT (pool IN ('private', 'aistudio') AND result IN ('quota', 'no_account')) ORDER BY ts DESC, id DESC LIMIT 300`, u.user_id, to);
+      AND NOT (pool IN ('private', 'aistudio2') AND result IN ('quota', 'no_account')) ORDER BY ts DESC, id DESC LIMIT 300`, u.user_id, to);
     const streak: any[] = [];
     for (const r of last) { if (r.result === 'ok') break; streak.push(r); }
     if (streak.length < STREAK) continue;
@@ -412,12 +433,21 @@ export async function handleInteraction(req: IncomingMessage, res: ServerRespons
   let i: any;
   try { i = JSON.parse(body.toString('utf8')); } catch { throw new HttpError(400, 'bad_json'); }
   if (i.type === 1) return sendJSON(res, 200, { type: 1 });
-  if (i.type !== 2) return sendJSON(res, 200, { type: 4, data: { content: '不支持的操作', flags: 64 } });
+  if (i.type !== 2 && i.type !== 3) return sendJSON(res, 200, { type: 4, data: { content: '不支持的操作', flags: 64 } });
   const guild = site.discord().guildId;
   const uid = String(i.member?.user?.id || i.user?.id || '');
   const reply = (content: string, priv: boolean) => sendJSON(res, 200, { type: 4, data: { content: content.slice(0, 2000), flags: priv ? 64 : 0, allowed_mentions: { parse: [] } } });
   if (guild && i.guild_id !== guild) return reply('请在服务器里使用这个命令', true);
+  if (i.type === 3) {
+    const cid = String(i.data?.custom_id || '');
+    return sendJSON(res, 200, cid.startsWith('race:') ? dcRace.handleComponent(i) : { type: 4, data: { content: '这个按钮过期了', flags: 64 } });
+  }
   const name = String(i.data?.name || '');
+  if (name === '赛狗') return sendJSON(res, 200, dcRace.handleCommand(i));
+  if (name === '骨头') return sendJSON(res, 200, dcBones.onWallet(i));
+  if (name === '借骨头') return sendJSON(res, 200, dcBones.onBorrow(i));
+  if (name === '还骨头') return sendJSON(res, 200, dcBones.onRepay(i));
+  if (name === '彩票') return sendJSON(res, 200, dcLotto.onBuy(i));
   if (name === '我的号') return reply(myAccounts(uid, await cpa.creds(30000)), true);
   if (name === '今日榜') return reply(leaderboard(dayStart(), now(), '🐶 **今日榜**（截至现在）') + '\n\n' + allTimeLine(), false);
   if (name === '免打扰') {
@@ -433,6 +463,8 @@ export async function handleInteraction(req: IncomingMessage, res: ServerRespons
 
 export function startBot(): void {
   registerCommands().catch(() => {});
+  dcRace.startRaceDc();
+  dcLotto.startLottoDc();
   const watch = () => checkAccounts().catch((e) => console.error('[bot] account check', e.message));
   setInterval(watch, 5 * 60e3).unref();
   setTimeout(watch, 90e3).unref();

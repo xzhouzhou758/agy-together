@@ -9,4 +9,4 @@ COPY src ./src
 COPY public ./public
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node
-CMD ["node", "--disable-warning=ExperimentalWarning", "--max-old-space-size=64", "--max-semi-space-size=2", "src/main.ts"]
+CMD ["node", "--disable-warning=ExperimentalWarning", "--max-old-space-size=256", "--max-semi-space-size=2", "src/main.ts"]
